@@ -562,6 +562,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "`too_many_attempts`: sign-ins to this name failed recently. Each failure doubles the wait, from one second up to five minutes, and a success clears it. `Retry-After` says how many seconds are left.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "x-ridal-needs": {

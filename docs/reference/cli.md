@@ -1182,6 +1182,12 @@ Default: `60`.
 Serve a project without accepting any writes
 ```
 
+```{option} --allow-cross-site-requests
+Accept changes sent by a browser from another site, and requests for any host name.
+
+By default a browser request that would change something is refused when the browser says another site sent it (`Sec-Fetch-Site`), so a web page open in the same browser cannot write to the project. Requests naming a host other than localhost, 127.0.0.1 or [::1] are refused too, which stops DNS rebinding. Requests from scripts, curl and the Python client are unaffected either way. Use this only to drive the API from a page on another origin.
+```
+
 ```{option} --open-browser
 Open a browser after starting (off by default, matching `ridal server start`)
 ```
@@ -1246,6 +1252,12 @@ Serve a project without accepting any writes. Caps every caller at the "viewer" 
 Accept password logins while bound to a non-loopback address.
 
 Ridal does not terminate TLS, so a password sent to a non-loopback address travels in the clear unless something in front of it is doing so. Use this only when you know what that something is; the supported arrangement is to bind loopback behind a TLS-terminating reverse proxy.
+```
+
+```{option} --allow-cross-site-requests
+Accept changes sent by a browser from another site.
+
+By default a browser request that would change something is refused when the browser says another site sent it (`Sec-Fetch-Site`), so a web page open in the same browser cannot write to this server. Requests from scripts, curl and the Python client are unaffected either way. Use this only to drive the API from a page on another origin.
 ```
 
 ```{option} --cache-memory-mb <CACHE_MEMORY_MB>

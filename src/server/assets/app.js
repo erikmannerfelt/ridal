@@ -717,6 +717,11 @@ const RIDAL = Object.freeze({
         // resolve to nothing rather than to a host.
         subdomains: entry.subdomains || "abc",
         attribution: RIDAL.attributionHtml(entry),
+        // The page's own policy (`same-origin`) sends tile servers no
+        // Referer at all, and some refuse a request without one
+        // (OpenStreetMap's). The origin alone is what they ask for, and
+        // never a path: an invite link's token is in its path (#516).
+        referrerPolicy: "strict-origin-when-cross-origin",
       });
       const label = RIDAL.uniqueLabel(labels, entry);
       layers[label] = layer;
