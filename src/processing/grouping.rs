@@ -41,6 +41,7 @@ pub struct MergeKey {
     pub crs: String,
     pub antenna_mhz: f32,
     pub time_window: f32,
+    pub samples: u32,
     pub antenna_separation: f32,
     pub medium_velocity: f32,
 }
@@ -51,6 +52,7 @@ impl MergeKey {
             crs: location.crs.clone(),
             antenna_mhz: meta.antenna_mhz,
             time_window: meta.time_window,
+            samples: meta.samples,
             antenna_separation: meta.antenna_separation,
             medium_velocity: meta.medium_velocity,
         }
@@ -70,6 +72,12 @@ impl MergeKey {
             Some(format!(
                 "Time windows are different: {} vs {}",
                 self.time_window, other.time_window
+            ))
+        // Traces of different lengths cannot be stacked side by side (#507).
+        } else if self.samples != other.samples {
+            Some(format!(
+                "Sample counts are different: {} vs {}",
+                self.samples, other.samples
             ))
         // The checks below do not stop the arrays concatenating; they stop
         // the result declaring one value for the whole file that is true of
@@ -222,6 +230,7 @@ mod tests {
                 crs: "EPSG:32633".to_string(),
                 antenna_mhz: mhz,
                 time_window: 500.,
+                samples: 1024,
                 antenna_separation: 4.,
                 medium_velocity: 0.168,
             },
@@ -276,5 +285,22 @@ mod tests {
         let grouping = group_chronologically(&recordings, None, &edits);
         assert_eq!(members(&grouping), [vec![0, 2], vec![3], vec![1]]);
         assert!(grouping.groups[1].split.as_ref().unwrap().over_threshold);
+    }
+
+    #[test]
+    fn recordings_differing_only_in_sample_count_are_two_radargrams() {
+        use super::{group_chronologically, GroupingEdits};
+        let mut shorter = timed(150., 200., 100.);
+        shorter.key.samples = 512;
+        let recordings = vec![timed(0., 100., 100.), shorter];
+
+        let grouping = group_chronologically(&recordings, Some(600.), &GroupingEdits::default());
+        assert_eq!(grouping.groups.len(), 2);
+        let split = grouping.groups[1].split.as_ref().unwrap();
+        assert!(!split.over_threshold);
+        assert_eq!(
+            split.incompatible.as_deref(),
+            Some("Sample counts are different: 1024 vs 512")
+        );
     }
 }

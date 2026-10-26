@@ -750,7 +750,7 @@ impl GPR {
     ///
     /// Refused, naming both values, when anything the merged file would
     /// state once for all its traces differs: the CRS, antenna frequency,
-    /// time window, antenna separation (nominal and effective) or medium
+    /// time window, sample count, antenna separation (nominal and effective) or medium
     /// velocity.
     pub fn merge(&mut self, other: &GPR) -> Result<(), String> {
         let start_time = std::time::Instant::now();
@@ -767,12 +767,16 @@ impl GPR {
                 self.antenna_separation_effective, other.antenna_separation_effective
             ))
         } else {
+            // First, so a refusal leaves `self` as it was. The sample
+            // counts were compared above, but through the metadata.
+            self.data
+                .append(Axis(1), other.data.view())
+                .map_err(|e| format!("Could not append the traces: {e}"))?;
             self.location
                 .cor_points
                 .append(other.location.cor_points.clone().as_mut());
             self.location.time_source = self.location.time_source.and(other.location.time_source);
 
-            self.data.append(Axis(1), other.data.view()).unwrap();
             // Per trace, so it concatenates with the traces. Two inputs
             // cropped by different amounts is exactly the case a single
             // number could not describe.
@@ -812,6 +816,11 @@ mod tests {
             message.contains("Antenna separations are different"),
             "{message}"
         );
+
+        // Traces of different lengths cannot sit side by side (#507).
+        let mut other = make_dummy_gpr(20, 12, Some(1.));
+        let message = base().merge(&other).unwrap_err();
+        assert!(message.contains("Sample counts are different"), "{message}");
 
         // Corrected on one side only: recoverable, and the message says how.
         let mut other = base();

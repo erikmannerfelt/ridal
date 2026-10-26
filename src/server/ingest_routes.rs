@@ -1146,6 +1146,7 @@ mod tests {
                         crs: "EPSG:32633".to_string(),
                         antenna_mhz: mhz,
                         time_window: 500.,
+                        samples: 1024,
                         antenna_separation: 4.,
                         medium_velocity: 0.168,
                     },

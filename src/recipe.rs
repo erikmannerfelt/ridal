@@ -39,7 +39,9 @@ use crate::gpr::{LocationCorrection, GPR};
 ///   `longitude`, and where a DEM is sampled, moved by up to 4.6 m.
 /// - 4: one `processing_log` line per step (#85): `auto_gain` no longer
 ///   adds a `gain` line of its own. The data are unchanged.
-pub const CORE_PROCESSING_VERSION: u32 = 4;
+/// - 5: a GSSI file's time window is its whole `range` (#506), no longer
+///   shortened by `position`, so its sample interval and depths change.
+pub const CORE_PROCESSING_VERSION: u32 = 5;
 
 /// The layout of [`Recipe`] as serialized into `ridal_recipe`.
 pub const RECIPE_FORMAT: u32 = 1;
