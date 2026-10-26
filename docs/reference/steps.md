@@ -272,7 +272,7 @@ The `slant` grid keeps the sample interval: one sample is `v * dt / 2` deep, sta
 
 Afterwards, `twtt` is the travel time a coincident transmitter and receiver would have recorded rather than the travel time between the pair, and the output declares that with `twtt:anchor_name = "twtt_normal_incidence"` and `antenna_separation_effective = 0`.
 
-`legacy` is the conversion before 0.7, which used the full separation where the geometry needs half and, after a zero correction, no separation at all. It exists to regenerate data processed with it, and picks made on its grid, exactly.
+`legacy` is the conversion before 0.7, which used the full separation where the geometry needs half and, after a zero correction, no separation at all. It exists to regenerate data processed with it, and picks made on its grid, exactly. Its grid is a little coarser than `v * dt / 2`, but the output keeps the recorded sample interval (time window, sampling frequency), so `twtt`, `depth` and `bandpass_mhz` read that interval and are off by the difference, about 2 % (#508). The grid's real spacing is in the processing log.
 
 `direct_velocity` is the velocity of the wave that time zero was picked on. The default is the speed of light in air, because the air wave arrives first. Pass the medium velocity to time it from the ground wave, as ImpDAR's `nmo` does. Only this step reads it: the depth axis of an uncorrected radargram always assumes air. Examples: `correct_antenna_separation(legacy)`, `correct_antenna_separation(slant, 0.168)`.
 
