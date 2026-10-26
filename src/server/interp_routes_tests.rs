@@ -956,7 +956,11 @@ async fn the_viewer_offers_picking_only_where_it_can_be_saved() {
     let (_dir, app) = project_app(true);
     let (status, html) = page(&app, "/view/line-01").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("writable: true"), "config flag missing");
+    assert_eq!(
+        viewer_config(&html).unwrap()["writable"],
+        true,
+        "config flag missing"
+    );
     assert!(html.contains(r#"id="pick-toggle""#), "no picking control");
     assert!(html.contains(r#"id="pick-save""#), "no save control");
     assert!(
@@ -967,7 +971,11 @@ async fn the_viewer_offers_picking_only_where_it_can_be_saved() {
         html.contains("/static/picker.js"),
         "picker script not loaded"
     );
-    assert!(html.contains(r#"user: "default""#), "no author for saves");
+    assert_eq!(
+        viewer_config(&html).unwrap()["user"],
+        "default",
+        "no author for saves"
+    );
 
     // Read-only: the toolbar says why rather than vanishing, so a missing
     // control never reads as a missing feature.
@@ -1443,10 +1451,9 @@ async fn the_viewer_offers_the_image_limits_the_route_enforces() {
     let (status, _, bytes) = raw(&app, &format!("/view/{RADARGRAM}")).await;
     assert_eq!(status, StatusCode::OK);
     let html = String::from_utf8_lossy(&bytes);
-    let width = format!("maxImageWidth: {},", super::routes::MAX_IMAGE_WIDTH);
-    let pixels = format!("maxImagePixels: {},", super::routes::MAX_IMAGE_PIXELS);
-    assert!(html.contains(&width), "{width} missing");
-    assert!(html.contains(&pixels), "{pixels} missing");
+    let config = viewer_config(&html).expect("the viewer's config");
+    assert_eq!(config["maxImageWidth"], super::routes::MAX_IMAGE_WIDTH);
+    assert_eq!(config["maxImagePixels"], super::routes::MAX_IMAGE_PIXELS);
 }
 
 #[tokio::test]
@@ -2389,7 +2396,7 @@ async fn the_viewer_opens_with_the_picks_drawn_unless_told_otherwise() {
     let (_dir, app) = project_app(true);
     let (status, html) = page(&app, "/view/line-01").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("showPicks: true"), "{html}");
+    assert_eq!(viewer_config(&html).unwrap()["showPicks"], true, "{html}");
     assert!(html.contains("id=\"pick-visibility\""), "{html}");
     // The button's own label and pressed state are rendered from the same
     // setting rather than hardcoded, so the markup is never briefly wrong
@@ -2498,7 +2505,11 @@ async fn the_layers_page_renders_for_a_project_and_for_a_bare_catalog() {
         .await
         .unwrap();
     let html = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(html.contains("writable: true"), "{html}");
+    assert_eq!(
+        page_config(&html, "layers-config").unwrap()["writable"],
+        true,
+        "{html}"
+    );
     assert!(html.contains("Add a layer"));
 
     // A catalog with no project still answers, explaining why rather than
@@ -2572,14 +2583,34 @@ async fn unknown_fields_survive_a_save_and_reload_over_http() {
     );
 }
 
-/// The `axes:` entry of `window.RIDAL_VIEWER`, as one string.
-///
-/// Not by line: the jinja comment above it ends `-#}`, which eats the
-/// newline, so the entry does not start a line of its own.
-pub(super) fn axes_line(html: &str) -> Option<String> {
-    let start = html.find("axes: ")?;
+/// The viewer's `window.RIDAL_VIEWER`: the JSON in `#viewer-config`'s
+/// `data-config` attribute, unescaped as a browser would (#517).
+pub(super) fn viewer_config(html: &str) -> Option<Value> {
+    page_config(html, "viewer-config")
+}
+
+/// The JSON in the `data-config` attribute of the element `id`: how a page
+/// hands its scripts server-side values (#517).
+pub(super) fn page_config(html: &str, id: &str) -> Option<Value> {
+    let start = html.find(&format!("id=\"{id}\""))?;
     let rest = &html[start..];
-    Some(rest[..rest.find('\n')?].trim_end().to_string())
+    let open = rest.find("data-config=\"")? + "data-config=\"".len();
+    let value = &rest[open..];
+    let value = &value[..value.find('"')?];
+    let json = value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#x2f;", "/")
+        .replace("&amp;", "&");
+    serde_json::from_str(&json).ok()
+}
+
+/// The `axes` the viewer hands the picker: JSON, or `null` when the
+/// radargram cannot describe them.
+pub(super) fn viewer_axes(html: &str) -> Option<Value> {
+    viewer_config(html)?.get("axes").cloned()
 }
 
 #[tokio::test]
@@ -2608,7 +2639,9 @@ async fn the_viewer_hands_the_picker_the_axes_to_save() {
     )
     .to_string();
 
-    let axes = axes_line(&html).expect("the viewer must hand the picker an axes block");
+    let axes = viewer_axes(&html)
+        .expect("the viewer must hand the picker an axes block")
+        .to_string();
     assert!(axes.contains("trace_time"), "{axes}");
     assert!(axes.contains("tiepoints"), "{axes}");
     assert!(axes.contains("\"twtt\""), "{axes}");
@@ -2645,13 +2678,13 @@ async fn a_radargram_that_cannot_describe_its_axes_offers_none() {
     )
     .to_string();
 
-    let axes = axes_line(&html).expect("the key is always present, even when empty");
-    assert_eq!(axes, "axes: null,", "{axes}");
+    let axes = viewer_axes(&html).expect("the key is always present, even when empty");
+    assert_eq!(axes, Value::Null, "{axes}");
 }
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
-async fn an_anchor_name_cannot_break_out_of_the_script_block() {
+async fn an_anchor_name_cannot_break_out_of_the_page() {
     // The anchor name is read straight from a NetCDF attribute, and #147
     // lets an operator upload the file it comes from -- so this is a
     // stored-XSS path. `serde_json` escapes what JSON requires and `<` is
@@ -2689,14 +2722,19 @@ async fn an_anchor_name_cannot_break_out_of_the_script_block() {
     )
     .to_string();
 
-    let axes = axes_line(&html).expect("the radargram declares an anchor, so there are axes");
+    // The name reaches the page only inside an attribute, escaped, and
+    // comes back out of it whole: the browser parses exactly what the
+    // server serialised (#517).
     assert!(
-        !axes.contains("</script>"),
-        "the block can be closed from inside: {axes}"
+        !html.contains("twtt</script>"),
+        "the raw name is in the page"
     );
+    let axes = viewer_axes(&html)
+        .expect("the radargram declares an anchor, so there are axes")
+        .to_string();
     assert!(
-        axes.contains("\\u003c/script"),
-        "expected the escaped form: {axes}"
+        axes.contains("twtt</script><script>alert(1)</script>"),
+        "the name did not survive the round trip: {axes}"
     );
     // The *page* must have exactly the script tags it was written with --
     // no extra opening tag smuggled in through the data.
@@ -2735,12 +2773,7 @@ async fn a_document_carrying_the_axes_the_viewer_offered_can_be_saved() {
             .unwrap(),
     )
     .to_string();
-    let line = axes_line(&html).expect("axes");
-    let json = line
-        .trim_start_matches("axes: ")
-        .trim_end_matches(',')
-        .to_string();
-    let axes: Value = serde_json::from_str(&json).expect("the page carries valid JSON");
+    let axes = viewer_axes(&html).expect("the page carries valid JSON with axes");
 
     // Exactly what picker.js assembles around it.
     let mut doc = document(RADARGRAM);
@@ -2816,9 +2849,10 @@ async fn axes_are_withheld_when_the_file_changed_under_the_catalog() {
     )
     .to_string();
 
-    let axes = axes_line(&html).expect("the key is always present");
+    let axes = viewer_axes(&html).expect("the key is always present");
     assert_eq!(
-        axes, "axes: null,",
+        axes,
+        Value::Null,
         "no mapping is better than one belonging to a different revision: {axes}"
     );
 }
@@ -2904,9 +2938,7 @@ async fn offered_axes(app: &Router) -> Value {
             .unwrap(),
     )
     .to_string();
-    let line = axes_line(&html).expect("the page offers axes");
-    let json = line.trim_start_matches("axes: ").trim_end_matches(',');
-    serde_json::from_str(json).expect("the page carries valid JSON")
+    viewer_axes(&html).expect("the page offers axes")
 }
 
 /// The revision the catalog is currently serving.

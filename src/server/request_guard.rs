@@ -21,14 +21,24 @@
 //! - **Security headers**, on every response that does not set its own:
 //!   no framing by other origins, no `Referer` beyond this origin (an invite
 //!   link carries its token in the path), and no content sniffing.
+//! - **A Content Security Policy** (#517), so that if HTML were ever
+//!   injected into a page, the browser would not run a script from it:
+//!   scripts only from Ridal's own files, no inline script. Styles may be
+//!   inline, since Leaflet sets them on every tile. A project's pages
+//!   replace the default with one naming its own basemap and overlay hosts
+//!   ([`project_policy`]).
 //!
 //! `--allow-cross-site-requests` turns off the first two, for someone who
 //! drives the API from a page on another origin. The headers stay.
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method};
 use axum::response::{IntoResponse, Response};
 
+use super::app::AppState;
 use super::routes::ApiError;
 
 /// What [`guard`] checks.
@@ -40,9 +50,9 @@ pub struct Guard {
     pub loopback_hosts_only: bool,
 }
 
-/// The headers [`guard`] adds, each only when the handler did not set it.
-const SECURITY_HEADERS: [(HeaderName, &str); 4] = [
-    (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'self'"),
+/// The headers [`guard`] adds, each only when the handler did not set it,
+/// besides the [`default_policy`].
+const SECURITY_HEADERS: [(HeaderName, &str); 3] = [
     // For browsers that predate `frame-ancestors`.
     (header::X_FRAME_OPTIONS, "SAMEORIGIN"),
     // Map tiles, the one cross-origin request Ridal's pages make, set their
@@ -70,7 +80,170 @@ pub async fn guard(
             headers.insert(name, HeaderValue::from_static(value));
         }
     }
+    if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, default_policy().clone());
+    }
     response
+}
+
+/// The policy for a response that names no hosts of its own: the site's
+/// pages, the API, assets and errors. It allows the built-in basemap, so
+/// a map drawn without a project's list still has its tiles.
+fn default_policy() -> &'static HeaderValue {
+    static POLICY: std::sync::OnceLock<HeaderValue> = std::sync::OnceLock::new();
+    POLICY.get_or_init(|| {
+        let built_in = crate::project::basemaps::built_in();
+        let tiles: Vec<String> = tile_source(&built_in.url).into_iter().collect();
+        HeaderValue::from_str(&policy(&tiles, &[])).expect("the default policy is ASCII")
+    })
+}
+
+/// A Content Security Policy that also allows images from `images` (map
+/// tiles) and connections to `connections` (overlays the browser fetches).
+///
+/// `blob:` and `data:` images are the figure preview and Leaflet's own
+/// icons; `form-action` and `base-uri` keep an injected `<form>` or
+/// `<base>` from sending anything elsewhere.
+fn policy(images: &[String], connections: &[String]) -> String {
+    let with = |base: &str, extra: &[String]| {
+        std::iter::once(base.to_string())
+            .chain(extra.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    [
+        "default-src 'self'".to_string(),
+        "script-src 'self'".to_string(),
+        "style-src 'self' 'unsafe-inline'".to_string(),
+        with("img-src 'self' data: blob:", images),
+        with("connect-src 'self'", connections),
+        "object-src 'none'".to_string(),
+        "base-uri 'self'".to_string(),
+        "form-action 'self'".to_string(),
+        "frame-ancestors 'self'".to_string(),
+    ]
+    .join("; ")
+}
+
+/// Middleware for a project's router: give its pages a policy that allows
+/// the project's basemap tiles and overlays, read from its configuration
+/// on every page so an edit in the settings applies at once. Other
+/// responses are left to [`guard`]'s default.
+pub async fn project_policy(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    let html = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/html"));
+    if !html
+        || response
+            .headers()
+            .contains_key(header::CONTENT_SECURITY_POLICY)
+    {
+        return response;
+    }
+    let tiles: BTreeSet<String> = super::routes::basemap_options(&state)
+        .iter()
+        .filter_map(|map| tile_source(&map.url))
+        .collect();
+    let overlays: BTreeSet<String> = super::routes::overlay_options(&state)
+        .iter()
+        .filter_map(|overlay| overlay_source(&overlay.url))
+        .collect();
+    let tiles: Vec<String> = tiles.into_iter().collect();
+    let overlays: Vec<String> = overlays.into_iter().collect();
+    if let Ok(value) = HeaderValue::from_str(&policy(&tiles, &overlays)) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, value);
+    }
+    response
+}
+
+/// The source expression for a basemap's tile URL template: its scheme,
+/// host and port, with a `{s}` subdomain placeholder as `*`.
+///
+/// `None`, with a warning in the server log, for a host a policy cannot
+/// name (a placeholder past the first label, an IPv6 address): the
+/// basemap's tiles are then refused by the browser, and the rest of the
+/// page works.
+fn tile_source(url: &str) -> Option<String> {
+    let source = origin_of(url);
+    if source.is_none() {
+        warn_once(url);
+    }
+    source
+}
+
+/// The source expression for an overlay's URL, or `None` for one on this
+/// server (`/…`), which `'self'` already allows.
+fn overlay_source(url: &str) -> Option<String> {
+    if url.starts_with('/') && !url.starts_with("//") {
+        return None;
+    }
+    tile_source(url)
+}
+
+/// Say once per URL that a policy cannot name its host, rather than on
+/// every page.
+fn warn_once(url: &str) {
+    static WARNED: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
+    let mut warned = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+    if warned.insert(url.to_string()) {
+        tracing::warn!(
+            url,
+            "the Content Security Policy cannot name this map URL's host, so \
+             browsers will refuse what it serves"
+        );
+    }
+}
+
+/// `scheme://host[:port]` of a URL or URL template, as a CSP host source.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    if !matches!(scheme, "http" | "https") {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.contains('@') {
+        return None;
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    if let Some(port) = port {
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+    let mut labels: Vec<String> = Vec::new();
+    for (i, label) in host.split('.').enumerate() {
+        let placeholder = label.contains('{');
+        if placeholder && i == 0 {
+            labels.push("*".to_string());
+            continue;
+        }
+        let plain = !label.is_empty()
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        if !plain {
+            return None;
+        }
+        labels.push(label.to_ascii_lowercase());
+    }
+    // A bare `*` would allow every host.
+    if labels.len() < 2 && labels.first().is_some_and(|l| l == "*") {
+        return None;
+    }
+    let port = port.map(|p| format!(":{p}")).unwrap_or_default();
+    Some(format!("{scheme}://{}{port}", labels.join(".")))
 }
 
 /// Why `guard` refuses a request, or `None` to let it through.
@@ -188,6 +361,60 @@ mod tests {
         let headers = response.headers();
         assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
         assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    }
+
+    #[test]
+    fn a_map_url_becomes_the_source_of_its_host() {
+        use super::origin_of;
+        for (url, expected) in [
+            (
+                "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                Some("https://tile.openstreetmap.org"),
+            ),
+            (
+                "https://{s}.tile.example.org/{z}/{x}/{y}.png",
+                Some("https://*.tile.example.org"),
+            ),
+            (
+                "http://Tiles.Example.org:8080/{z}/{x}/{y}",
+                Some("http://tiles.example.org:8080"),
+            ),
+            ("https://10.0.0.5/{z}/{x}/{y}.png", Some("https://10.0.0.5")),
+            (
+                "https://static.example.org/stakes.geojson?v=2",
+                Some("https://static.example.org"),
+            ),
+            // A policy cannot name these.
+            (
+                "https://tile{s}.example.org/{z}/{x}/{y}.png",
+                Some("https://*.example.org"),
+            ),
+            ("https://a.{s}.example.org/{z}/{x}/{y}.png", None),
+            ("https://[::1]:8080/{z}/{x}/{y}.png", None),
+            ("https://{s}/{z}/{x}/{y}.png", None),
+            ("https://user@example.org/{z}", None),
+            ("https://example.org:/{z}", None),
+            ("ftp://example.org/{z}", None),
+            ("/shapes/stakes.geojson", None),
+        ] {
+            assert_eq!(origin_of(url).as_deref(), expected, "{url}");
+        }
+    }
+
+    #[test]
+    fn the_default_policy_allows_only_ridal_and_the_built_in_basemap() {
+        let policy = super::default_policy().to_str().unwrap().to_string();
+        assert!(policy.contains("script-src 'self';"), "{policy}");
+        assert!(
+            !policy.contains("script-src 'self' 'unsafe-inline'"),
+            "{policy}"
+        );
+        assert!(policy.contains("frame-ancestors 'self'"), "{policy}");
+        assert!(policy.contains("object-src 'none'"), "{policy}");
+        assert!(
+            policy.contains("img-src 'self' data: blob: https://server.arcgisonline.com;"),
+            "{policy}"
+        );
     }
 
     #[test]

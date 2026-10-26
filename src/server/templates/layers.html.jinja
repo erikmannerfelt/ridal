@@ -231,13 +231,8 @@
   {% endif %}
 {% endblock %}
 {% block extrascript %}
-  {#- The only inline JS on this page: a server-side value layers.js cannot
-      know. Matches the viewer's convention so both pages read the same way. -#}
-  <script>
-    window.RIDAL_LAYERS = {
-      writable: {% if writable %}true{% else %}false{% endif %},
-      currentUser: {% if current_user %}"{{ current_user }}"{% else %}null{% endif %},
-    };
-  </script>
+  {#- A server-side value layers.js cannot know, as JSON in an attribute
+      rather than an inline script (#517), as on the viewer. -#}
+  <div id="layers-config" hidden data-config="{{ layers_config }}"></div>
   <script src="/static/layers.js"></script>
 {% endblock %}

@@ -1,15 +1,17 @@
 /* Viewer page behaviour (#115, #121).
  *
  * Loaded by viewer.html.jinja after leaflet.js and app.js, so `L` and
- * `RIDAL` are both defined. Server-side values arrive through the
- * `window.RIDAL_VIEWER` object the template emits immediately before this
- * file -- that inline block is the only JS the template still contains, so
- * everything here stays a plain static asset with no templating in it.
+ * `RIDAL` are both defined. Server-side values arrive as JSON in the
+ * `data-config` attribute of `#viewer-config`, which this file parses into
+ * `window.RIDAL_VIEWER` for itself and the scripts loaded after it. The
+ * template has no inline JavaScript (#517), and this stays a plain static
+ * asset with no templating in it.
  *
  * Deliberately NOT under assets/vendor/ -- scripts/vendor_leaflet.sh does
  * `rm -rf` on that directory.
  */
 
+window.RIDAL_VIEWER = JSON.parse(document.getElementById("viewer-config").dataset.config);
 const CFG = window.RIDAL_VIEWER;
 
 const RADARGRAM_ID = CFG.radargramId;

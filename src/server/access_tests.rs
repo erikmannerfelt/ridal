@@ -131,6 +131,13 @@ pub(super) fn open_project(root: &StdPath) -> Project {
     Site::open(root).unwrap().project(&project_key()).unwrap()
 }
 
+/// A boolean of the viewer's config (`window.RIDAL_VIEWER`).
+fn viewer_flag(page: &str, key: &str) -> bool {
+    super::interp_routes_tests::viewer_config(page)
+        .and_then(|config| config[key].as_bool())
+        .unwrap_or_else(|| panic!("the viewer config has no `{key}`: {page}"))
+}
+
 /// A site with one project, holding one radargram, and the given people.
 fn app_with(users: Vec<User>) -> (tempfile::TempDir, Router) {
     app_with_set(UserSet {
@@ -1282,7 +1289,10 @@ async fn a_download_the_caller_may_not_have_is_not_offered() {
     assert!(!page.text.contains("id=\"download-menu\""), "{}", page.text);
     // And the page still works -- the viewer is not a download.
     assert_eq!(page.status, StatusCode::OK);
-    assert!(page.text.contains("RIDAL_VIEWER"), "the viewer still loads");
+    assert!(
+        page.text.contains("id=\"viewer-config\""),
+        "the viewer still loads"
+    );
 
     // The catalog's merged downloads follow the same rule.
     let index = get(&app, "/", Some(&barred)).await;
@@ -1929,7 +1939,7 @@ async fn hiding_the_interpretations_is_remembered_per_person() {
     assert_eq!(saved.body["show_picks"], false);
 
     let page = get(&app, &viewer_uri, Some(&student)).await;
-    assert!(page.text.contains("showPicks: false"), "{}", page.text);
+    assert!(!viewer_flag(&page.text, "showPicks"), "{}", page.text);
     // The button arrives saying what pressing it will do, rather than
     // announcing the opposite until the script catches up.
     assert!(page.text.contains(">Show picks</button>"), "{}", page.text);
@@ -1939,7 +1949,7 @@ async fn hiding_the_interpretations_is_remembered_per_person() {
         page.text
     );
     let page = get(&app, &viewer_uri, Some(&erik)).await;
-    assert!(page.text.contains("showPicks: true"), "{}", page.text);
+    assert!(viewer_flag(&page.text, "showPicks"), "{}", page.text);
     assert!(page.text.contains(">Hide picks</button>"), "{}", page.text);
 
     // Ticking it again stores nothing, so the shown default keeps applying
@@ -1971,7 +1981,7 @@ async fn opening_zoomed_out_is_a_personal_choice() {
     let viewer_uri = format!("/view/{RADARGRAM}");
 
     let page = get(&app, &viewer_uri, Some(&erik)).await;
-    assert!(page.text.contains("openZoomedOut: false"), "{}", page.text);
+    assert!(!viewer_flag(&page.text, "openZoomedOut"), "{}", page.text);
 
     let saved = put(
         &app,
@@ -1983,9 +1993,9 @@ async fn opening_zoomed_out_is_a_personal_choice() {
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
     assert_eq!(saved.body["open_zoomed_out"], true);
     let page = get(&app, &viewer_uri, Some(&erik)).await;
-    assert!(page.text.contains("openZoomedOut: true"), "{}", page.text);
+    assert!(viewer_flag(&page.text, "openZoomedOut"), "{}", page.text);
     let page = get(&app, &viewer_uri, Some(&student)).await;
-    assert!(page.text.contains("openZoomedOut: false"), "{}", page.text);
+    assert!(!viewer_flag(&page.text, "openZoomedOut"), "{}", page.text);
 
     // Unticking it stores nothing, like the picks checkbox.
     put(
@@ -2017,7 +2027,7 @@ async fn hiding_vertex_tooltips_is_remembered_per_person() {
 
     let page = get(&app, &viewer_uri, Some(&student)).await;
     assert!(
-        page.text.contains("showVertexTooltips: true"),
+        viewer_flag(&page.text, "showVertexTooltips"),
         "{}",
         page.text
     );
@@ -2037,7 +2047,7 @@ async fn hiding_vertex_tooltips_is_remembered_per_person() {
     // catches up.
     let page = get(&app, &viewer_uri, Some(&student)).await;
     assert!(
-        page.text.contains("showVertexTooltips: false"),
+        !viewer_flag(&page.text, "showVertexTooltips"),
         "{}",
         page.text
     );
@@ -2050,7 +2060,7 @@ async fn hiding_vertex_tooltips_is_remembered_per_person() {
     );
     let page = get(&app, &viewer_uri, Some(&erik)).await;
     assert!(
-        page.text.contains("showVertexTooltips: true"),
+        viewer_flag(&page.text, "showVertexTooltips"),
         "{}",
         page.text
     );
@@ -2066,7 +2076,7 @@ async fn hiding_vertex_tooltips_is_remembered_per_person() {
     .await;
     let page = get(&app, &viewer_uri, Some(&student)).await;
     assert!(
-        page.text.contains("showVertexTooltips: false"),
+        !viewer_flag(&page.text, "showVertexTooltips"),
         "{}",
         page.text
     );
@@ -5758,10 +5768,7 @@ async fn carried_picks_can_be_adopted_onto_the_current_revision() {
     // than rebuilt here: without them a document cannot be carried at all,
     // which is the whole subject of this test.
     let page = get(&app, "/view/ours", Some(&erik)).await;
-    let line = super::interp_routes_tests::axes_line(&page.text).expect("the page offers axes");
-    let axes: serde_json::Value =
-        serde_json::from_str(line.trim_start_matches("axes: ").trim_end_matches(','))
-            .expect("valid JSON");
+    let axes = super::interp_routes_tests::viewer_axes(&page.text).expect("the page offers axes");
 
     let document = json!({
         "key": "ours",
@@ -5928,9 +5935,7 @@ async fn an_edit_made_over_a_carried_view_survives_adopting() {
     let before = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
     let from_revision = before.body["revision_id"].as_str().unwrap().to_string();
     let page = get(&app, "/view/ours", Some(&erik)).await;
-    let line = super::interp_routes_tests::axes_line(&page.text).expect("axes");
-    let axes: serde_json::Value =
-        serde_json::from_str(line.trim_start_matches("axes: ").trim_end_matches(',')).unwrap();
+    let axes = super::interp_routes_tests::viewer_axes(&page.text).expect("the page offers axes");
 
     let document = json!({
         "key": "ours",
@@ -6171,9 +6176,7 @@ async fn adopting_from_a_page_that_missed_a_save_is_refused() {
     let before = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
     let from_revision = before.body["revision_id"].as_str().unwrap().to_string();
     let page = get(&app, "/view/ours", Some(&erik)).await;
-    let line = super::interp_routes_tests::axes_line(&page.text).expect("axes");
-    let axes: serde_json::Value =
-        serde_json::from_str(line.trim_start_matches("axes: ").trim_end_matches(',')).unwrap();
+    let axes = super::interp_routes_tests::viewer_axes(&page.text).expect("the page offers axes");
     let document = |points: serde_json::Value| {
         json!({
             "key": "ours",
@@ -9104,7 +9107,11 @@ async fn the_pick_manager_is_on_the_layers_page_for_anyone_who_can_pick() {
     let page = get(&app, "/layers", Some(&pia)).await;
     assert_eq!(page.status, StatusCode::OK);
     assert!(page.text.contains("id=\"picks-section\""));
-    assert!(page.text.contains("currentUser: \"pia\""));
+    assert_eq!(
+        super::interp_routes_tests::page_config(&page.text, "layers-config").unwrap()
+            ["currentUser"],
+        "pia"
+    );
 }
 
 #[tokio::test]
