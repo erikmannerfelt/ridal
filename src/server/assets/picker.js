@@ -12,8 +12,9 @@
  * since before Leaflet 1.9.
  *
  * Coordinates: the map is L.CRS.Simple over the *viewer raster*, while
- * picks are stored in source trace/sample index space. The conversion is
- * redone here rather than imported from viewer.js, because both are plain
+ * picks are stored in source trace/sample index space, an index being the
+ * centre of its pixel (#509). The conversion is viewer.js's, reached
+ * through `window.RIDAL_TO_INDEX`/`RIDAL_TO_LATLNG`, since both are plain
  * scripts with no module boundary between them (#120: no build step).
  *
  * Touch first: the field device is a phone. Vertex handles are `L.marker`s,
@@ -491,35 +492,14 @@
 
     // --- Coordinate conversion ----------------------------------------------
     //
-    // Reads `window.RIDAL_GEOMETRY` live on every call rather than a
-    // `RASTER_SCALE`/`VERTICAL_RASTER_SCALE` captured once at
-    // initialization (#168): toggling the topographically corrected view
-    // changes the raster height and the raster<->source-sample mapping,
-    // and capturing either at load would leave existing markers drawing
-    // through one mapping while newly placed picks are stored through
-    // another -- corrupting picks silently, which is exactly what "always
-    // store picks in source coordinates" exists to prevent.
-    //
-    // The corrected view's extra step is `shiftAt` (defined in
-    // viewer.js): `toIndex` inverts it to recover the *source* sample a
-    // click landed on, `toLatLng` re-applies it to place a stored
-    // source-space pick back on the sheared raster. Both are no-ops
-    // outside that view, so the standard view's math is unchanged.
-
-    function toIndex(latlng) {
-      const scale = window.RIDAL_XSCALE || 1;
-      const g = window.RIDAL_GEOMETRY;
-      const trace = latlng.lng / scale / g.rasterScale;
-      const rasterRow = -latlng.lat / g.verticalRasterScale;
-      return [trace, rasterRow - shiftAt(trace)];
-    }
-
-    function toLatLng(trace, sample) {
-      const scale = window.RIDAL_XSCALE || 1;
-      const g = window.RIDAL_GEOMETRY;
-      const rasterRow = sample + shiftAt(trace);
-      return [-rasterRow * g.verticalRasterScale, trace * g.rasterScale * scale];
-    }
+    // viewer.js's, the one definition of where a stored (trace, sample)
+    // is on screen: the centre of its pixel (#509), through the corrected
+    // view's shear and the horizontal scale. Called, not captured, so a
+    // topographic toggle or a scale change applies to the next call
+    // (#168): a captured mapping would draw existing markers through one
+    // mapping while new picks are stored through another.
+    const toIndex = (latlng) => window.RIDAL_TO_INDEX(latlng);
+    const toLatLng = (trace, sample) => window.RIDAL_TO_LATLNG(trace, sample);
 
     /** Show the colour a layer's lines are actually drawn in.
      *
@@ -532,20 +512,21 @@
       element.style.background = colorFor(label);
     }
 
-    /* Is this position inside the source array?
+    /* Is this position on the raster?
      *
-     * Exclusive at the top: indices are zero-based, so `trace ===
-     * sourceWidth` is one past the last trace. It used to pass a `>` check
-     * and be stored, and level 2 then clamped the axis lookup while keeping
+     * Indices are pixel centres (#509), so the raster reaches half a pixel
+     * either side of the first and last index: `[-0.5, n - 0.5)`. Exclusive
+     * at the top, so that a position on the far edge is not stored as the
+     * next pixel's, which level 2 would clamp onto the last while keeping
      * the out-of-range index -- a point that looks real and is not.
      *
      * Used by the click and the drag paths alike. The map can be panned
      * beyond the raster, so a vertex can be dropped outside it. */
     const inBounds = (trace, sample) =>
-      trace >= 0 &&
-      trace < CFG.sourceWidth &&
-      sample >= 0 &&
-      sample < CFG.sourceHeight;
+      trace >= -0.5 &&
+      trace < CFG.sourceWidth - 0.5 &&
+      sample >= -0.5 &&
+      sample < CFG.sourceHeight - 0.5;
 
     const layerFor = (label) => layers.find((l) => l.id === label);
     const colorFor = (label) => (layerFor(label) || {}).color || DEFAULT_COLOR;

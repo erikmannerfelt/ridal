@@ -280,7 +280,9 @@ A misspelt field is an error rather than being ignored.
 `extent`
 : The part of the radargram to draw, in the viewer's coordinates: `traces`
   is `[first, last]` trace and `rows` is `[top, bottom]` row, both fractional,
-  where trace `t` covers `t` to `t + 1`. In the standard view a row is a
+  where trace `t` covers `t` to `t + 1`. Its coordinates, and a pick on it,
+  are at its centre, `t + 0.5`, so the whole radargram reaches half a trace
+  past its first and last positions. In the standard view a row is a
   sample. In the topographic view it is a row of the corrected image, which
   moves when the radargram's elevation window is edited, so a spec for that
   view can give `elevation: [top, bottom]` in meters instead. Anything left

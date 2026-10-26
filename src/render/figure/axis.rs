@@ -1,11 +1,13 @@
 //! Coordinate axes and their ticks for annotated figures (#142).
 //!
-//! An axis maps a *position* in raster coordinates (a fractional trace or
-//! row index) to a coordinate value (metres, nanoseconds, seconds since the
-//! epoch). Positions use the viewer's convention: the value stored for index
-//! `i` belongs to position `i`, the same place the viewer draws a pick at
-//! `(trace, sample) = (i, ...)`. Between indices the value is interpolated
-//! linearly; past the last index it is extrapolated from the last two.
+//! An axis maps a *position* in raster coordinates to a coordinate value
+//! (metres, nanoseconds, seconds since the epoch). A position measures pixel
+//! edges, so the whole radargram is `[0, n]` and pixel `i` spans
+//! `[i, i + 1]`. The value stored for index `i` belongs to the pixel's
+//! centre, position `i + 0.5`, where the viewer draws a pick at
+//! `(trace, sample) = (i, ...)` (gprinterp's SPEC, #509). Between centres the
+//! value is interpolated linearly; past the last centre it is extrapolated
+//! from the last two.
 //!
 //! **Ticks go where their value is, not where an even spacing in pixels
 //! would put them.** Distance along a profile is not linear in trace number
@@ -18,12 +20,15 @@
 //! figure's extent, so a 10 m spacing gives 10, 20, 30 wherever the excerpt
 //! starts, never 9.87, 19.87, 29.87.
 
-/// The values of one coordinate axis, indexed by raster position.
+/// Where index `i` sits in raster positions: the centre of its pixel.
+pub const PIXEL_CENTRE: f64 = 0.5;
+
+/// The values of one coordinate axis, by index; read by raster position.
 #[derive(Debug, Clone)]
 pub enum AxisValues {
-    /// `value(p) = p`: a trace or sample number.
+    /// `value(i) = i`: a trace or sample number.
     Index,
-    /// `value(p) = offset + p * slope`: the topographic view's elevation,
+    /// `value(i) = offset + i * slope`: the topographic view's elevation,
     /// `E_top - row * dz`, which is linear by construction.
     Linear { offset: f64, slope: f64 },
     /// `value(i) = values[i]`, interpolated between indices: distance,
@@ -35,10 +40,11 @@ impl AxisValues {
     /// The coordinate value at raster position `p`. `NaN` where a tabulated
     /// axis has no finite value to interpolate from.
     pub fn value_at(&self, p: f64) -> f64 {
+        let i = p - PIXEL_CENTRE;
         match self {
-            AxisValues::Index => p,
-            AxisValues::Linear { offset, slope } => offset + p * slope,
-            AxisValues::Table(values) => interpolate(values, p),
+            AxisValues::Index => i,
+            AxisValues::Linear { offset, slope } => offset + i * slope,
+            AxisValues::Table(values) => interpolate(values, i),
         }
     }
 
@@ -74,12 +80,15 @@ impl AxisValues {
     /// trace that repeats it.
     pub fn position_of(&self, value: f64, p0: f64, p1: f64) -> Option<f64> {
         match self {
-            AxisValues::Index => (p0..=p1).contains(&value).then_some(value),
+            AxisValues::Index => {
+                let p = value + PIXEL_CENTRE;
+                (p0..=p1).contains(&p).then_some(p)
+            }
             AxisValues::Linear { offset, slope } => {
                 if *slope == 0.0 {
                     return None;
                 }
-                let p = (value - offset) / slope;
+                let p = (value - offset) / slope + PIXEL_CENTRE;
                 (p0..=p1).contains(&p).then_some(p)
             }
             AxisValues::Table(_) => {
@@ -120,14 +129,14 @@ impl AxisValues {
             })
     }
 
-    /// `(position, value)` at `p0`, every whole index strictly inside, and
-    /// `p1`: the piecewise-linear curve the axis follows over the window.
+    /// `(position, value)` at `p0`, every index's centre strictly inside,
+    /// and `p1`: the piecewise-linear curve the axis follows over the window.
     fn knots(&self, p0: f64, p1: f64) -> Vec<(f64, f64)> {
         let mut knots = vec![(p0, self.value_at(p0))];
-        let first = p0.floor() as i64 + 1;
-        let last = p1.ceil() as i64 - 1;
+        let first = (p0 - PIXEL_CENTRE).floor() as i64 + 1;
+        let last = (p1 - PIXEL_CENTRE).ceil() as i64 - 1;
         for i in first..=last {
-            let p = i as f64;
+            let p = i as f64 + PIXEL_CENTRE;
             if p > p0 && p < p1 {
                 knots.push((p, self.value_at(p)));
             }
@@ -306,25 +315,27 @@ mod tests {
     fn a_relabelled_axis_counts_from_zero_at_in_either_direction() {
         // #496: a 10 km profile surveyed from the terminus, labelled from
         // the head.
+        // Positions are pixel edges; index `i` is at `i + 0.5` (#509).
         let km = AxisValues::Table(vec![0.0, 4.0, 10.0]).relabelled(10.0, true);
-        assert_eq!(km.value_at(0.0), 10.0);
-        assert_eq!(km.value_at(1.5), 3.0);
-        assert_eq!(km.value_at(2.0), 0.0);
-        let ticks = ticks(&km, 0.0, 2.0, 2.0, 0.0, LabelFormat::Decimal(0)).unwrap();
+        assert_eq!(km.value_at(0.5), 10.0);
+        assert_eq!(km.value_at(2.0), 3.0);
+        assert_eq!(km.value_at(2.5), 0.0);
+        // From the first trace's centre to the last's.
+        let ticks = ticks(&km, 0.5, 2.5, 2.0, 0.0, LabelFormat::Decimal(0)).unwrap();
         let labels: Vec<&str> = ticks.iter().map(|t| t.label.as_str()).collect();
         assert_eq!(labels, ["10", "8", "6", "4", "2", "0"]);
-        assert_eq!(ticks[1].position, 0.5);
+        assert_eq!(ticks[1].position, 1.0);
 
         let traces = AxisValues::Index.relabelled(100.0, true);
-        assert_eq!(traces.value_at(30.0), 70.0);
+        assert_eq!(traces.value_at(30.5), 70.0);
         let shifted = AxisValues::Index.relabelled(100.0, false);
-        assert_eq!(shifted.value_at(30.0), -70.0);
+        assert_eq!(shifted.value_at(30.5), -70.0);
         let linear = AxisValues::Linear {
             offset: 500.0,
             slope: -2.0,
         }
         .relabelled(400.0, true);
-        assert_eq!(linear.value_at(10.0), -80.0);
+        assert_eq!(linear.value_at(10.5), -80.0);
         assert!(matches!(
             AxisValues::Index.relabelled(0.0, false),
             AxisValues::Index
@@ -342,7 +353,8 @@ mod tests {
         let ticks = ticks(&axis, 0.0, 25.0, 10.0, 0.0, LabelFormat::Decimal(0)).unwrap();
         let values: Vec<f64> = ticks.iter().map(|t| t.value).collect();
         assert_eq!(values, vec![10.0, 20.0, 30.0]);
-        assert!((ticks[0].position - 0.13).abs() < 1e-9);
+        // Index 0.13, half a pixel in from the edge.
+        assert!((ticks[0].position - 0.63).abs() < 1e-9);
         let labels: Vec<&str> = ticks.iter().map(|t| t.label.as_str()).collect();
         assert_eq!(labels, vec!["10", "20", "30"]);
     }
@@ -370,18 +382,19 @@ mod tests {
         let mut distance = vec![0.0, 5.0, 10.0];
         distance.extend((1..=20).map(|i| 10.0 + i as f64));
         let axis = AxisValues::Table(distance);
-        let ticks = ticks(&axis, 0.0, 22.0, 10.0, 0.0, LabelFormat::Decimal(0)).unwrap();
+        let ticks = ticks(&axis, 0.0, 23.0, 10.0, 0.0, LabelFormat::Decimal(0)).unwrap();
         let positions: Vec<f64> = ticks.iter().map(|t| t.position).collect();
-        assert_eq!(positions, vec![0.0, 2.0, 12.0, 22.0]);
+        // At the centres of traces 0, 2, 12 and 22.
+        assert_eq!(positions, vec![0.5, 2.5, 12.5, 22.5]);
     }
 
     #[test]
     fn a_standstill_gives_one_tick_where_its_distance_was_reached() {
         // Traces 2 to 6 are all at 10 m: one tick, at trace 2.
         let axis = AxisValues::Table(vec![0.0, 5.0, 10.0, 10.0, 10.0, 10.0, 10.0, 15.0]);
-        let ticks = ticks(&axis, 0.0, 7.0, 10.0, 0.0, LabelFormat::Decimal(0)).unwrap();
+        let ticks = ticks(&axis, 0.0, 8.0, 10.0, 0.0, LabelFormat::Decimal(0)).unwrap();
         let positions: Vec<f64> = ticks.iter().map(|t| t.position).collect();
-        assert_eq!(positions, vec![0.0, 2.0]);
+        assert_eq!(positions, vec![0.5, 2.5]);
     }
 
     #[test]
@@ -391,26 +404,26 @@ mod tests {
             offset: 100.0,
             slope: -0.5,
         };
-        let ticks = ticks(&axis, 0.0, 100.0, 25.0, 0.0, LabelFormat::Decimal(0)).unwrap();
+        let ticks = ticks(&axis, 0.0, 101.0, 25.0, 0.0, LabelFormat::Decimal(0)).unwrap();
         let pairs: Vec<(f64, f64)> = ticks.iter().map(|t| (t.position, t.value)).collect();
-        assert_eq!(pairs, vec![(0.0, 100.0), (50.0, 75.0), (100.0, 50.0)]);
+        assert_eq!(pairs, vec![(0.5, 100.0), (50.5, 75.0), (100.5, 50.0)]);
     }
 
     #[test]
     fn a_fractional_window_interpolates_between_traces() {
         let axis = AxisValues::Table(vec![0.0, 2.0, 4.0, 6.0]);
-        assert_eq!(axis.value_at(1.25), 2.5);
-        // Past the last trace, the last step is extrapolated.
-        assert_eq!(axis.value_at(3.5), 7.0);
-        let ticks = ticks(&axis, 0.5, 2.5, 1.0, 0.0, LabelFormat::Decimal(0)).unwrap();
+        assert_eq!(axis.value_at(1.75), 2.5);
+        // Past the last trace's centre, the last step is extrapolated.
+        assert_eq!(axis.value_at(4.0), 7.0);
+        let ticks = ticks(&axis, 1.0, 3.0, 1.0, 0.0, LabelFormat::Decimal(0)).unwrap();
         let positions: Vec<f64> = ticks.iter().map(|t| t.position).collect();
-        assert_eq!(positions, vec![0.5, 1.0, 1.5, 2.0, 2.5]);
+        assert_eq!(positions, vec![1.0, 1.5, 2.0, 2.5, 3.0]);
     }
 
     #[test]
     fn a_missing_distance_is_skipped_rather_than_ticked() {
         let axis = AxisValues::Table(vec![0.0, f64::NAN, 20.0, 30.0]);
-        let ticks = ticks(&axis, 0.0, 3.0, 10.0, 0.0, LabelFormat::Decimal(0)).unwrap();
+        let ticks = ticks(&axis, 0.0, 4.0, 10.0, 0.0, LabelFormat::Decimal(0)).unwrap();
         let values: Vec<f64> = ticks.iter().map(|t| t.value).collect();
         assert_eq!(values, vec![0.0, 20.0, 30.0]);
     }

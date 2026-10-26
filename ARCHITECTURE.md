@@ -1533,6 +1533,16 @@ server's structured error envelope (`{"error": {"code", "message"}}`) instead
 of a bare `.then(r => r.json())` silently proceeding with a malformed object
 on failure.
 
+**Indices are pixel centres (#509)**, as gprinterp's SPEC defines: a stored
+`(trace, sample)` of `(j, s)` is the centre of the pixel showing trace `j` and
+sample `s`, while raster and figure positions measure pixel edges (the pixel
+of trace `j` spans `[j, j + 1)`). In the viewer the half pixel is added and
+taken off in one place, `indexToRaster`/`rasterToIndex` in `viewer.js`, behind
+`RIDAL_TO_LATLNG`/`RIDAL_TO_INDEX`, which `picker.js` and `panel.js` call
+rather than keeping copies. In figures it is `axis::PIXEL_CENTRE`, applied by
+`AxisValues` and `Placement::to_px`. Level 2 and the derived layers already
+read an index as a sample, so they need no offset.
+
 **The trace view (#181)** is a canvas beside the radargram, toggled by
 `#trace-toggle` and fed by `GET /api/v1/datasets/{id}/traces/{trace}`,
 which returns the raw `data[:, trace]` column (no render profile — the

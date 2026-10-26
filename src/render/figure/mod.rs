@@ -339,11 +339,13 @@ pub fn render_figure<S: AmplitudeSource>(
             // An elevation extent is converted to rows of *this* geometry,
             // which is the point of giving one: it survives an edit to the
             // elevation window that moves every row.
+            // As positions: the row whose centre is at that elevation, plus
+            // half a row to its centre (#509), as `y_values` reads them.
+            let position_of = |elevation: f64| {
+                (geometry.elevation_top - elevation) / geometry.dz + axis::PIXEL_CENTRE
+            };
             let rows = match spec.extent.elevation {
-                Some([top, bottom]) => Some([
-                    (geometry.elevation_top - top) / geometry.dz,
-                    (geometry.elevation_top - bottom) / geometry.dz,
-                ]),
+                Some([top, bottom]) => Some([position_of(top), position_of(bottom)]),
                 None => spec.extent.rows,
             };
             let sheared = topo::TopoSource::new(input.source, &geometry);
