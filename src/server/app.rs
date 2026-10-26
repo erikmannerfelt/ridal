@@ -50,6 +50,10 @@ pub struct AccessOptions {
     /// request, so a guard sampled at boot would be bypassed by exactly
     /// the sequence that makes it matter.
     pub allow_password_login: bool,
+    /// `--allow-cross-site-requests`: let browsers write from other origins,
+    /// and `ridal gui` answer any `Host` (#514; see
+    /// [`super::request_guard`]).
+    pub allow_cross_site_requests: bool,
 }
 
 impl Default for AccessOptions {
@@ -59,6 +63,7 @@ impl Default for AccessOptions {
         Self {
             read_only: false,
             allow_password_login: true,
+            allow_cross_site_requests: false,
         }
     }
 }

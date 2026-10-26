@@ -64,6 +64,9 @@ A complete site, assuming a certificate from Let's Encrypt's `certbot` for
 `ridal.example.org`:
 
 ```nginx
+# At most 10 sign-in attempts a minute from one address; see below.
+limit_req_zone $binary_remote_addr zone=ridal_login:10m rate=10r/m;
+
 # Send plain HTTP to HTTPS.
 server {
     listen 80;
@@ -81,25 +84,40 @@ server {
     # Browsers refuse plain HTTP for this site for a year after seeing this.
     add_header Strict-Transport-Security "max-age=31536000" always;
 
+    # Never send the login cookie over plain HTTP (nginx 1.19.3 or later).
+    proxy_cookie_flags ridal_session secure;
+
+    # Ridal caps uploads itself and explains what it refused and why.
+    client_max_body_size 0;
+
+    # Let Ridal check an upload against that cap as it arrives.
+    proxy_request_buffering off;
+
+    # A radargram takes longer to upload than the default 60 s.
+    client_body_timeout 300s;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+
+    # Signing in and redeeming an invite: the same, rate limited.
+    location = /api/v1/auth/login {
+        limit_req zone=ridal_login burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8000;
+    }
+    location = /api/v1/auth/invite {
+        limit_req zone=ridal_login burst=5 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8000;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:8000;
-
-        # Never send the login cookie over plain HTTP (nginx 1.19.3 or later).
-        proxy_cookie_flags ridal_session secure;
-
-        # Ridal caps uploads itself and explains what it refused and why.
-        client_max_body_size 0;
-
-        # Let Ridal check an upload against that cap as it arrives.
-        proxy_request_buffering off;
-
-        # A radargram takes longer to upload than the default 60 s.
-        client_body_timeout 300s;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
     }
 }
 ```
+
+The proxy settings are in the `server` block, so every `location` in it
+inherits them.
 
 Two of these settings are about radargrams rather than security
 ([#248](https://github.com/erikmannerfelt/ridal/issues/248)), and nginx's
@@ -127,6 +145,17 @@ still allow 64 MiB.
 Ridal cannot detect a limit imposed in front of it. If an upload fails with a
 message about the web server in front of Ridal, check these settings first.
 :::
+
+(login-rate-limits)=
+### Limiting sign-in attempts
+
+Ridal slows down repeated failed sign-ins to one name (see
+{doc}`accounts`), but it cannot limit one address trying many names: behind
+a proxy, every request reaches Ridal from the proxy itself. The
+`limit_req_zone` and the two `location =` blocks above do that at nginx.
+Each address may try 10 times a minute, with a burst of 5 at once; beyond
+that, nginx answers `429` without passing the request on. Ridal's pages make
+one request per sign-in, so a person typing a password never meets the limit.
 
 ## Caddy
 

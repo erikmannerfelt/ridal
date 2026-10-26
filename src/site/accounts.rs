@@ -258,6 +258,9 @@ thread_local! {
     /// Per thread, so the hashing of tests running beside it is not counted;
     /// a `#[tokio::test]` runs its requests on its own thread.
     pub static HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many hashes [`verify_password`] has checked against, likewise,
+    /// for a test asserting that a throttled sign-in spent none (#515).
+    pub static VERIFICATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Hash a password with Argon2id at the crate's default parameters.
@@ -290,6 +293,8 @@ pub fn verify_password(account: &Account, password: &str) -> bool {
     let Ok(parsed) = PasswordHash::new(stored) else {
         return false;
     };
+    #[cfg(test)]
+    VERIFICATIONS.with(|n| n.set(n.get() + 1));
     argon2::Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok()

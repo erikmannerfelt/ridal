@@ -32,6 +32,10 @@ this" is never a mode you arrive at by accident.
   terminate TLS, so without this it refuses, to keep passwords off a network
   you may not control. Only use it when something in front is doing TLS.
 
+`--allow-cross-site-requests`
+: Accept changes sent by a browser from another website; see
+  [requests from other websites](cross-site-requests). Off by default.
+
 `--n-workers`
 : How many CPU-heavy renders run at once. The budget is **shared by the
   whole site**, not per project, so it caps concurrent rendering across every
@@ -75,6 +79,35 @@ A site refuses to start unless it either has accounts or is `--read-only`:
 with no accounts there is nobody to sign in and manage it. Bound to a
 network address with accounts, it also refuses password sign-ins unless
 `--allow-insecure-login` is given (see {doc}`reverse-proxy`).
+
+(cross-site-requests)=
+## Requests from other websites
+
+A browser says, in a `Sec-Fetch-Site` header, whether a request comes from
+the page's own address or from another website. Ridal refuses a request that
+would change something (`POST`, `PUT`, `PATCH` or `DELETE`) when the browser
+says another website sent it, including a sibling such as
+`evil.example.org` beside `ridal.example.org`, with a `403` and the code
+`cross_site_request`. Reading is never refused, and Ridal's own pages are
+never refused, since they are on the same address. A request with no such
+header, from a script, `curl` or the Python client, is allowed: only a
+browser can be tricked into sending a request on someone's behalf.
+
+The check needs no knowledge of the site's public name, so it works behind
+the reverse proxy unchanged. To drive the API from a web page on another
+address, start the server with `--allow-cross-site-requests`.
+
+`ridal gui` makes the same check and also answers only to the addresses
+`localhost`, `127.0.0.1` and `[::1]`, refusing any other name with a `421`
+and the code `unexpected_host`. That stops a page whose own address is made
+to point at your computer from reading it. A server leaves that to its proxy
+and certificate.
+
+Every response also tells the browser not to show Ridal's pages inside
+another website's frame (`Content-Security-Policy: frame-ancestors 'self'`
+and `X-Frame-Options`), not to send the address of a Ridal page to other
+websites (`Referrer-Policy: same-origin`), and not to guess a file's type
+(`X-Content-Type-Options: nosniff`).
 
 ## Logs
 

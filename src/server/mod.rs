@@ -72,12 +72,15 @@ pub mod draft_routes;
 pub mod figure_routes;
 #[cfg(test)]
 mod figure_routes_tests;
+#[cfg(test)]
+mod hardening_tests;
 pub mod ingest_routes;
 pub mod interp_routes;
 #[cfg(test)]
 mod interp_routes_tests;
 pub mod launch;
 pub mod lifecycle_routes;
+pub mod login_throttle;
 pub mod markdown;
 pub mod needs;
 #[cfg(test)]
@@ -98,6 +101,7 @@ pub mod render_profile_routes;
 mod render_profile_routes_tests;
 pub mod render_service;
 pub mod replace_routes;
+pub mod request_guard;
 pub mod routes;
 pub mod site;
 #[cfg(test)]

@@ -14,9 +14,11 @@ use crate::site::Site;
 
 /// `ridal gui`'s project: the one found at or above `root`, or `root` itself
 /// as a bare, read-only directory of radargrams.
+#[allow(clippy::too_many_arguments)]
 async fn serve_gui(
     root: &Path,
     read_only: bool,
+    allow_cross_site_requests: bool,
     open_browser: bool,
     port: u16,
     config: RenderServiceConfig,
@@ -42,6 +44,7 @@ async fn serve_gui(
             read_only,
             // Nobody signs in to `ridal gui`.
             allow_password_login: false,
+            allow_cross_site_requests,
         },
     )?;
     let catalog = state.catalog();
@@ -167,6 +170,7 @@ async fn serve_site(
     open_browser: bool,
     read_only: bool,
     allow_insecure_login: bool,
+    allow_cross_site_requests: bool,
     config: RenderServiceConfig,
     processing: super::processing::ProcessingConfig,
     heartbeat: std::time::Duration,
@@ -234,6 +238,7 @@ async fn serve_site(
         AccessOptions {
             read_only,
             allow_password_login: host.is_loopback() || allow_insecure_login,
+            allow_cross_site_requests,
         },
         config,
         processing,
@@ -393,9 +398,11 @@ const MALLOC_ARENAS: libc::c_int = 4;
 /// on any available port when it is 0 (#343). The URL is always printed; a
 /// browser is opened only when `--open-browser` was passed, and a failure
 /// to open it is a warning, never a reason to stop the server (#120, #200).
+#[allow(clippy::too_many_arguments)]
 pub fn run_gui(
     root: &Path,
     read_only: bool,
+    allow_cross_site_requests: bool,
     open_browser: bool,
     port: u16,
     config: RenderServiceConfig,
@@ -409,6 +416,7 @@ pub fn run_gui(
     runtime.block_on(serve_gui(
         root,
         read_only,
+        allow_cross_site_requests,
         open_browser,
         port,
         config,
@@ -428,6 +436,7 @@ pub fn run_server_start(
     open_browser: bool,
     read_only: bool,
     allow_insecure_login: bool,
+    allow_cross_site_requests: bool,
     config: RenderServiceConfig,
     processing: super::processing::ProcessingConfig,
     heartbeat: std::time::Duration,
@@ -443,6 +452,7 @@ pub fn run_server_start(
         open_browser,
         read_only,
         allow_insecure_login,
+        allow_cross_site_requests,
         config,
         processing,
         heartbeat,
@@ -602,6 +612,7 @@ mod tests {
             0,
             false,
             read_only,
+            false,
             false,
             crate::server::render_service::RenderServiceConfig::default(),
             crate::server::processing::ProcessingConfig::default(),

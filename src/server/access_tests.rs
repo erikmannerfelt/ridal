@@ -698,8 +698,9 @@ async fn an_unknown_name_costs_the_same_as_a_wrong_password() {
     };
 
     // Warm anything lazy -- the decoy hash is built once per process, and
-    // paying for it inside a measurement would look like a difference.
-    time("nobody").await;
+    // paying for it inside a measurement would look like a difference. A
+    // name of its own, since a failure delays the next try at that name.
+    time("warm-up").await;
 
     let real = time("erik").await;
     let missing = time("nobody").await;

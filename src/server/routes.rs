@@ -86,6 +86,12 @@ impl ApiError {
         Self::new(StatusCode::TOO_MANY_REQUESTS, code, message)
     }
 
+    /// The request named a host this server does not answer for: `ridal
+    /// gui` refusing anything but loopback names (#514).
+    pub(super) fn misdirected_request(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::MISDIRECTED_REQUEST, code, message)
+    }
+
     pub(super) fn conflict(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, code, message)
     }

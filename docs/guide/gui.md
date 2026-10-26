@@ -30,6 +30,13 @@ The menu at the top left leads to the pages described below and to this
 documentation, and the **?** beside a heading opens the part of the
 documentation that describes it.
 
+Anyone at your computer can use `ridal gui` without signing in, so it takes
+care that other web pages cannot. It answers only to the addresses
+`localhost`, `127.0.0.1` and `[::1]`, and refuses changes that a browser says
+were sent by another website. Scripts, `curl` and the Python client are not
+affected. To drive the API from a web page of your own on another address,
+start it with `--allow-cross-site-requests`, which turns both checks off.
+
 ## The catalog
 
 The first page lists every radargram in its **group**, which is the survey,

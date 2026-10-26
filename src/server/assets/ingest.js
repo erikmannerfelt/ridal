@@ -720,7 +720,9 @@
         dashArray: r.output === null ? '4 4' : null,
         opacity: 0.9,
       }).addTo(map);
-      line.bindTooltip(`${r.name}${r.output === null ? ' (not in any radargram)' : ` in radargram ${r.output + 1}`}`, { sticky: true });
+      // A text node, not a string: Leaflet sets a string as HTML, and the
+      // name is the uploaded file's (#516).
+      line.bindTooltip(document.createTextNode(`${r.name}${r.output === null ? ' (not in any radargram)' : ` in radargram ${r.output + 1}`}`), { sticky: true });
       line.on('click', () => select(r.key));
       line.on('mouseover', () => highlight(r.key, true));
       line.on('mouseout', () => highlight(r.key, false));

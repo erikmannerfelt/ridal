@@ -608,6 +608,19 @@ pub struct GuiArgs {
     #[arg(long)]
     pub read_only: bool,
 
+    /// Accept changes sent by a browser from another site, and requests for
+    /// any host name.
+    ///
+    /// By default a browser request that would change something is refused
+    /// when the browser says another site sent it (`Sec-Fetch-Site`), so a
+    /// web page open in the same browser cannot write to the project.
+    /// Requests naming a host other than localhost, 127.0.0.1 or [::1] are
+    /// refused too, which stops DNS rebinding. Requests from scripts, curl
+    /// and the Python client are unaffected either way. Use this only to
+    /// drive the API from a page on another origin.
+    #[arg(long)]
+    pub allow_cross_site_requests: bool,
+
     /// Open a browser after starting (off by default, matching
     /// `ridal server start`).
     #[arg(long)]
@@ -669,6 +682,17 @@ pub struct ServerStartArgs {
     /// reverse proxy.
     #[arg(long)]
     pub allow_insecure_login: bool,
+
+    /// Accept changes sent by a browser from another site.
+    ///
+    /// By default a browser request that would change something is refused
+    /// when the browser says another site sent it (`Sec-Fetch-Site`), so a
+    /// web page open in the same browser cannot write to this server.
+    /// Requests from scripts, curl and the Python client are unaffected
+    /// either way. Use this only to drive the API from a page on another
+    /// origin.
+    #[arg(long)]
+    pub allow_cross_site_requests: bool,
 
     /// In-memory cache budget for encoded chunk/overview images, in MB,
     /// for the whole server: shared by every radargram and project.
@@ -1202,6 +1226,7 @@ fn gui_command(args: GuiArgs) -> Result<(), String> {
     crate::server::launch::run_gui(
         &path,
         args.read_only,
+        args.allow_cross_site_requests,
         args.open_browser,
         args.port.unwrap_or(0),
         config,
@@ -1250,6 +1275,7 @@ fn server_command(args: ServerArgs) -> Result<(), String> {
                 start_args.open_browser,
                 start_args.read_only,
                 start_args.allow_insecure_login,
+                start_args.allow_cross_site_requests,
                 config,
                 start_args.processing.config()?,
                 start_args.log.heartbeat(),

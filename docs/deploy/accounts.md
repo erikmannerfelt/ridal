@@ -214,6 +214,16 @@ by its owner only. A project's `ridal_data/users.json` holds only memberships
 and the access policy — no passwords. Deleting the site's `session.key`
 signs everyone out.
 
+After a failed sign-in, the next attempt at the same name must wait: one
+second after the first failure, doubling with each one after that, up to
+five minutes. Until then, Ridal answers `429` with the code
+`too_many_attempts` and a `Retry-After` header, without checking the
+password. A successful sign-in clears the wait, and a name without an
+account is treated the same way, so the answer does not reveal which names
+exist. Nobody is ever locked out: the account's owner can always sign in
+once the wait is over. Limiting attempts from one address across many names
+is the reverse proxy's job; see {ref}`login-rate-limits`.
+
 (api-tokens)=
 ## API tokens
 

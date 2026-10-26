@@ -75,6 +75,11 @@ pub enum Host {
     },
 }
 
+/// One Argon2id permit per core.
+fn argon2_permits() -> Semaphore {
+    Semaphore::new(std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
 /// Everything the site server needs that is not per-project.
 pub struct SiteState {
     pub host: Host,
@@ -93,6 +98,12 @@ pub struct SiteState {
     projects: RwLock<HashMap<ProjectKey, Arc<ProjectRuntime>>>,
     /// The site-wide cookie-signing key, loaded on first use.
     session_key: Mutex<Option<SessionKey>>,
+    /// Argon2id hashes and verifications running at once: one per core, so
+    /// a burst of sign-ins queues instead of taking every blocking thread
+    /// (#515).
+    argon2_permits: Semaphore,
+    /// The doubling delay between failed sign-ins to one name (#515).
+    pub login_throttle: super::login_throttle::LoginThrottle,
     /// Requests answered since the heartbeat last asked (#282).
     requests: std::sync::atomic::AtomicU64,
     /// When the heartbeat last started its interval counts, and when the
@@ -117,6 +128,8 @@ impl SiteState {
             render_config,
             projects: RwLock::new(HashMap::new()),
             session_key: Mutex::new(None),
+            argon2_permits: argon2_permits(),
+            login_throttle: Default::default(),
             requests: Default::default(),
             interval_started: Mutex::new(std::time::Instant::now()),
             started: std::time::Instant::now(),
@@ -152,10 +165,54 @@ impl SiteState {
             render_config: runtime.state.render_config(),
             projects: RwLock::new(HashMap::from([(key, runtime)])),
             session_key: Mutex::new(None),
+            argon2_permits: argon2_permits(),
+            login_throttle: Default::default(),
             requests: Default::default(),
             interval_started: Mutex::new(std::time::Instant::now()),
             started: std::time::Instant::now(),
         })
+    }
+
+    /// Run Argon2id work off the async runtime, one per core at most. A
+    /// hash takes tens of milliseconds of CPU,
+    /// which on a runtime thread would stall every other request on it.
+    pub async fn argon2<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, ApiError> {
+        let _permit = self
+            .argon2_permits
+            .acquire()
+            .await
+            .or_internal("password_hash_task_failed")?;
+        let (value, _counted) = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            let counts = || {
+                (
+                    accounts::HASHES.with(|n| n.get()),
+                    accounts::VERIFICATIONS.with(|n| n.get()),
+                )
+            };
+            #[cfg(test)]
+            let before = counts();
+            let value = work();
+            #[cfg(test)]
+            let counted = (counts().0 - before.0, counts().1 - before.1);
+            #[cfg(not(test))]
+            let counted = ();
+            (value, counted)
+        })
+        .await
+        .or_internal("password_hash_task_failed")?;
+        // The counters are per thread, so a test can count its own requests'
+        // hashes beside other tests'; carry this thread's back to the
+        // caller's.
+        #[cfg(test)]
+        {
+            accounts::HASHES.with(|n| n.set(n.get() + _counted.0));
+            accounts::VERIFICATIONS.with(|n| n.set(n.get() + _counted.1));
+        }
+        Ok(value)
     }
 
     /// The site directory, or a 404 under `ridal gui`, which serves one
@@ -762,6 +819,11 @@ pub(super) fn site_api() -> OpenApiRouter<Arc<SiteState>> {
 pub fn build_site_router(site: Arc<SiteState>) -> Router {
     let access_log =
         axum::middleware::from_fn_with_state(Arc::clone(&site), super::telemetry::access_log);
+    let cross_site = !site.access.allow_cross_site_requests;
+    let guard = super::request_guard::Guard {
+        cross_site,
+        loopback_hosts_only: cross_site && matches!(site.host, Host::Local { .. }),
+    };
     Router::new()
         .route("/", get(landing))
         .route("/login", get(login_page))
@@ -783,6 +845,12 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         // Stateless, and merged last so assets are served without touching
         // `accounts.json`.
         .merge(super::app::static_router())
+        // Around the assets too, so every response carries the security
+        // headers; inside the access log, so refusals are logged.
+        .layer(axum::middleware::from_fn_with_state(
+            guard,
+            super::request_guard::guard,
+        ))
         // Outermost and last, so every request is in the access log (#282),
         // assets and refusals included.
         .layer(access_log)
@@ -1324,6 +1392,7 @@ fn issue_session(
         (status = 401, description = "The name and password do not match an account.", body = ErrorBody),
         (status = 403, description = "`insecure_transport`: passwords are refused over plain HTTP on a network address.", body = ErrorBody),
         (status = 409, description = "`no_accounts`: the site has no accounts.", body = ErrorBody),
+        (status = 429, description = "`too_many_attempts`: sign-ins to this name failed recently. Each failure doubles the wait, from one second up to five minutes, and a success clears it. `Retry-After` says how many seconds are left.", body = ErrorBody),
     ),
     extensions(("x-ridal-needs" = json!(Needs::new(Who::Nobody)))),
 )]
@@ -1345,20 +1414,52 @@ async fn login(
         )
     };
 
-    let account = UserId::new(&body.name).ok().and_then(|name| set.get(&name));
-    let verified = match account {
-        Some(account) if account.is_activated() => {
-            accounts::verify_password(account, &body.password)
-        }
-        _ => {
-            burn_a_verification(&body.password);
-            false
+    // Before any hash, so a throttled name costs nothing.
+    if let Err(wait) = site
+        .login_throttle
+        .begin(&body.name, std::time::Instant::now())
+    {
+        let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+        return Err(ApiError::too_many_requests(
+            "too_many_attempts",
+            format!("Too many failed sign-ins to this name. Try again in {seconds} s."),
+        )
+        .with_header(header::RETRY_AFTER, seconds.to_string()));
+    }
+
+    let account = UserId::new(&body.name)
+        .ok()
+        .and_then(|name| set.get(&name))
+        .cloned();
+    let candidate = body.password;
+    let checking = account.clone();
+    let verified = site
+        .argon2(move || match &checking {
+            Some(account) if account.is_activated() => {
+                accounts::verify_password(account, &candidate)
+            }
+            _ => {
+                burn_a_verification(&candidate);
+                false
+            }
+        })
+        .await;
+    let verified = match verified {
+        Ok(verified) => verified,
+        Err(error) => {
+            // Not the caller's failure; free the name again.
+            site.login_throttle.succeeded(&body.name);
+            return Err(error);
         }
     };
     if !verified {
+        site.login_throttle
+            .failed(&body.name, std::time::Instant::now());
         return Err(refused());
     }
+    site.login_throttle.succeeded(&body.name);
     let account = account.expect("verified implies an account");
+    let account = &account;
 
     Ok((
         issue_session(&site, account)?,
@@ -1787,7 +1888,11 @@ async fn redeem_invite(
             return Err(stale());
         }
     }
-    let hash = accounts::hash_password(&body.password).map_err(account_error)?;
+    let password = body.password.clone();
+    let hash = site
+        .argon2(move || accounts::hash_password(&password))
+        .await?
+        .map_err(account_error)?;
 
     let (account, target) = accounts::update(site.site()?.store(), |set| {
         let name = account_for_invite(set, &body.token, auth::now())
@@ -3544,14 +3649,14 @@ async fn bulk_passwords(
     };
     // One Argon2id hash per account: off the async runtime.
     let hashing = Arc::clone(&site);
-    let generated = tokio::task::spawn_blocking(move || {
-        hashing
-            .site()?
-            .password_batch(&names, &grant)
-            .map_err(site_error)
-    })
-    .await
-    .or_internal("password_hash_task_failed")??;
+    let generated = site
+        .argon2(move || {
+            hashing
+                .site()?
+                .password_batch(&names, &grant)
+                .map_err(site_error)
+        })
+        .await??;
 
     for (name, _) in &generated {
         let mut entry =
