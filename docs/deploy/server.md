@@ -104,10 +104,21 @@ to point at your computer from reading it. A server leaves that to its proxy
 and certificate.
 
 Every response also tells the browser not to show Ridal's pages inside
-another website's frame (`Content-Security-Policy: frame-ancestors 'self'`
-and `X-Frame-Options`), not to send the address of a Ridal page to other
-websites (`Referrer-Policy: same-origin`), and not to guess a file's type
+another website's frame (`frame-ancestors 'self'` and `X-Frame-Options`),
+not to send the address of a Ridal page to other websites
+(`Referrer-Policy: same-origin`), and not to guess a file's type
 (`X-Content-Type-Options: nosniff`).
+
+Its `Content-Security-Policy` also lets a page run only Ridal's own script
+files, never a script written into the page, so that a mistake in escaping
+could not be used to run someone else's code in a signed-in browser. Images
+and data may come only from Ridal itself and from the hosts of the
+project's own [basemaps and overlays](../reference/project-files), which
+are added to a project's pages as they are configured, with nothing to set
+up. A tile URL whose subdomain placeholder is not at the start of the host
+(`https://a.{s}.example.org/...`), or whose host is an IPv6 address, cannot
+be written into the policy: its tiles are then refused by the browser, and
+the server log says so once.
 
 ## Logs
 

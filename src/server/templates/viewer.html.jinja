@@ -755,40 +755,11 @@
   </dialog>
 {% endblock %}
 {% block extrascript %}
-{#- The only inline JS left on this page: server-side values the static
-    viewer.js cannot know. Everything else lives in that file, so it stays
-    a plain asset with no templating in it. -#}
-<script>
-  window.RIDAL_VIEWER = {
-    radargramId: "{{ radargram_id }}",
-    groupId: {% if group_id %}"{{ group_id }}"{% else %}null{% endif %},
-    chunkSize: {{ chunk_size }},
-    nCols: {{ n_cols }},
-    nRows: {{ n_rows }},
-    revisionId: "{{ revision_id }}",
-    {#- The gprinterp anchor axes for this revision, or null when the
-        radargram cannot describe them. Already JSON, built server-side,
-        so it is emitted raw rather than re-escaped. -#}
-    axes: {{ axes_json | safe }},
-    viewerWidth: {{ viewer_width }},
-    viewerHeight: {{ viewer_height }},
-    sourceWidth: {{ shape_width }},
-    sourceHeight: {{ shape_height }},
-    maxImageWidth: {{ max_image_width }},
-    maxImagePixels: {{ max_image_pixels }},
-    writable: {% if writable %}true{% else %}false{% endif %},
-    user: "{{ user }}",
-    {#- Whether the picks are drawn when this page opens (#143), resolved
-        from this person's settings. -#}
-    showPicks: {% if show_picks %}true{% else %}false{% endif %},
-    {#- Whether the viewer opens on the whole radargram rather than on its
-        start (#315), from this person's settings. -#}
-    openZoomedOut: {% if open_zoomed_out %}true{% else %}false{% endif %},
-    {#- Whether the handles of a line being edited carry their tooltips
-        (#363), from this person's settings. -#}
-    showVertexTooltips: {% if show_vertex_tooltips %}true{% else %}false{% endif %},
-  };
-</script>
+{#- Server-side values the static viewer.js cannot know, as JSON built by
+    `viewer_page`. An attribute rather than an inline script, so the page
+    has no inline JavaScript for the Content Security Policy to allow
+    (#517); viewer.js reads it as `window.RIDAL_VIEWER`. -#}
+<div id="viewer-config" hidden data-config="{{ viewer_config }}"></div>
 <script src="/static/viewer.js"></script>
 <script src="/static/picker.js"></script>
 <script src="/static/panel.js"></script>

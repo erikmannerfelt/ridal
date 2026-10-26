@@ -324,7 +324,11 @@ Extra tiled basemaps. Each entry is its own `[[basemaps]]` table.
 : The name shown in the map's layer control. Required.
 
 `url`
-: An XYZ tile URL with `{z}`, `{x}` and `{y}` (or `{-y}`). Required.
+: An XYZ tile URL with `{z}`, `{x}` and `{y}` (or `{-y}`). Required. Its
+  host is allowed in the project's
+  {ref}`Content Security Policy <cross-site-requests>`, which can name a
+  `{s}` subdomain only at the start of the host:
+  `https://{s}.tile.example.org`, not `https://a.{s}.example.org`.
 
 `attribution`, `attribution_url`
 : The credit line, and where it links to.
@@ -354,7 +358,8 @@ default. The browser fetches them directly.
 : The name shown in the map's layer control. Required.
 
 `url`
-: Where the GeoJSON is fetched from. Required.
+: Where the GeoJSON is fetched from. Required. Its host is allowed in the
+  project's Content Security Policy.
 
 `name_field`
 : The feature property used as a popup's heading.

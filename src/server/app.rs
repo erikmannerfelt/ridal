@@ -1377,6 +1377,11 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             state.clone(),
             super::auth::middleware,
         ))
+        // Outside identity, so a refusal page gets the policy too.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            super::request_guard::project_policy,
+        ))
         .with_state(state)
         // Stateless assets, merged last so their paths are served without
         // the identity middleware. Nothing under `/static` or the favicon

@@ -176,8 +176,14 @@ async fn every_kind_of_response_carries_the_security_headers() {
         ("refusal", &refusal),
         ("404", &missing),
     ] {
+        let policy = response
+            .header(header::CONTENT_SECURITY_POLICY)
+            .unwrap_or_default();
+        assert!(
+            policy.contains("script-src 'self';") && policy.contains("frame-ancestors 'self'"),
+            "{what}: {policy}"
+        );
         for (name, value) in [
-            (header::CONTENT_SECURITY_POLICY, "frame-ancestors 'self'"),
             (header::X_FRAME_OPTIONS, "SAMEORIGIN"),
             (header::REFERRER_POLICY, "same-origin"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
@@ -298,4 +304,87 @@ async fn a_successful_sign_in_leaves_no_delay_behind() {
         let response = login(&app, "erik", password()).await;
         assert_eq!(response.status, StatusCode::OK, "{}", response.text);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Content Security Policy (#517)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn every_project_page_carries_a_policy_without_inline_script() {
+    let dir = new_project();
+    test_support::write_test_nc(
+        &test_support::project_radargrams(dir.path()).join("line-01.nc"),
+        "line-01",
+    );
+    let app = gui_router(dir.path(), AccessOptions::default());
+    for page in [
+        "/p/default/",
+        "/p/default/view/line-01",
+        "/p/default/layers",
+        "/p/default/processing",
+        "/p/default/ingest",
+        "/p/default/settings",
+    ] {
+        let response = call(&app, "GET", page, &[]).await;
+        assert_eq!(response.status, StatusCode::OK, "{page}");
+        let policy = response
+            .header(header::CONTENT_SECURITY_POLICY)
+            .unwrap_or_default();
+        assert!(policy.contains("script-src 'self';"), "{page}: {policy}");
+        assert!(!policy.contains("unsafe-eval"), "{page}: {policy}");
+        assert!(
+            policy.contains("https://server.arcgisonline.com"),
+            "{page}: the built-in basemap is offered: {policy}"
+        );
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_projects_map_hosts_are_in_its_policy() {
+    let dir = new_project();
+    let config = dir.path().join(crate::project::MARKER);
+    let mut toml = std::fs::read_to_string(&config).unwrap();
+    toml.push_str(
+        r#"
+[[basemaps]]
+id = "osm"
+name = "OpenStreetMap"
+url = "https://{s}.tile.example.org/{z}/{x}/{y}.png"
+subdomains = "abc"
+
+[[overlays]]
+id = "stakes"
+name = "Stakes"
+url = "https://static.example.org/stakes.geojson"
+
+[[overlays]]
+id = "local"
+name = "Local"
+url = "/static/local.geojson"
+"#,
+    );
+    std::fs::write(&config, toml).unwrap();
+    let app = gui_router(dir.path(), AccessOptions::default());
+
+    let response = call(&app, "GET", "/p/default/", &[]).await;
+    let policy = response
+        .header(header::CONTENT_SECURITY_POLICY)
+        .unwrap_or_default();
+    assert!(
+        policy.contains("img-src 'self' data: blob: https://*.tile.example.org https://server.arcgisonline.com;"),
+        "{policy}"
+    );
+    assert!(
+        policy.contains("connect-src 'self' https://static.example.org;"),
+        "{policy}"
+    );
+    // The site's own pages and the API keep the default.
+    let health = call(&app, "GET", "/api/v1/health", &[]).await;
+    assert!(!health
+        .header(header::CONTENT_SECURITY_POLICY)
+        .unwrap_or_default()
+        .contains("example.org"));
 }

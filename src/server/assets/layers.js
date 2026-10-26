@@ -10,6 +10,8 @@
  * silently discarding a change made in another tab between load and save.
  */
 
+// Server-side values, as JSON the template puts in an attribute (#517).
+window.RIDAL_LAYERS = JSON.parse(document.getElementById("layers-config").dataset.config);
 const WRITABLE = window.RIDAL_LAYERS.writable;
 
 const table = document.querySelector("#layers-table tbody");

@@ -299,6 +299,44 @@ mod tests {
         assert!(!out.contains("data-basemaps=\"[{\"id\""), "{out}");
     }
 
+    /// Every `<script>` in every template loads a file: an inline one would
+    /// be refused by the Content Security Policy (`script-src 'self'`,
+    /// #517), and server values go in `data-` attributes instead. Read from
+    /// the directory, so a new template is covered without being listed.
+    #[test]
+    fn no_template_has_an_inline_script() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server/templates");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "jinja") {
+                continue;
+            }
+            let mut text = std::fs::read_to_string(&path).unwrap();
+            // Comments may mention `<script>` in prose.
+            while let Some(start) = text.find("{#") {
+                let end = text[start..]
+                    .find("#}")
+                    .map_or(text.len(), |e| start + e + 2);
+                text.replace_range(start..end, "");
+            }
+            for (at, _) in text.match_indices("<script") {
+                let tag = &text[at..at + text[at..].find('>').unwrap()];
+                assert!(
+                    tag.contains(" src="),
+                    "{}: an inline script, `{tag}>`",
+                    path.display()
+                );
+            }
+            checked += 1;
+        }
+        assert!(
+            checked > 10,
+            "only {checked} templates found in {}",
+            dir.display()
+        );
+    }
+
     /// A page with no map carries no attribute at all, rather than an empty
     /// one that `JSON.parse` would choke on.
     #[test]

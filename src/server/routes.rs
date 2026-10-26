@@ -757,25 +757,6 @@ fn map_context(state: &AppState, caller: &Caller) -> minijinja::Value {
     }
 }
 
-/// Escape the characters that let JSON break out of a `<script>` block.
-///
-/// `serde_json` escapes what JSON requires and `<` is not on that list, so
-/// a string containing `</script><script>…` closes the block and whatever
-/// follows executes. The anchor name reaching this template is read
-/// straight from a NetCDF attribute, and #147 lets an operator upload the
-/// file it comes from — so this is a stored-XSS path rather than a
-/// theoretical one.
-///
-/// The escapes sit inside JSON string literals and parse back to the same
-/// characters, so what the browser ends up with is unchanged. `&` goes too:
-/// it is not an escape on its own, but it is half of every entity, and
-/// leaving it makes this a rule with an exception nobody will remember.
-fn script_safe_json(json: &str) -> String {
-    json.replace('<', "\\u003c")
-        .replace('>', "\\u003e")
-        .replace('&', "\\u0026")
-}
-
 fn to_summary(state: &AppState, entry: &super::catalog::CatalogEntry) -> DatasetSummary {
     summarize(state, entry, None)
 }
@@ -1703,6 +1684,18 @@ pub async fn layers_page(
     let active_profile = resolve_profile(&state, &caller, query.profile);
     lookup_profile(&state, &caller, &active_profile).map_err(PageError)?;
 
+    // The page is built for exactly this: it renders the vocabulary and
+    // explains why it cannot be changed, rather than hiding the controls,
+    // following the same rule as the picking toolbar -- a missing control
+    // reads as a missing feature.
+    let writable = caller.may(crate::project::roles::Role::Operator);
+    // What layers.js reads as `window.RIDAL_LAYERS`, in an attribute rather
+    // than an inline script, as the viewer's config is (#517).
+    let layers_config = serde_json::json!({
+        "writable": writable,
+        "currentUser": caller.user.as_ref().map(|u| u.as_str()),
+    })
+    .to_string();
     let env = templates::environment();
     let tmpl = env
         .get_template("layers.html.jinja")
@@ -1710,11 +1703,8 @@ pub async fn layers_page(
     let html = tmpl
         .render(minijinja::context! {
             project => state.project.is_some(),
-            // The page is built for exactly this: it renders the vocabulary
-            // and explains why it cannot be changed, rather than hiding the
-            // controls, following the same rule as the picking toolbar --
-            // a missing control reads as a missing feature.
-            writable => caller.may(crate::project::roles::Role::Operator),
+            writable => writable,
+            layers_config => layers_config,
             can_pick => caller.may(crate::project::roles::Role::Picker),
             active_profile => active_profile,
             ..caller_context(&state, &caller),
@@ -1991,12 +1981,11 @@ pub async fn viewer_page(
         ),
         Err(_) => crate::interp::anchors::Axes::default(),
     };
-    let axes_json = axes
+    let axes_value = axes
         .is_usable()
-        .then(|| serde_json::to_string(&axes).ok())
+        .then(|| serde_json::to_value(&axes).ok())
         .flatten()
-        .map(|json| script_safe_json(&json))
-        .unwrap_or_else(|| "null".to_string());
+        .unwrap_or(serde_json::Value::Null);
 
     // Whether the project holds this radargram's raw files, which the
     // Download menu then offers (#460). Asked only of someone who may take
@@ -2011,6 +2000,43 @@ pub async fn viewer_page(
         });
 
     let export_defaults = resolve_export_defaults(&state, &caller);
+    let writable = caller.may(crate::project::roles::Role::Picker);
+    let user = caller.user.as_ref().map(|u| u.as_str()).unwrap_or("");
+    let show_picks = resolve_show_picks(&state, &caller);
+    // What viewer.js and the scripts after it read as `window.RIDAL_VIEWER`.
+    // Serialised here and handed over in an attribute rather than written
+    // into an inline script, so the page needs no inline JavaScript (#517)
+    // and a value cannot close a script block: minijinja escapes an
+    // attribute, and the browser unescapes it before `JSON.parse`. The
+    // anchor name inside the axes is read straight from an uploaded NetCDF
+    // attribute (#147), so that matters.
+    let viewer_config = serde_json::json!({
+        "radargramId": entry.radargram_id.to_string(),
+        "groupId": entry.group_id.as_ref().map(|g| g.to_string()),
+        "chunkSize": crate::render::grid::CHUNK_SIZE,
+        "nCols": grid.n_cols,
+        "nRows": grid.n_rows,
+        "revisionId": entry.revision_id.to_string(),
+        // The gprinterp anchor axes for this revision, or null when the
+        // radargram cannot describe them.
+        "axes": axes_value,
+        "viewerWidth": raster.width,
+        "viewerHeight": raster.height,
+        "sourceWidth": width,
+        "sourceHeight": height,
+        "maxImageWidth": MAX_IMAGE_WIDTH,
+        "maxImagePixels": MAX_IMAGE_PIXELS,
+        "writable": writable,
+        "user": user,
+        // Whether the picks are drawn when this page opens (#143).
+        "showPicks": show_picks,
+        // Whether the viewer opens on the whole radargram (#315).
+        "openZoomedOut": resolve_open_zoomed_out(&state, &caller),
+        // Whether the handles of a line being edited carry their tooltips
+        // (#363). The checkbox in the editing panel changes and saves it.
+        "showVertexTooltips": resolve_show_vertex_tooltips(&state, &caller),
+    })
+    .to_string();
     let env = templates::environment();
     let tmpl = env
         .get_template("viewer.html.jinja")
@@ -2018,6 +2044,7 @@ pub async fn viewer_page(
     let html = tmpl
         .render(minijinja::context! {
             radargram_id => entry.radargram_id.to_string(),
+            viewer_config => viewer_config,
             effective_label => entry.effective_label(),
             // Whether the project owns the file, which replacing and
             // processing it write (#431). Not `in_project`: base.html uses
@@ -2025,22 +2052,14 @@ pub async fn viewer_page(
             radargram_in_project => state.is_writable(entry),
             has_raw_data => has_raw_data,
             group_name => entry.group_name.as_ref().map(|g| g.to_string()),
-            group_id => entry.group_id.as_ref().map(|g| g.to_string()),
-            revision_id => entry.revision_id.to_string(),
-            axes_json => axes_json,
             // First 7 hex characters, `git`-style, for the collapsed
             // banner row -- the full ID moves to the metadata dialog.
             revision_short => entry.revision_id.to_string().chars().take(7).collect::<String>(),
             processing_datetime => format_datetime_for_display(&entry.processing_datetime),
-            shape_height => height,
-            shape_width => width,
             project => state.project.is_some(),
             // Whether *this caller* may pick, which is what the toolbar is
             // asking. Not a property of the server any more.
-            writable => caller.may(crate::project::roles::Role::Picker),
-            // Who the viewer will save as. Empty for an anonymous reader,
-            // who cannot save anything -- the toolbar says so instead.
-            user => caller.user.as_ref().map(|u| u.as_str()).unwrap_or(""),
+            writable => writable,
             profile_groups => profile_groups,
             active_label => active_label,
             edit_personal => edit_personal,
@@ -2051,16 +2070,6 @@ pub async fn viewer_page(
             offset_default => crate::processing::steps::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET.to_string(),
             max_color_stops => crate::render::colormap::MAX_COLOR_STOPS,
             active_profile => active_profile,
-            chunk_size => crate::render::grid::CHUNK_SIZE,
-            n_cols => grid.n_cols,
-            n_rows => grid.n_rows,
-            viewer_width => raster.width,
-            viewer_height => raster.height,
-            // The image route's own limits (#137), so the download dialog
-            // offers only widths the route will accept instead of keeping
-            // a copy of the numbers in JavaScript.
-            max_image_width => MAX_IMAGE_WIDTH,
-            max_image_pixels => MAX_IMAGE_PIXELS,
             x_scales => x_scale_options(),
             active_x_scale => resolve_x_scale(&state, &caller, query.xscale, entry.x_scale),
             spacings => spacing_options(),
@@ -2069,11 +2078,8 @@ pub async fn viewer_page(
             active_format => export_defaults.1,
             // Whether the picks are drawn when the viewer opens (#143). The
             // toggle in the toolbar changes it from there without saving.
-            show_picks => resolve_show_picks(&state, &caller),
-            // Whether the viewer opens on the whole radargram (#315).
-            open_zoomed_out => resolve_open_zoomed_out(&state, &caller),
-            // Whether editing handles carry their tooltips (#363). The
-            // checkbox in the editing panel changes and saves it.
+            show_picks => show_picks,
+            // The checkbox in the editing panel, rendered checked or not.
             show_vertex_tooltips => resolve_show_vertex_tooltips(&state, &caller),
             ..map_page_context(&state, &caller),
         })
