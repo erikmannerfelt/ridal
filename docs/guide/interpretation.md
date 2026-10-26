@@ -34,7 +34,8 @@ the tooltips on vertices.
 layer panel at the right toggles each layer and each derived layer.
 
 Picks are stored in the radargram's own trace and sample numbers rather than
-as depths or coordinates. They are therefore drawn in the right place in the
+as depths or coordinates, a whole number being the centre of that trace's and
+sample's pixel. They are therefore drawn in the right place in the
 topographically corrected view and at any horizontal scale, and they follow
 the radargram when it is processed again (see
 [Reprocessing](#reprocessing-and-picks)).

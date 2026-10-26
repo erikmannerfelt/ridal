@@ -28,6 +28,7 @@ use crate::interp::derive::{self, GridPosition, Kind};
 use crate::project::derived::{self, Audience};
 use crate::project::{interpretations, layers, Project};
 
+use super::axis::PIXEL_CENTRE;
 use super::spec::{FigureSpec, PickSelector};
 use super::FigureError;
 
@@ -454,12 +455,14 @@ pub(super) struct Placement<'a> {
 }
 
 impl Placement<'_> {
-    /// The pixel position of `(trace, sample)`.
+    /// The pixel position of `(trace, sample)`: the centre of the raster
+    /// pixel showing that trace and sample (#509).
     fn to_px(&self, trace: f64, sample: f64) -> [f64; 2] {
         let [x0, y0, x1, y1] = self.plot;
-        let row = sample + self.shift_at(trace);
+        let column = trace + PIXEL_CENTRE;
+        let row = sample + self.shift_at(trace) + PIXEL_CENTRE;
         [
-            x0 + (trace - self.traces[0]) / (self.traces[1] - self.traces[0]) * (x1 - x0),
+            x0 + (column - self.traces[0]) / (self.traces[1] - self.traces[0]) * (x1 - x0),
             y0 + (row - self.rows[0]) / (self.rows[1] - self.rows[0]) * (y1 - y0),
         ]
     }
@@ -816,14 +819,15 @@ mod tests {
         };
         assert_eq!(placement.shift_at(0.5), 1.0);
         assert_eq!(placement.shift_at(9.0), 4.0);
-        assert_eq!(placement.to_px(1.0, 10.0), [10.0, 12.0]);
+        // At the centre of the pixel showing trace 1 and sample 10 (#509).
+        assert_eq!(placement.to_px(1.0, 10.0), [15.0, 12.5]);
         // A mirrored figure (#496) gives its edges the other way round, and
         // the shift still follows the trace, not the pixel.
         let mirrored = Placement {
             traces: [10.0, 0.0],
             ..placement
         };
-        assert_eq!(mirrored.to_px(1.0, 10.0), [90.0, 12.0]);
+        assert_eq!(mirrored.to_px(1.0, 10.0), [85.0, 12.5]);
     }
 
     #[test]

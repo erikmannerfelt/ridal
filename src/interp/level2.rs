@@ -507,6 +507,10 @@ fn sample_vertices(
 struct Line {
     /// (trace, sample), strictly increasing in trace.
     vertices: Vec<(f64, f64)>,
+    /// The vertices' traces and samples apart, built once for
+    /// [`Line::sample_at`], which runs for every point.
+    traces: Vec<f64>,
+    samples: Vec<f64>,
 }
 
 impl Line {
@@ -533,7 +537,12 @@ impl Line {
                 });
             }
         }
-        Ok(Line { vertices })
+        let (traces, samples) = vertices.iter().copied().unzip();
+        Ok(Line {
+            vertices,
+            traces,
+            samples,
+        })
     }
 
     fn trace_span(&self) -> Option<(f64, f64)> {
@@ -542,9 +551,7 @@ impl Line {
 
     /// Sample index at a fractional trace, along the polyline.
     fn sample_at(&self, trace: f64) -> f64 {
-        let traces: Vec<f64> = self.vertices.iter().map(|v| v.0).collect();
-        let samples: Vec<f64> = self.vertices.iter().map(|v| v.1).collect();
-        interpolate(&traces, &samples, trace)
+        interpolate(&self.traces, &self.samples, trace)
     }
 
     fn sample(
@@ -714,11 +721,18 @@ pub fn auto_step(distance: &[f64]) -> f64 {
 /// an edge effect of interpolation rather than a coordinate from somewhere
 /// else.
 pub(crate) fn interpolate_index(axis: &[f64], index: f64) -> f64 {
-    if axis.is_empty() {
-        return f64::NAN;
+    // Directly, without searching an index axis `0..n` (#510): on such an
+    // axis `interpolate` reduces to exactly this arithmetic.
+    match axis.len() {
+        0 => f64::NAN,
+        1 => axis[0],
+        n => {
+            let index = index.clamp(0.0, (n - 1) as f64);
+            // NaN casts to 0, and stays NaN through the blend below.
+            let lo = (index.floor() as usize).min(n - 2);
+            axis[lo] + (index - lo as f64) * (axis[lo + 1] - axis[lo])
+        }
     }
-    let xs: Vec<f64> = (0..axis.len()).map(|i| i as f64).collect();
-    interpolate(&xs, axis, index.clamp(0.0, (axis.len() - 1) as f64))
 }
 
 /// Invert a non-decreasing axis: find the fractional index whose value is
@@ -773,6 +787,36 @@ fn interpolate(xs: &[f64], ys: &[f64], at: f64) -> f64 {
 mod tests {
 
     use super::*;
+
+    /// `interpolate_index` before #510, searching an index axis.
+    fn interpolate_index_searched(axis: &[f64], index: f64) -> f64 {
+        if axis.is_empty() {
+            return f64::NAN;
+        }
+        let xs: Vec<f64> = (0..axis.len()).map(|i| i as f64).collect();
+        interpolate(&xs, axis, index.clamp(0.0, (axis.len() - 1) as f64))
+    }
+
+    #[test]
+    fn interpolating_an_index_directly_matches_searching_for_it() {
+        // An uneven axis, so a wrong neighbour shows.
+        let axis: Vec<f64> = (0..50)
+            .map(|i| (i as f64).powf(1.3) + 0.1 * i as f64)
+            .collect();
+        let mut indices: Vec<f64> = (0..2000).map(|k| -3.0 + k as f64 * 0.0283).collect();
+        indices.extend([0.0, 49.0, 48.999_999, 1e9, -1e9, f64::INFINITY]);
+        for index in indices {
+            let direct = interpolate_index(&axis, index);
+            let searched = interpolate_index_searched(&axis, index);
+            assert_eq!(direct.to_bits(), searched.to_bits(), "at {index}");
+        }
+        assert!(interpolate_index(&axis, f64::NAN).is_nan());
+        assert!(interpolate_index_searched(&axis, f64::NAN).is_nan());
+        for index in [-1.0, 0.0, 0.4, 7.0] {
+            assert_eq!(interpolate_index(&[2.5], index), 2.5);
+        }
+        assert!(interpolate_index(&[], 0.0).is_nan());
+    }
 
     /// No layer permits overhangs: the default, and what a CLI export with
     /// no project in sight uses.
@@ -964,6 +1008,8 @@ mod tests {
 
         let point = &export.points[1];
         assert!((point.trace - 50.0).abs() < 1e-9);
+        // An index is the centre of its pixel (#509), so a pick at sample 10
+        // is `twtt[10]` and `depth[10]`, and at trace 50 `easting[50]`.
         // twtt axis is 0.4 ns per sample, depth 0.04 m per sample.
         assert!((point.twtt_ns - 4.0).abs() < 1e-9);
         assert!((point.depth_m - 0.4).abs() < 1e-9);

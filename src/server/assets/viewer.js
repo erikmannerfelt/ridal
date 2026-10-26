@@ -68,24 +68,49 @@ function shiftAt(trace) {
   return g.shift[i0] * (1 - f) + g.shift[i1] * f;
 }
 
-/* Index-space <-> viewer-raster conversion, published for picker.js and the
- * layer panel (#209) so there is one definition of where a stored
- * (trace, sample) lands on screen. Reads `window.RIDAL_GEOMETRY` live for the
- * same reason picker.js does: toggling the topographic view changes the
- * mapping and a captured copy would draw through the wrong one. */
-window.RIDAL_TO_LATLNG = function (trace, sample) {
+/* Where an index sits within its pixel: the centre, as gprinterp's SPEC
+ * defines (#509). Raster x and row measure pixel edges -- the pixel showing
+ * trace `j` spans `[j, j + 1)` -- so index `(j, s)` is at `(j + 0.5,
+ * s + shift + 0.5)`. These two are the only places the half pixel is
+ * added or taken off; everything else converts through them. */
+const PIXEL_CENTRE = 0.5;
+
+/* A raster row (map units down from the top) as a fractional source
+ * sample at `trace`, inverting the corrected view's shear there. */
+function rowToSample(row, trace) {
+  return row / window.RIDAL_GEOMETRY.verticalRasterScale - PIXEL_CENTRE - shiftAt(trace);
+}
+
+/* A raster position (x, row, in map units before the horizontal scale) as
+ * a fractional source (trace, sample). */
+function rasterToIndex(x, row) {
+  const trace = x / window.RIDAL_GEOMETRY.rasterScale - PIXEL_CENTRE;
+  return [trace, rowToSample(row, trace)];
+}
+
+/* The inverse of `rasterToIndex`: [x, row] of index (trace, sample). */
+function indexToRaster(trace, sample) {
   const g = window.RIDAL_GEOMETRY;
+  return [
+    (trace + PIXEL_CENTRE) * g.rasterScale,
+    (sample + PIXEL_CENTRE + shiftAt(trace)) * g.verticalRasterScale,
+  ];
+}
+
+/* Index-space <-> map conversion, published for picker.js and the layer
+ * panel (#209) so there is one definition of where a stored (trace, sample)
+ * lands on screen. Reads `window.RIDAL_GEOMETRY` live: toggling the
+ * topographic view changes the mapping and a captured copy would draw
+ * through the wrong one. */
+window.RIDAL_TO_LATLNG = function (trace, sample) {
   const scale = window.RIDAL_XSCALE || 1;
-  const rasterRow = sample + shiftAt(trace);
-  return L.latLng(-rasterRow * g.verticalRasterScale, trace * g.rasterScale * scale);
+  const [x, row] = indexToRaster(trace, sample);
+  return L.latLng(-row, x * scale);
 };
 
 window.RIDAL_TO_INDEX = function (latlng) {
-  const g = window.RIDAL_GEOMETRY;
   const scale = window.RIDAL_XSCALE || 1;
-  const trace = latlng.lng / scale / g.rasterScale;
-  const rasterRow = -latlng.lat / g.verticalRasterScale;
-  return [trace, rasterRow - shiftAt(trace)];
+  return rasterToIndex(latlng.lng / scale, -latlng.lat);
 };
 
 /* Redraw every index-space overlay after the geometry changed.
@@ -841,9 +866,9 @@ const traceView = (() => {
   // and vertical zooming do not rescale the trace -- changing the width is
   // an explicit act (the scroll wheel or the +/- buttons).
   let columnPeak = 1;
-  // The raster row the cursor is on, not the source sample: in the
-  // corrected view the two differ per trace, and the line should mark the
-  // same *screen* height in both panels.
+  // The raster row the cursor is on (map units down from the top), not the
+  // source sample: in the corrected view the two differ per trace, and the
+  // line should mark the same *screen* height in both panels.
   let cursorRow = null;
   let amplitudeZoom = 1;
   // Bumped per selection so a slow fetch cannot overwrite a newer one.
@@ -870,7 +895,7 @@ const traceView = (() => {
     // A constant longitude spans every raster row; `rasterHeight` and the
     // vertical scale are read live so the line follows the topographic
     // shear and the horizontal-scale change.
-    const lng = selected * G.rasterScale * (window.RIDAL_XSCALE || 1);
+    const lng = RIDAL_TO_LATLNG(selected, 0).lng;
     const latlngs = [
       L.latLng(0, lng),
       L.latLng(-G.rasterHeight * G.verticalRasterScale, lng),
@@ -1018,16 +1043,16 @@ const traceView = (() => {
   }
 
   // The source-sample span the radargram currently shows, over the
-  // selected trace. `rasterRow = sample + shiftAt(trace)`, so inverting at
-  // one trace gives an exact window even in the corrected view.
+  // selected trace, in sample indices (pixel centres). Inverting the shear
+  // at one trace gives an exact window even in the corrected view.
+  function sampleRangeOfRows(rows) {
+    const [a, b] = rows.map((row) => rowToSample(row, selected));
+    return [Math.min(a, b), Math.max(a, b)];
+  }
+
   function visibleSampleRange() {
     const bounds = map.getBounds();
-    const rows = [
-      -bounds.getNorth() / G.verticalRasterScale,
-      -bounds.getSouth() / G.verticalRasterScale,
-    ];
-    const shift = shiftAt(selected);
-    return [Math.min(rows[0], rows[1]) - shift, Math.max(rows[0], rows[1]) - shift];
+    return sampleRangeOfRows([-bounds.getNorth(), -bounds.getSouth()]);
   }
 
   // The range the radargram will show once the in-flight zoom finishes.
@@ -1040,9 +1065,7 @@ const traceView = (() => {
     const half = size.divideBy(2);
     const nw = map.unproject(centerPx.subtract(half), event.zoom);
     const se = map.unproject(centerPx.add(half), event.zoom);
-    const shift = shiftAt(selected);
-    const rows = [-nw.lat / G.verticalRasterScale, -se.lat / G.verticalRasterScale];
-    return [Math.min(rows[0], rows[1]) - shift, Math.max(rows[0], rows[1]) - shift];
+    return sampleRangeOfRows([-nw.lat, -se.lat]);
   }
 
   function stopAnimation() {
@@ -1138,7 +1161,7 @@ const traceView = (() => {
     // trace's own shift, so the line sits at the same height as the
     // cursor in the radargram.
     if (cursorRow !== null) {
-      const cursorSample = cursorRow - shiftAt(selected);
+      const cursorSample = rowToSample(cursorRow, selected);
       if (cursorSample >= sampleTop && cursorSample <= sampleBottom) {
         ctx.strokeStyle = accent;
         ctx.globalAlpha = 0.5;
@@ -1157,9 +1180,11 @@ const traceView = (() => {
   map.on('click', (event) => {
     if (!on || mapEl.classList.contains('picking')) return;
     const [trace, sample] = RIDAL_TO_INDEX(event.latlng);
-    if (trace < 0 || trace >= SOURCE_WIDTH) return;
+    // Indices are pixel centres, so the raster spans half a pixel either
+    // side of the first and last (#509).
+    if (trace < -PIXEL_CENTRE || trace >= SOURCE_WIDTH - PIXEL_CENTRE) return;
     // The corrected view's no-data wedge is not a trace position.
-    if (sample < 0 || sample > G.sourceHeight) return;
+    if (sample < -PIXEL_CENTRE || sample >= G.sourceHeight - PIXEL_CENTRE) return;
     select(trace);
   });
 
@@ -1217,16 +1242,14 @@ map.on('mousemove', (event) => {
     readout.textContent = '';
     return;
   }
-  const traceIndex = viewerX / G.rasterScale;
-  const rasterRow = viewerY / G.verticalRasterScale;
   // Distance/TWTT/depth are all indexed by *source* sample, so a raster
-  // row in the corrected view has to invert the shear first -- the
-  // cursor-sync twin of `toIndex` in picker.js.
-  const sampleIndex = rasterRow - shiftAt(traceIndex);
+  // row in the corrected view has to invert the shear first, as a click
+  // does (`RIDAL_TO_INDEX`).
+  const [traceIndex, sampleIndex] = rasterToIndex(viewerX, viewerY);
 
   // Mark the same screen height in the trace panel. The row, not the
   // sample: the panel re-applies its own trace's shift (#181).
-  traceView.setCursorRow(rasterRow);
+  traceView.setCursorRow(viewerY);
 
   let text = `trace ${Math.round(traceIndex)} / ${SOURCE_WIDTH}`;
   if (axes) {
@@ -1942,9 +1965,7 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
    * this view, so `lng`/zoom are carried straight through. */
   function applyView(on, geometry) {
     const center = map.getCenter();
-    const trace = center.lng / xScale / G.rasterScale;
-    const oldRasterRow = -center.lat / G.verticalRasterScale;
-    const sourceSample = oldRasterRow - shiftAt(trace);
+    const [trace, sourceSample] = rasterToIndex(center.lng / xScale, -center.lat);
 
     if (on && geometry) {
       G.view = "topo";
@@ -1968,8 +1989,7 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     }
     recentreButton.hidden = G.view !== "topo";
 
-    const newRasterRow = sourceSample + shiftAt(trace);
-    const newLat = -newRasterRow * G.verticalRasterScale;
+    const newLat = -indexToRaster(trace, sourceSample)[1];
     map.setView([newLat, center.lng], map.getZoom(), { animate: false });
 
     loadChunks(map, currentProfile(), xScale);

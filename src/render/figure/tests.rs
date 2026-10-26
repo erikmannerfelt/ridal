@@ -227,11 +227,13 @@ fn a_figure_without_axes_carries_its_coordinates_in_a_sidecar() {
     let sidecar = figure.sidecar.unwrap();
     assert_eq!((sidecar.width, sidecar.height), (600, 600));
     assert_eq!(sidecar.x.unit, "distance");
-    assert_eq!(sidecar.x.extent, [0.0, 50.0]);
+    // The image's edges, half a trace (0.25 m) and half a sample (1 ns)
+    // outside the first and last centres (#509).
+    assert_eq!(sidecar.x.extent, [-0.25, 49.75]);
     assert_eq!(sidecar.y.unit, "twtt");
-    assert_eq!(sidecar.y.extent, [0.0, 200.0]);
+    assert_eq!(sidecar.y.extent, [-1.0, 199.0]);
     assert_eq!(sidecar.x.centres.len(), 600);
-    assert!((sidecar.x.centres[0] - 50.0 / 1200.0).abs() < 1e-9);
+    assert!((sidecar.x.centres[0] - (50.0 / 1200.0 - 0.25)).abs() < 1e-9);
     // And it is refused as SVG, which would only wrap the PNG.
     assert!(render(&data, &coordinates(200, 100), &spec, FigureFormat::Svg).is_err());
 }
@@ -588,8 +590,9 @@ fn a_descending_axis_counts_down_from_zero_at() {
     .unwrap()
     .sidecar
     .unwrap();
-    // The right edge is position 200, extrapolated to 100 m.
-    assert_eq!(sidecar.x.extent, [100.0, 0.0]);
+    // The right edge is position 200, half a trace past the last centre,
+    // extrapolated to 100.25 m and labelled from the far end (#509).
+    assert_eq!(sidecar.x.extent, [100.25, 0.25]);
 }
 
 #[test]

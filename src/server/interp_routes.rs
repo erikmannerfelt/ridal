@@ -1044,14 +1044,36 @@ pub async fn interpretation_level2(
     caller: Caller,
     axum::extract::Query(query): axum::extract::Query<Level2Query>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Off the async workers, as the merged export is: reading the
+    // radargram and sampling every pick blocks for as long as it takes
+    // (#510).
+    tokio::task::spawn_blocking(move || {
+        interpretation_level2_blocking(&state, &caller, &radargram_id, &user, query)
+    })
+    .await
+    .map_err(|e| {
+        ApiError::internal(
+            "level2_task_failed",
+            format!("Level 2 export task failed: {e}"),
+        )
+    })?
+}
+
+fn interpretation_level2_blocking(
+    state: &AppState,
+    caller: &Caller,
+    radargram_id: &str,
+    user: &str,
+    query: Level2Query,
+) -> Result<(HeaderMap, String), ApiError> {
     caller.require_download(DownloadScope::Derived, "level 2 points")?;
-    let project = readable_project(&state)?;
-    let radargram = parse_radargram(&radargram_id)?;
-    let requested = parse_user(&user)?;
+    let project = readable_project(state)?;
+    let radargram = parse_radargram(radargram_id)?;
+    let requested = parse_user(user)?;
 
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, radargram.as_str())?;
-    let path = entry_path(&state, entry)?;
+    let path = entry_path(state, entry)?;
     let spacing = crate::cli::parse_spacing(query.spacing.as_deref().unwrap_or("auto"))
         .map_err(|e| ApiError::bad_request("invalid_spacing", e))?;
     let geometry =
