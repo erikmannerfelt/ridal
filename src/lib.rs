@@ -445,8 +445,8 @@ pub mod ridal {
     /// cor : path-like, optional
     ///     Positions to use instead of the recording's own. A file (the
     ///     format's own positions file, such as a ``.cor``, or a Ridal
-    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
-    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording
+    ///     or the lines of one IceRadar file, or a directory holding ``<stem>.coords.csv`` or the format's own
     ///     positions file for each. Without it, a ``<stem>.coords.csv``
     ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
@@ -716,8 +716,8 @@ pub mod ridal {
     /// cor : path-like, optional
     ///     Positions to use instead of the recording's own. A file (the
     ///     format's own positions file, such as a ``.cor``, or a Ridal
-    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
-    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording
+    ///     or the lines of one IceRadar file, or a directory holding ``<stem>.coords.csv`` or the format's own
     ///     positions file for each. Without it, a ``<stem>.coords.csv``
     ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
@@ -865,8 +865,8 @@ pub mod ridal {
     /// cor : path-like, optional
     ///     Positions to use instead of the recording's own. A file (the
     ///     format's own positions file, such as a ``.cor``, or a Ridal
-    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
-    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording
+    ///     or the lines of one IceRadar file, or a directory holding ``<stem>.coords.csv`` or the format's own
     ///     positions file for each. Without it, a ``<stem>.coords.csv``
     ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
@@ -1412,8 +1412,8 @@ pub mod ridal {
     /// cor : path-like, optional
     ///     Positions to use instead of the recording's own. A file (the
     ///     format's own positions file, such as a ``.cor``, or a Ridal
-    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
-    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording
+    ///     or the lines of one IceRadar file, or a directory holding ``<stem>.coords.csv`` or the format's own
     ///     positions file for each. Without it, a ``<stem>.coords.csv``
     ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional

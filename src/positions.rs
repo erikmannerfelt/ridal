@@ -906,7 +906,9 @@ mod tests {
         )
         .unwrap()
         .range_fill(0, TRACES as u32, 0.2);
-        let from_csv = crate::io::load_coords_csv(&csv, Some(&from_cor.crs)).unwrap();
+        let from_csv =
+            crate::io::load_coords_csv(&csv, crate::io::CsvPart::Whole, Some(&from_cor.crs))
+                .unwrap();
         assert_eq!(from_csv.time_source, TimeSource::Recorded);
         assert_eq!(from_csv.cor_points.len(), TRACES);
         for (a, b) in from_csv.cor_points.iter().zip(&from_cor.cor_points) {
@@ -980,7 +982,7 @@ mod tests {
 
         let csv = dir.path().join("out.coords.csv");
         crate::io::write_coords_csv(&csv, &built.rows, &built.comments).unwrap();
-        let read = crate::io::load_coords_csv(&csv, None).unwrap();
+        let read = crate::io::load_coords_csv(&csv, crate::io::CsvPart::Whole, None).unwrap();
         assert_eq!(read.time_source, TimeSource::Synthetic);
         assert!(matches!(
             read.correction,

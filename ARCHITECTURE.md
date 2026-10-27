@@ -993,8 +993,15 @@ input resolution treats it as one file would be treated.
   merged, where channels (GSSI, and possibly IceRadar's `datacapture_N`)
   are recorded side by side and must not be, so a `channel` beside `line`
   would come with its own `--channels` rather than a shared `--parts`. The expansion runs before
-  `with_coordinates`, so one positions file given for several lines is
-  refused as it is for several files. Several lines then go through the
+  `with_coordinates`, which counts the lines of one file as one recording:
+  a single coordinate CSV holds every line of a file, as the file does,
+  with a `line` column (`io::CsvPart`) that each line reads its own rows
+  by, and which is required for a file of several lines, so a CSV written
+  for one cannot silently position them all. Per-line file names
+  (`<stem>_line_<N>.coords.csv`) were the alternative; they would have
+  been ambiguous with a recording named `<stem>_line_<N>`, and every
+  place that groups files by stem (sidecar discovery, `--cor DIR`, the
+  server's raw sources) would have had to know them. Several lines then go through the
   ordinary merge loop, so their compatibility is `GPR::merge`'s, with its
   reasons, and no IceRadar-specific check.
 - **The recipe records the part** (`Bundle::part`, `null` for a whole

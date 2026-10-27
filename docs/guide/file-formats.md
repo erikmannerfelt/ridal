@@ -105,7 +105,10 @@ Positions
   east of Greenwich. A trace's fix is used only when the file marks it valid
   and every field is shaped as GPS gives it, since some files hold shifted
   fields in traces marked valid. Traces without a usable fix are placed by
-  interpolation, as between the fixes of any other format.
+  interpolation, as between the fixes of any other format. A
+  coordinate CSV ({ref}`coordinate-csv`) for a file of several lines needs a
+  `line` column, and its trace numbers count the traces Ridal keeps, without
+  the empty ones.
 
 Traces
 : Samples are converted from volts to millivolts. Traces that captured

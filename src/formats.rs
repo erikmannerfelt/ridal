@@ -259,7 +259,8 @@ pub fn check_cor_count(n_recordings: usize, cor: Option<&Path>) -> Result<(), St
 /// Apply `--cor` (`cor=` in Python) to resolved recordings.
 ///
 /// - `None`: each keeps the positions [`resolve_input`] found.
-/// - A file: the positions of the one recording given.
+/// - A file: the positions of the one recording given, or of every line
+///   given of one IceRadar file.
 /// - A directory: for each recording, `<stem>.coords.csv` in it, or else
 ///   the format's own positions file with that stem (`<stem>.cor`), where
 ///   `<stem>` is the header's.
@@ -271,10 +272,16 @@ pub fn with_coordinates(resolved: &mut [ResolvedInput], cor: Option<&Path>) -> R
     let Some(cor) = cor else {
         return Ok(());
     };
-    check_cor_count(resolved.len(), Some(cor))?;
+    // The lines of one IceRadar file are one recording here: a coordinate
+    // CSV holds them all, telling them apart by its `line` column.
+    let mut files = resolved.iter().map(|r| &r.header).collect::<Vec<_>>();
+    files.dedup();
+    check_cor_count(files.len(), Some(cor))?;
     if !cor.is_dir() {
-        if let [one] = resolved {
-            one.coordinates = cor.to_path_buf();
+        if files.len() == 1 {
+            for recording in resolved.iter_mut() {
+                recording.coordinates = cor.to_path_buf();
+            }
         }
         return Ok(());
     }

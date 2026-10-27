@@ -11,6 +11,11 @@
 //! | `alt` | no | elevation (m), passed through as given |
 //! | `time_source` | no | `recorded`, `interpolated` or `synthetic` |
 //! | `alt_source` | no | `recorded`, `interpolated` or `dem` |
+//! | `line` | for a multi-line IceRadar file | the `line_N` a row belongs to |
+//!
+//! One CSV holds every line of an IceRadar file, as the file does, so its
+//! name stays `<stem>.coords.csv`; each line reads only its own rows, and
+//! the trace numbers start over in each.
 //!
 //! The two source columns are what `ridal coords` says about each value it
 //! wrote. A `synthetic` time marks the whole radargram's times as made up
@@ -30,7 +35,18 @@ use crate::gpr;
 
 /// The columns a coordinate CSV may have, required ones first.
 const REQUIRED: [&str; 4] = ["trace", "time", "lon", "lat"];
-const OPTIONAL: [&str; 3] = ["alt", "time_source", "alt_source"];
+const OPTIONAL: [&str; 4] = ["alt", "time_source", "alt_source", "line"];
+
+/// Which recording a coordinate CSV is read for, and so which of its rows
+/// are that recording's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsvPart {
+    /// A recording of a format without lines: a `line` column is refused.
+    Whole,
+    /// Line `line` of an IceRadar file: the rows of that line when there is
+    /// a `line` column, which is required when the file holds `several`.
+    Line { line: u32, several: bool },
+}
 
 /// Where a row's time came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +120,7 @@ pub struct CoordsRow {
 ///
 /// # Arguments
 /// - `filepath`: The path to the file to read.
+/// - `part`: The recording the positions are for.
 /// - `projected_crs`: The CRS to project the positions into, or `None` for
 ///   the WGS84 UTM zone of the first one.
 ///
@@ -113,10 +130,14 @@ pub struct CoordsRow {
 /// - A row has the wrong number of fields or a value that does not parse:
 ///   a negative or non-integer trace, a time without an offset, a position
 ///   off the globe, or a non-finite altitude.
-/// - The traces do not strictly increase, or the times decrease.
+/// - The traces do not strictly increase, or the times decrease, within
+///   the rows read.
+/// - A `line` column for a format without lines, none for an IceRadar file
+///   of several, or no rows for the line.
 /// - `projected_crs` is not understood.
 pub fn load_coords_csv(
     filepath: &Path,
+    part: CsvPart,
     projected_crs: Option<&String>,
 ) -> Result<gpr::GPRLocation, Box<dyn Error>> {
     let content = std::fs::read_to_string(filepath)?;
@@ -168,6 +189,28 @@ pub fn load_coords_csv(
     if alt_source_col.is_some() && alt_col.is_none() {
         return Err(at(header_line, "alt_source without alt".to_string()).into());
     }
+    let line_col = column("line");
+    let wanted_line = match (part, line_col) {
+        (CsvPart::Whole, Some(_)) => {
+            return Err(at(
+                header_line,
+                "a line column, but the recording is not of a format with lines (IceRadar)"
+                    .to_string(),
+            )
+            .into())
+        }
+        (CsvPart::Line { several: true, .. }, None) => {
+            return Err(at(
+                header_line,
+                "no line column, but the IceRadar file holds several lines, whose trace \
+                 numbers each start at 0. Add a line column giving each row's line_N"
+                    .to_string(),
+            )
+            .into())
+        }
+        (CsvPart::Line { line, .. }, Some(_)) => Some(line),
+        (_, None) => None,
+    };
     let mut synthetic_time = false;
     let mut dem_altitude = false;
 
@@ -226,6 +269,7 @@ pub fn load_coords_csv(
             None => f64::NAN,
         };
 
+        let mut synthetic = false;
         if let Some(col) = time_source_col {
             let origin = TimeOrigin::parse(fields[col]).ok_or_else(|| {
                 at(
@@ -236,8 +280,9 @@ pub fn load_coords_csv(
                     ),
                 )
             })?;
-            synthetic_time |= origin == TimeOrigin::Synthetic;
+            synthetic = origin == TimeOrigin::Synthetic;
         }
+        let mut dem = false;
         if let Some(col) = alt_source_col {
             let origin = AltOrigin::parse(fields[col]).ok_or_else(|| {
                 at(
@@ -248,8 +293,22 @@ pub fn load_coords_csv(
                     ),
                 )
             })?;
-            dem_altitude |= origin == AltOrigin::Dem;
+            dem = origin == AltOrigin::Dem;
         }
+        // Every row is checked, but only the recording's own are kept.
+        if let (Some(col), Some(wanted)) = (line_col, wanted_line) {
+            let row_line: u32 = fields[col].parse().map_err(|_| {
+                at(
+                    line,
+                    format!("line '{}' is not a line number (N of line_N)", fields[col]),
+                )
+            })?;
+            if row_line != wanted {
+                continue;
+            }
+        }
+        synthetic_time |= synthetic;
+        dem_altitude |= dem;
 
         if let Some(previous) = points.last() {
             if trace_n <= previous.trace_n {
@@ -286,7 +345,11 @@ pub fn load_coords_csv(
     }
 
     if points.is_empty() {
-        return Err(format!("{} has a header but no rows", filepath.display()).into());
+        return Err(match wanted_line {
+            Some(line) => format!("{} has no rows for line_{line}", filepath.display()),
+            None => format!("{} has a header but no rows", filepath.display()),
+        }
+        .into());
     }
 
     let crs = super::project_points(&mut points, &coords, projected_crs)?;
@@ -380,7 +443,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("line.coords.csv");
         std::fs::write(&path, text).unwrap();
-        load_coords_csv(&path, Some(&"EPSG:32633".to_string())).map_err(|e| e.to_string())
+        load_coords_csv(&path, CsvPart::Whole, Some(&"EPSG:32633".to_string()))
+            .map_err(|e| e.to_string())
     }
 
     #[test]
@@ -443,7 +507,7 @@ mod tests {
             ),
             "{text}"
         );
-        let read = load_coords_csv(&path, None).unwrap();
+        let read = load_coords_csv(&path, CsvPart::Whole, None).unwrap();
         assert_eq!(read.time_source, gpr::TimeSource::Recorded);
         assert!(matches!(read.correction, gpr::LocationCorrection::None));
         assert_eq!(read.cor_points[1].time_seconds, rows[1].time_seconds);
@@ -454,7 +518,7 @@ mod tests {
             row(5, TimeOrigin::Synthetic, Some((701., AltOrigin::Dem))),
         ];
         write_coords_csv(&path, &rows, &[]).unwrap();
-        let read = load_coords_csv(&path, None).unwrap();
+        let read = load_coords_csv(&path, CsvPart::Whole, None).unwrap();
         assert_eq!(read.time_source, gpr::TimeSource::Synthetic);
         assert!(matches!(
             &read.correction,
@@ -463,7 +527,7 @@ mod tests {
 
         let rows = [row(0, TimeOrigin::Recorded, None)];
         write_coords_csv(&path, &rows, &[]).unwrap();
-        let read = load_coords_csv(&path, None).unwrap();
+        let read = load_coords_csv(&path, CsvPart::Whole, None).unwrap();
         assert!(read.cor_points[0].altitude.is_nan());
         // Nothing but the file itself is left in the directory.
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
@@ -526,5 +590,60 @@ mod tests {
                 "{text:?}: expected {expected:?} in {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn each_line_reads_its_own_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("survey.coords.csv");
+        // Interleaved, and the trace numbers and times start over: line 1
+        // was recorded first.
+        std::fs::write(
+            &path,
+            "line,trace,time,lon,lat,time_source\n\
+             0,0,2025-03-27T11:00:00Z,16.0,78.5,recorded\n\
+             1,0,2025-03-27T10:00:00Z,16.1,78.6,synthetic\n\
+             0,9,2025-03-27T11:00:09Z,16.0,78.5001,recorded\n\
+             1,9,2025-03-27T10:00:09Z,16.1,78.6001,synthetic\n",
+        )
+        .unwrap();
+        let crs = Some("EPSG:32633".to_string());
+        let read = |line, several| {
+            load_coords_csv(&path, CsvPart::Line { line, several }, crs.as_ref())
+                .map_err(|e| e.to_string())
+        };
+
+        let line_0 = read(0, true).unwrap();
+        let line_1 = read(1, true).unwrap();
+        assert_eq!(line_0.cor_points.len(), 2);
+        assert_eq!(line_1.cor_points.len(), 2);
+        assert!(line_1.cor_points[0].time_seconds < line_0.cor_points[0].time_seconds);
+        assert!(line_1.cor_points[0].easting > line_0.cor_points[0].easting);
+        // The other line's synthetic times are not this line's.
+        assert_eq!(line_0.time_source, gpr::TimeSource::Recorded);
+        assert_eq!(line_1.time_source, gpr::TimeSource::Synthetic);
+
+        let error = read(2, true).unwrap_err();
+        assert!(error.contains("no rows for line_2"), "{error}");
+        let error = load_coords_csv(&path, CsvPart::Whole, crs.as_ref())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not of a format with lines"), "{error}");
+    }
+
+    #[test]
+    fn a_line_column_is_needed_only_for_several_lines() {
+        let text = "trace,time,lon,lat\n0,2025-03-27T10:00:00Z,16,78.5\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("one.coords.csv");
+        std::fs::write(&path, text).unwrap();
+        let read = |several| load_coords_csv(&path, CsvPart::Line { line: 3, several }, None);
+        assert_eq!(read(false).unwrap().cor_points.len(), 1);
+        let error = read(true).unwrap_err().to_string();
+        assert!(error.contains("no line column"), "{error}");
+
+        std::fs::write(&path, format!("line,{text}").replace("\n0,", "\nx,0,")).unwrap();
+        let error = read(true).unwrap_err().to_string();
+        assert!(error.contains("line 'x' is not a line number"), "{error}");
     }
 }

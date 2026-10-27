@@ -48,6 +48,7 @@ has one header line, and its columns may come in any order:
 | `alt` | no | Elevation in meters, used as given |
 | `time_source` | no | `recorded`, `interpolated` or `synthetic` |
 | `alt_source` | no | `recorded`, `interpolated` or `dem` |
+| `line` | for an IceRadar file of several lines | The line (`N` of `line_N`) the row belongs to |
 
 ```text
 trace,time,lon,lat,alt
@@ -61,12 +62,20 @@ row to row, and times must not decrease. Lines starting with `#` are
 comments. Without an `alt` column, `--dem` is required, and the elevations
 are sampled from the DEM.
 
+An IceRadar file can hold several lines (see {ref}`iceradar`), and one CSV
+holds the positions of all of them, telling them apart by the `line` column.
+Each line reads only its own rows, so the trace numbers start at 0 in each
+line, and the rows of different lines may come in any order. The column is
+required for a file of several lines and may be left out for a file of one;
+other formats refuse it.
+
 Ridal uses a CSV in two ways:
 
 - Beside the recording, named after it (`DAT_0066_A1.coords.csv` for
   `DAT_0066_A1.rad`), it is used in place of the recording's own positions
   file, which is then ignored.
-- With `--cor FILE` (`cor=` in Python), for a single recording.
+- With `--cor FILE` (`cor=` in Python), for a single recording, or for the
+  lines of one IceRadar file.
 
 `--cor` also takes a format's own positions file with another name, such as
 another `.cor`. When several recordings are processed or merged at once,

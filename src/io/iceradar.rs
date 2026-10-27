@@ -1082,6 +1082,22 @@ mod tests {
         date: Option<&str>,
         mhz: Option<f32>,
     ) -> Result<crate::gpr::GPR, String> {
+        run(
+            path,
+            crate::processing::ProcessingOptions {
+                override_antenna_mhz: mhz,
+                override_date: date.map(|d| d.parse().unwrap()),
+                lines: lines.map(|l| l.parse().unwrap()),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Process `path` quietly into UTM 32N with `options`.
+    fn run(
+        path: &Path,
+        options: crate::processing::ProcessingOptions,
+    ) -> Result<crate::gpr::GPR, String> {
         let params = crate::processing::RunParams {
             filepaths: vec![path.to_path_buf()],
             output_path: None,
@@ -1092,10 +1108,7 @@ mod tests {
             options: crate::processing::ProcessingOptions {
                 quiet: true,
                 crs: Some("EPSG:32632".into()),
-                override_antenna_mhz: mhz,
-                override_date: date.map(|d| d.parse().unwrap()),
-                lines: lines.map(|l| l.parse().unwrap()),
-                ..Default::default()
+                ..options
             },
         };
         crate::processing::build_processed_gpr(params)
@@ -1220,6 +1233,60 @@ mod tests {
         let error = process(&path, Some("all"), None, Some(20.)).err().unwrap();
         assert!(error.contains("Cannot merge"), "{error}");
         assert!(error.contains("line_2"), "{error}");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn one_coordinate_csv_positions_every_line_by_its_line_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stor.h5");
+        let line = || {
+            vec![
+                trace(40, 256, Some("103045.6")),
+                trace(40, 256, Some("103046.8")),
+            ]
+        };
+        write_fixture(&path, Layout::V1, &[line(), line()], "6/18/2024 1:30:00 PM");
+        let options = |lines: &str, cor: Option<&Path>| crate::processing::ProcessingOptions {
+            override_antenna_mhz: Some(20.),
+            lines: Some(lines.parse().unwrap()),
+            cor_path: cor.map(Path::to_path_buf),
+            ..Default::default()
+        };
+
+        // Beside the file: found for every line, as before, but no longer
+        // read as every line's positions.
+        let beside = dir.path().join("stor.coords.csv");
+        let rows = "trace,time,lon,lat,alt\n\
+                    0,2024-06-18T10:30:45Z,9.0,60.2,1200\n\
+                    1,2024-06-18T10:30:46Z,9.0,60.2001,1200\n";
+        std::fs::write(&beside, rows).unwrap();
+        let error = run(&path, options("1", None)).err().unwrap();
+        assert!(error.contains("no line column"), "{error}");
+
+        // Line 1 a degree further east.
+        let with_lines = "line,trace,time,lon,lat,alt\n\
+                          0,0,2024-06-18T10:30:45Z,9.0,60.2,1200\n\
+                          0,1,2024-06-18T10:30:46Z,9.0,60.2001,1200\n\
+                          1,0,2024-06-18T10:35:00Z,10.0,60.2,1200\n\
+                          1,1,2024-06-18T10:35:01Z,10.0,60.2001,1200\n";
+        std::fs::write(&beside, with_lines).unwrap();
+        let merged = run(&path, options("all", None)).unwrap();
+        let points = &merged.location.cor_points;
+        assert_eq!(merged.width(), 4);
+        assert!(
+            points[3].easting - points[0].easting > 50_000.,
+            "{points:?}"
+        );
+        let line_1 = run(&path, options("1", None)).unwrap();
+        assert!((line_1.location.cor_points[0].easting - points[3].easting).abs() < 100.);
+
+        // One --cor file for every line of one file is not one file for
+        // several recordings.
+        let elsewhere = dir.path().join("other.csv");
+        std::fs::rename(&beside, &elsewhere).unwrap();
+        let merged = run(&path, options("all", Some(&elsewhere))).unwrap();
+        assert_eq!(merged.location.cor_points.len(), 4);
     }
 
     #[test]

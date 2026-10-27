@@ -183,7 +183,15 @@ pub(crate) fn load_positions(
         .into());
     }
     if formats::is_coords_csv(positions) {
-        return io::load_coords_csv(positions, crs);
+        let part = match resolved.kind {
+            // One CSV holds every line of the file, as the file does.
+            FormatKind::IceRadar => io::CsvPart::Line {
+                line: iceradar_line(resolved)?,
+                several: io::iceradar_lines(&resolved.header)?.len() > 1,
+            },
+            _ => io::CsvPart::Whole,
+        };
+        return io::load_coords_csv(positions, part, crs);
     }
     if resolved.kind == FormatKind::IceRadar && positions == resolved.header {
         return io::load_iceradar_positions(
