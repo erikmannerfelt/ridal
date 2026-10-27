@@ -137,8 +137,8 @@ pub fn load_pe_hd(
 }
 
 /// The positions in a pulseEKKO `.gp2`, dated by its `Date=` header lines,
-/// or by `override_date` when that is given: the header's date is the
-/// logger's clock and is not always right.
+/// or by `override_date` when that is given: older files have a date typed
+/// by hand, which is not always right.
 pub fn load_pe_gp2(
     filepath: &Path,
     projected_crs: Option<&String>,

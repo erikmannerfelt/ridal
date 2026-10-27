@@ -48,16 +48,17 @@ Antenna frequency
 Antenna separation
 : The distance between the transmitter and the receiver (in meters), read
   from the RAMAC and pulseEKKO headers. GSSI and IceRadar files do not record
-  it, so it is 0 for them unless `--override-antenna-separation` gives it
-  (and for IceRadar, Ridal warns that it was not given). The separation
-  matters for `correct_antenna_separation` and for depths near the surface
-  (see {doc}`coordinates`).
+  it, so it is 0 for them, with a warning, unless
+  `--override-antenna-separation` gives it. The separation matters for
+  `correct_antenna_separation` and for depths near the surface (see
+  {doc}`coordinates`).
 
 Date
 : GPS positions in pulseEKKO and IceRadar files carry only a time of day,
-  and the date comes from the logger's or the acquisition PC's clock, which
-  can be wrong. `--override-date YYYY-MM-DD` gives the UTC date instead.
-  It is refused for formats whose positions carry their own dates, and for
+  and the date comes from elsewhere: a pulseEKKO file's header, where in
+  older files it was typed by hand, and an IceRadar line's acquisition PC
+  clock, which is local time. Either can be wrong.
+  `--override-date YYYY-MM-DD` gives the UTC date instead. It is refused for formats whose positions carry their own dates, and for
   positions from a coordinate CSV.
 
 The medium velocity is not read from any file; it is given with

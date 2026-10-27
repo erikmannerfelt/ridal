@@ -144,6 +144,26 @@ pub fn format_info(kind: FormatKind) -> FormatInfo {
     }
 }
 
+/// The format's name as its maker writes it, for messages.
+pub fn display_name(kind: FormatKind) -> &'static str {
+    match kind {
+        FormatKind::Ramac => "RAMAC",
+        FormatKind::PulseEkko => "pulseEKKO",
+        FormatKind::Gssi => "GSSI",
+        FormatKind::IceRadar => "IceRadar",
+    }
+}
+
+/// Whether the format's header gives the antenna separation. Where it does
+/// not, the separation is 0 m unless the user gives one, which processing
+/// warns about.
+pub fn records_antenna_separation(kind: FormatKind) -> bool {
+    match kind {
+        FormatKind::Ramac | FormatKind::PulseEkko => true,
+        FormatKind::Gssi | FormatKind::IceRadar => false,
+    }
+}
+
 pub fn find_neighbor_case_insensitive(base: &Path, target_extension: &str) -> Option<PathBuf> {
     let parent = base.parent().unwrap_or_else(|| Path::new("."));
     let stem = base.file_stem().or_else(|| base.file_name())?.to_str()?;

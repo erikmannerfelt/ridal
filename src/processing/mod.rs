@@ -116,31 +116,40 @@ fn describe_input(resolved: &ResolvedInput) -> String {
     }
 }
 
-/// What an IceRadar file did not record and Ridal assumed instead, as
-/// warnings to show: the antenna separation, and a date taken from the PC
-/// clock. Empty when no input is IceRadar, or the user gave both.
-pub(crate) fn iceradar_assumptions(
+/// What the input files did not record and Ridal assumed instead, as
+/// warnings to show: the antenna separation, for the formats whose headers
+/// do not give it, and an IceRadar line's date taken from the PC clock.
+/// Empty when nothing was assumed, or the user gave it.
+pub(crate) fn assumptions(
     resolved: &[ResolvedInput],
     options: &ProcessingOptions,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let iceradar = resolved
-        .iter()
-        .filter(|r| r.kind == formats::FormatKind::IceRadar)
-        .collect::<Vec<_>>();
     let mut warnings = Vec::new();
-    if iceradar.is_empty() {
-        return Ok(warnings);
-    }
     if options.override_antenna_separation.is_none() {
-        warnings.push(
-            "Warning: IceRadar files do not record the antenna separation, so it is taken as \
-             0 m. Give it with --override-antenna-separation \
-             (override_antenna_separation= in Python)."
-                .to_string(),
-        );
+        let mut unrecorded = Vec::new();
+        for r in resolved {
+            if !formats::records_antenna_separation(r.kind) && !unrecorded.contains(&r.kind) {
+                unrecorded.push(r.kind);
+            }
+        }
+        if !unrecorded.is_empty() {
+            let names = unrecorded
+                .iter()
+                .map(|&kind| formats::display_name(kind))
+                .collect::<Vec<_>>()
+                .join(" and ");
+            warnings.push(format!(
+                "Warning: {names} files do not record the antenna separation, so it is taken \
+                 as 0 m. Give it with --override-antenna-separation \
+                 (override_antenna_separation= in Python)."
+            ));
+        }
     }
     if options.override_date.is_none() {
-        for r in iceradar {
+        for r in resolved
+            .iter()
+            .filter(|r| r.kind == formats::FormatKind::IceRadar)
+        {
             let line = input::iceradar_line(r)?;
             if let crate::io::IceRadarDate::PcClock(date) =
                 crate::io::iceradar_date(&r.header, line, None)?
@@ -218,7 +227,7 @@ pub fn build_processed_gpr_with_progress(
     let mut resolved_inputs = formats::with_lines(resolved_inputs, options.lines.as_ref())?;
     formats::with_coordinates(&mut resolved_inputs, options.cor_path.as_deref())?;
     if !options.quiet {
-        for warning in iceradar_assumptions(&resolved_inputs, options)? {
+        for warning in assumptions(&resolved_inputs, options)? {
             eprintln!("{warning}");
         }
     }
@@ -452,6 +461,45 @@ pub fn resolve_steps(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_unrecorded_antenna_separation_is_warned_about_once_per_format() {
+        use crate::formats::FormatKind;
+        // Nothing is read for the separation, so no file exists.
+        let input = |kind, name: &str| crate::formats::ResolvedInput {
+            input: name.into(),
+            kind,
+            header: name.into(),
+            data: name.into(),
+            coordinates: name.into(),
+            part: Default::default(),
+        };
+        let warnings = |inputs: &[_], separation| {
+            let options = super::ProcessingOptions {
+                override_antenna_separation: separation,
+                ..Default::default()
+            };
+            super::assumptions(inputs, &options).unwrap()
+        };
+
+        assert_eq!(
+            warnings(&[input(FormatKind::Ramac, "a.rad")], None),
+            [""; 0]
+        );
+        let mixed = [
+            input(FormatKind::Gssi, "a.DZT"),
+            input(FormatKind::Ramac, "b.rad"),
+            input(FormatKind::Gssi, "c.DZT"),
+        ];
+        let [warning] = &warnings(&mixed, None)[..] else {
+            panic!("expected one warning");
+        };
+        assert!(
+            warning.starts_with("Warning: GSSI files do not record"),
+            "{warning}"
+        );
+        assert_eq!(warnings(&mixed, Some(0.5)), [""; 0]);
+    }
 
     #[test]
     fn steps_are_resolved_from_exactly_one_choice() {

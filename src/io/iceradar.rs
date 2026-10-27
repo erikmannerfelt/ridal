@@ -1378,9 +1378,13 @@ mod tests {
         .unwrap();
 
         let options = crate::processing::ProcessingOptions::default();
-        let warnings = crate::processing::iceradar_assumptions(&resolved, &options).unwrap();
+        let warnings = crate::processing::assumptions(&resolved, &options).unwrap();
         assert_eq!(warnings.len(), 3, "{warnings:?}");
-        assert!(warnings[0].contains("taken as 0 m"), "{}", warnings[0]);
+        assert!(
+            warnings[0].contains("IceRadar files do not record the antenna separation"),
+            "{}",
+            warnings[0]
+        );
         for (warning, n) in warnings[1..].iter().zip(0..) {
             assert!(
                 warning.contains(&format!("line_{n} is dated 2024-06-18")),
@@ -1393,10 +1397,10 @@ mod tests {
             override_date: chrono::NaiveDate::from_ymd_opt(2024, 6, 18),
             ..Default::default()
         };
-        let warnings = crate::processing::iceradar_assumptions(&resolved, &options).unwrap();
+        let warnings = crate::processing::assumptions(&resolved, &options).unwrap();
         assert_eq!(warnings, Vec::<String>::new());
         assert_eq!(
-            crate::processing::iceradar_assumptions(&[], &Default::default()).unwrap(),
+            crate::processing::assumptions(&[], &Default::default()).unwrap(),
             Vec::<String>::new()
         );
     }
