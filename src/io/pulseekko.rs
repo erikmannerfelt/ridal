@@ -136,13 +136,18 @@ pub fn load_pe_hd(
     })
 }
 
+/// The positions in a pulseEKKO `.gp2`, dated by its `Date=` header lines,
+/// or by `override_date` when that is given: the header's date is the
+/// logger's clock and is not always right.
 pub fn load_pe_gp2(
     filepath: &Path,
     projected_crs: Option<&String>,
+    override_date: Option<chrono::NaiveDate>,
 ) -> Result<gpr::GPRLocation, Box<dyn Error>> {
     let content = std::fs::read_to_string(filepath)?;
 
-    let mut date_str: Option<&str> = None;
+    let given_date = override_date.map(|date| date.format("%Y-%m-%d").to_string());
+    let mut date_str: Option<&str> = given_date.as_deref();
 
     // Create a new empty points vec
     let mut coords = Vec::<crate::coords::Coord>::new();
@@ -150,7 +155,7 @@ pub fn load_pe_gp2(
     // Loop over the lines of the file and parse CorPoints from it
     for line in content.lines() {
         if line.starts_with(";") | line.starts_with("traces") {
-            if let Some((_, after_eq)) = line.split_once("Date=") {
+            if let (None, Some((_, after_eq))) = (&given_date, line.split_once("Date=")) {
                 // The date runs up to the next space, or to the end of the
                 // line if there is none.
                 date_str = Some(after_eq.split_once(' ').map_or(after_eq, |(d, _)| d));
@@ -214,7 +219,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.gp2");
         std::fs::write(&path, text).unwrap();
-        load_pe_gp2(&path, Some(&"EPSG:4326".to_string()))
+        load_pe_gp2(&path, Some(&"EPSG:4326".to_string()), None)
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
@@ -343,9 +348,17 @@ mod tests {
         .join("\r\n");
         std::fs::write(&gp2_path, gp2_text).unwrap();
 
-        let locations = load_pe_gp2(&gp2_path, Some(&"EPSG:4326".to_string())).unwrap();
+        let locations = load_pe_gp2(&gp2_path, Some(&"EPSG:4326".to_string()), None).unwrap();
 
         assert_eq!(locations.cor_points.len(), 9);
         assert!(locations.cor_points.first().unwrap().northing > 77.);
+
+        // A given date replaces the header's, and the time of day is kept.
+        let next_day = chrono::NaiveDate::from_ymd_opt(2025, 4, 5);
+        let redated = load_pe_gp2(&gp2_path, Some(&"EPSG:4326".to_string()), next_day).unwrap();
+        assert_eq!(
+            redated.cor_points[0].time_seconds - locations.cor_points[0].time_seconds,
+            86400.
+        );
     }
 }

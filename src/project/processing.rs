@@ -764,6 +764,7 @@ mod tests {
             medium_velocity: velocity,
             antenna_mhz_override: None,
             antenna_separation_override: None,
+            date_override: None,
             steps: steps
                 .iter()
                 .map(|s| crate::recipe::RecipeStep {
@@ -787,6 +788,7 @@ mod tests {
                     blake3: data.to_string(),
                 },
             }],
+            part: None,
         }
     }
 

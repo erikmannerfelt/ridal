@@ -950,11 +950,27 @@ class BundleFile:
 
 
 @dataclass(frozen=True)
+class Part:
+    """Which part of a file holding several recordings one recording is."""
+
+    line: int | None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Part":
+        return _parse("part of a file", data, lambda d: cls(line=d["line"]))
+
+
+@dataclass(frozen=True)
 class Bundle:
-    """One recording of a source: its format and its files."""
+    """One recording of a source: its format and its files.
+
+    ``part`` is the part of the file read, for a format whose files hold
+    several recordings (an IceRadar line), and ``None`` for the whole file.
+    """
 
     format: str
     files: tuple[BundleFile, ...]
+    part: Part | None = None
 
     @classmethod
     def from_json(cls, data: Any) -> "Bundle":
@@ -964,6 +980,7 @@ class Bundle:
             lambda d: cls(
                 format=d["format"],
                 files=tuple(BundleFile.from_json(f) for f in d["files"]),
+                part=None if d.get("part") is None else Part.from_json(d["part"]),
             ),
         )
 

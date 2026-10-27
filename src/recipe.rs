@@ -2,7 +2,8 @@
 //!
 //! A [`Recipe`] is everything that determines a processed file's contents:
 //! the raw files, by checksum; the DEM, if any, and how it was sampled; the
-//! CRS, medium velocity and antenna overrides; and the steps, each with its
+//! CRS, medium velocity, antenna and date overrides; the line of a
+//! multi-line file; and the steps, each with its
 //! version. Its hash is what
 //! [`crate::identity::RevisionId::fingerprint_v2`] fingerprints, so the same
 //! raw data processed the same way is the same revision, wherever and
@@ -95,6 +96,12 @@ pub struct Bundle {
     /// The format's name, as `ridal formats` lists it (`ramac`, ...).
     pub format: String,
     pub files: Vec<BundleFile>,
+    /// The part of the file read, for a format whose files can hold
+    /// several recordings (an IceRadar line), and `null` for the whole file.
+    // Defaulted, so a recipe from before parts existed reads as whole files.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub part: Option<crate::formats::Part>,
 }
 
 /// The inputs of a processing run, as gathered when the raw files are
@@ -106,6 +113,7 @@ pub struct Inputs {
     pub dem: Option<HashedFile>,
     pub antenna_mhz_override: Option<f32>,
     pub antenna_separation_override: Option<f32>,
+    pub date_override: Option<chrono::NaiveDate>,
 }
 
 /// One step as it ran: its canonical form, with defaults filled in, and the
@@ -138,6 +146,10 @@ pub struct Recipe {
     pub antenna_mhz_override: Option<f32>,
     /// m.
     pub antenna_separation_override: Option<f32>,
+    /// The UTC date given for recordings whose files do not record a
+    /// trustworthy one, as `YYYY-MM-DD`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_override: Option<String>,
     pub steps: Vec<RecipeStep>,
 }
 
@@ -177,6 +189,9 @@ impl Recipe {
             medium_velocity: gpr.metadata.medium_velocity,
             antenna_mhz_override: inputs.antenna_mhz_override,
             antenna_separation_override: inputs.antenna_separation_override,
+            date_override: inputs
+                .date_override
+                .map(|date| date.format("%Y-%m-%d").to_string()),
             steps,
         }))
     }
@@ -224,6 +239,26 @@ impl Recipe {
         if !self.dem_resampling.is_bilinear() {
             put(&mut hasher, b"dem_resampling");
             put(&mut hasher, self.dem_resampling.as_str().as_bytes());
+        }
+        // Tagged and only when present, as `dem_resampling` is, so a recipe
+        // without them keeps the hash it had before they existed.
+        if self.bundles.iter().any(|b| b.part.is_some()) {
+            put(&mut hasher, b"parts");
+            for bundle in &self.bundles {
+                let Some(part) = &bundle.part else {
+                    hasher.update(&[0]);
+                    continue;
+                };
+                hasher.update(&[1]);
+                // Each field named, so one added later cannot be read as
+                // this one.
+                put(&mut hasher, b"line");
+                put_optional(&mut hasher, part.line.map(u32::to_le_bytes).as_ref());
+            }
+        }
+        if let Some(date) = &self.date_override {
+            put(&mut hasher, b"date_override");
+            put(&mut hasher, date.as_bytes());
         }
         hasher.finalize().to_hex().to_string()
     }
@@ -296,6 +331,7 @@ pub fn bundle_of(resolved: &crate::formats::ResolvedInput) -> Result<Bundle, Str
     Ok(Bundle {
         format: crate::formats::format_info(resolved.kind).name.to_string(),
         files,
+        part: (!resolved.part.is_whole()).then_some(resolved.part),
     })
 }
 
@@ -324,6 +360,7 @@ mod tests {
                     file(FileRole::Data, "DAT_0001_A1.rd3", "bb"),
                     file(FileRole::Coordinates, "DAT_0001_A1.cor", "cc"),
                 ],
+                part: None,
             }],
             dem: None,
             dem_resampling: crate::dem::Resampling::Bilinear,
@@ -331,6 +368,7 @@ mod tests {
             medium_velocity: 0.168,
             antenna_mhz_override: None,
             antenna_separation_override: None,
+            date_override: None,
             steps: vec![RecipeStep {
                 step: "dewow(window=auto method=median)".to_string(),
                 version: 1,
@@ -347,6 +385,30 @@ mod tests {
             recipe().hash(),
             "79b9a607c370e0ccc2a45be6267da3299a8ab067a5e7422055c18e9b5281d866"
         );
+    }
+
+    #[test]
+    fn a_line_and_a_date_change_the_hash_only_when_given() {
+        // Unset, they leave the pinned hash as it was before they existed.
+        let mut with_line = recipe();
+        with_line.bundles[0].part = None;
+        with_line.date_override = None;
+        assert_eq!(with_line.hash(), recipe().hash());
+
+        with_line.bundles[0].part = Some(crate::formats::Part { line: Some(0) });
+        assert_ne!(with_line.hash(), recipe().hash());
+        let mut other_line = with_line.clone();
+        other_line.bundles[0].part = Some(crate::formats::Part { line: Some(1) });
+        assert_ne!(other_line.hash(), with_line.hash());
+
+        let mut dated = recipe();
+        dated.date_override = Some("2024-06-18".to_string());
+        assert_ne!(dated.hash(), recipe().hash());
+        // An old recipe, without either, reads as having neither.
+        assert!(!recipe().to_json().contains("date_override"));
+        let old = recipe().to_json().replace(",\"part\":null", "");
+        assert!(!old.contains("part"), "{old}");
+        assert_eq!(serde_json::from_str::<Recipe>(&old).unwrap(), recipe());
     }
 
     #[test]

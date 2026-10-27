@@ -56,6 +56,10 @@ Override the antenna center frequency (in MHz) from file metadata
 Override the antenna separation (in m) from file metadata
 ```
 
+```{option} --override-date <YYYY-MM-DD>
+The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
+```
+
 ```{option} --default
 Process with the default profile
 ```
@@ -90,6 +94,10 @@ Don't export nc files
 
 ```{option} --metadata <KEY=VALUE>
 Add user metadata as key=value. Repeatable
+```
+
+```{option} --lines <LINES>
+Which lines of a file holding several (IceRadar) to process: "all", or line numbers and ranges separated by commas, such as "3" or "0,2-4". Several lines are merged in the order given, and lines recorded with different settings cannot be. Required for a file of more than one line
 ```
 
 ```{option} -t <TRACK>, --track <TRACK>
@@ -165,6 +173,10 @@ Override the antenna center frequency (in MHz) from file metadata
 
 ```{option} --override-antenna-separation <OVERRIDE_ANTENNA_SEPARATION>
 Override the antenna separation (in m) from file metadata
+```
+
+```{option} --override-date <YYYY-MM-DD>
+The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
 ```
 
 ```{option} --default
@@ -288,6 +300,10 @@ Override the antenna center frequency (in MHz) from file metadata
 
 ```{option} --override-antenna-separation <OVERRIDE_ANTENNA_SEPARATION>
 Override the antenna separation (in m) from file metadata
+```
+
+```{option} --override-date <YYYY-MM-DD>
+The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
 ```
 
 ## `ridal coords`

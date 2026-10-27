@@ -978,6 +978,47 @@ CSV (`src/io/coords_csv.rs`) are interchangeable readers.
   uses them to check; a clear error that names `ridal coords` was chosen
   instead.
 
+## Files that hold several recordings (IceRadar)
+
+An IceRadar file (`src/io/iceradar.rs`) is header, data and positions at
+once, and can hold several lines. A line is one recording: everything after
+input resolution treats it as one file would be treated.
+
+- **The part is in the resolved input.** `ResolvedInput::part` is a
+  `formats::Part`, the whole file (every field `None`) for every other
+  format and for a file of one line, and `formats::with_lines` expands a
+  multi-line file into one input per selected line (`--lines`,
+  `LineSelection`). `Part` is internal and general, and the flags use the
+  instrument's word: lines are recorded one after another and may be
+  merged, where channels (GSSI, and possibly IceRadar's `datacapture_N`)
+  are recorded side by side and must not be, so a `channel` beside `line`
+  would come with its own `--channels` rather than a shared `--parts`. The expansion runs before
+  `with_coordinates`, so one positions file given for several lines is
+  refused as it is for several files. Several lines then go through the
+  ordinary merge loop, so their compatibility is `GPR::merge`'s, with its
+  reasons, and no IceRadar-specific check.
+- **The recipe records the part** (`Bundle::part`, `null` for a whole
+  file), and the date when one was given (`Recipe::date_override`). Both are hashed after the steps,
+  tagged and only when present, as `dem_resampling` is, so every recipe
+  without them keeps its hash.
+- **Read through `hdf5-sys`, not `netcdf`.** netcdf-c reads every group's
+  metadata on open, about 0.5 s for a file of 9000 traces, and the pipeline
+  reads header, positions and data separately; HDF5 reads only what is
+  asked for, and reaches the group comments that hold a v1 file's date. The
+  calls hold `netcdf_sys::libnetcdf_lock`, the reentrant lock the `netcdf`
+  crate takes, since both share one HDF5 library. What remains of the read
+  time is v1's layout: one HDF5 chunk per sample.
+- **What the files do not say is given or assumed visibly**: the antenna
+  frequency is required, the separation defaults to 0 m with a warning, the
+  date is the PC clock's with a warning (or refused at its 2000-01-01 reset
+  value), and positions are taken as north and east.
+- **Open: batches and the server.** `batch-process` refuses a multi-line
+  file, because a batch plan is a list of paths. Making it a list of
+  resolved inputs would let batches, and the ingest planner that shares the
+  plan, treat each part as a recording, as a GSSI file of several channels
+  will need. A server source does not record a part either, so reprocessing one of several
+  lines fails asking for `--lines` rather than reading the wrong one.
+
 ## Render pipeline
 
 Fixed order, enforced by module structure rather than just convention:

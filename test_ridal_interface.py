@@ -19,6 +19,8 @@ def test_known_format_names_exist():
     assert "pulseekko" in ridal.all_formats
     assert "ramac" in ridal.all_format_descriptions
     assert "pulseekko" in ridal.all_format_descriptions
+    assert "iceradar" in ridal.all_formats
+    assert ridal.all_format_descriptions["iceradar"]["files"]["header"] == ".h5"
 
 
 def test_run_cli_raises_migration_error():
@@ -299,3 +301,52 @@ def test_batch_process_side_outputs_must_be_directories(tmp_path):
             )
     with pytest.raises(ValueError, match="output must be an existing directory"):
         ridal.batch_process([str(FIXTURE)], str(not_a_directory), quiet=True)
+
+
+@pytest.mark.parametrize("lines", [3, [0, 2], (0, 2), "all", "0,2-4"])
+def test_lines_take_every_spelling_and_are_refused_without_lines(lines):
+    # Each spelling parses, and reaches the check that a RAMAC recording has
+    # no lines to choose from.
+    with pytest.raises(RuntimeError, match="applies to IceRadar files only"):
+        ridal.read(str(FIXTURE), lines=lines)
+
+
+@pytest.mark.parametrize(
+    ("lines", "error", "match"),
+    [
+        ("x", ValueError, "not a line number"),
+        ([1, 1], ValueError, "twice"),
+        ("2-1", ValueError, "not a line number"),
+        (1.5, TypeError, "lines must be"),
+    ],
+)
+def test_bad_lines_are_refused_before_reading(lines, error, match):
+    with pytest.raises(error, match=match):
+        ridal.process(str(FIXTURE), lines=lines, no_export=True, quiet=True)
+
+
+@pytest.mark.parametrize("date", [datetime.date(2025, 3, 27), "2025-03-27"])
+def test_override_date_is_refused_where_the_positions_carry_dates(date):
+    # A .cor dates every position itself, so a date given for it would be
+    # ignored; it is refused instead.
+    with pytest.raises(RuntimeError, match="IceRadar and pulseEKKO"):
+        ridal.read(str(FIXTURE), override_date=date)
+    with pytest.raises(RuntimeError, match="IceRadar and pulseEKKO"):
+        ridal.info(str(FIXTURE), override_date=date)
+
+
+@pytest.mark.parametrize(
+    ("date", "error", "match"),
+    [
+        (
+            datetime.datetime(2025, 3, 27, 12, tzinfo=datetime.UTC),
+            TypeError,
+            "not a datetime",
+        ),
+        ("27/03/2025", ValueError, "YYYY-MM-DD"),
+        (20250327, TypeError, "override_date must be"),
+    ],
+)
+def test_bad_override_dates_are_refused(date, error, match):
+    with pytest.raises(error, match=match):
+        ridal.read(str(FIXTURE), override_date=date)

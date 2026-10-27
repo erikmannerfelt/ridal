@@ -17,7 +17,7 @@ pub fn read_header_and_positions(
     dem: Option<&PathBuf>,
     antenna_mhz: Option<f32>,
 ) -> Result<(GPRMeta, GPRLocation), HeaderReadError> {
-    input::load_meta_and_location(resolved, 0.168, crs, dem, antenna_mhz, None).map_err(|e| {
+    input::load_meta_and_location(resolved, 0.168, crs, dem, antenna_mhz, None, None).map_err(|e| {
         match e.downcast::<crate::io::UnknownAntennaFrequency>() {
             Ok(unknown) => HeaderReadError::UnknownFrequency(*unknown),
             Err(other) => HeaderReadError::Other(other.to_string()),

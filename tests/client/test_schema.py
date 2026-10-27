@@ -44,6 +44,7 @@ RECORDS: Final[dict[type, tuple[str, dict[str, str]]]] = {
     models.HashedFile: ("HashedFile", {}),
     models.StoredFile: ("StoredFile", {}),
     models.BundleFile: ("BundleFile", {}),
+    models.Part: ("Part", {}),
     models.Bundle: ("Bundle", {}),
     models.SourceDem: ("SourceDem", {}),
     models.SourceNames: ("SourceNames", {}),

@@ -6,6 +6,8 @@
 //! - [`mala`]: Malå RAMAC (`.rad` / `.rd3` / `.cor`).
 //! - [`pulseekko`]: Sensors & Software pulseEKKO (`.hd` / `.dt1` / `.gp2`).
 //! - [`gssi`]: GSSI (`.DZT` / `.DZG`).
+//! - [`iceradar`]: Blue System Integration IceRadar (`.h5` / `.hdf5`), with
+//!   the header, the data and the positions in one file.
 //! - [`coords_csv`]: Ridal's coordinate CSV, which `--cor` reads in place of
 //!   any format's own positions file (#13).
 //! - [`ridal`]: Ridal's own products -- the processed NetCDF and the track
@@ -18,12 +20,17 @@
 
 mod coords_csv;
 mod gssi;
+mod iceradar;
 mod mala;
 mod pulseekko;
 mod ridal;
 
 pub use coords_csv::{load_coords_csv, write_coords_csv, AltOrigin, CoordsRow, TimeOrigin};
 pub use gssi::{load_dzt, load_gssi_dzg, load_gssi_dzt};
+pub use iceradar::{
+    iceradar_date, iceradar_lines, load_iceradar_data, load_iceradar_meta, load_iceradar_positions,
+    IceRadarDate,
+};
 pub use mala::{load_cor, load_rad, load_rd3};
 pub use pulseekko::{load_pe_dt1, load_pe_gp2, load_pe_hd};
 // This is a facade: the submodules are private, and `io` itself is private to

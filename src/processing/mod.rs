@@ -33,6 +33,11 @@ pub struct ProcessingOptions {
     pub render_topo: bool,
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
+    /// The UTC date of recordings whose files give only a time of day, or a
+    /// date that is wrong: IceRadar and pulseEKKO.
+    pub override_date: Option<chrono::NaiveDate>,
+    /// Which lines of a multi-line file (IceRadar) to merge, in order.
+    pub lines: Option<formats::LineSelection>,
     pub user_metadata: user_metadata::UserMetadata,
     /// The group's display name. A group applies uniformly to a whole batch,
     /// since batch runs typically process one survey or campaign.
@@ -56,6 +61,8 @@ impl Default for ProcessingOptions {
             render_topo: false,
             override_antenna_mhz: None,
             override_antenna_separation: None,
+            override_date: None,
+            lines: None,
             user_metadata: user_metadata::UserMetadata::new(),
             group: None,
             group_id: None,
@@ -85,17 +92,79 @@ pub struct ProcessResult {
     pub output_path: PathBuf,
 }
 
+/// `<stem>.nc`, or `<stem>_line_<N>.nc` for a line of a multi-line file,
+/// so processing the lines of one file one by one does not overwrite the
+/// same output. A merge of several lines is named after its first.
+fn default_output_name(first: &ResolvedInput) -> String {
+    let stem = first
+        .header
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    match first.part.line {
+        Some(line) => format!("{stem}_line_{line}.nc"),
+        None => format!("{stem}.nc"),
+    }
+}
+
+/// A recording as messages name it: its header, and its line if it has one.
+fn describe_input(resolved: &ResolvedInput) -> String {
+    match resolved.part.line {
+        Some(line) => format!("{:?} line_{line}", resolved.header),
+        None => format!("{:?}", resolved.header),
+    }
+}
+
+/// Say what an IceRadar file did not record and Ridal assumed instead: the
+/// antenna separation, and a date taken from the PC clock.
+fn warn_iceradar_assumptions(
+    resolved: &[ResolvedInput],
+    options: &ProcessingOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let iceradar = resolved
+        .iter()
+        .filter(|r| r.kind == formats::FormatKind::IceRadar)
+        .collect::<Vec<_>>();
+    if iceradar.is_empty() {
+        return Ok(());
+    }
+    if options.override_antenna_separation.is_none() {
+        eprintln!(
+            "Warning: IceRadar files do not record the antenna separation, so it is taken as \
+             0 m. Give it with --override-antenna-separation \
+             (override_antenna_separation= in Python)."
+        );
+    }
+    if options.override_date.is_none() {
+        for r in iceradar {
+            let line = input::iceradar_line(r)?;
+            if let crate::io::IceRadarDate::PcClock(date) =
+                crate::io::iceradar_date(&r.header, line, None)?
+            {
+                eprintln!(
+                    "Warning: {} is dated {date} by the acquisition PC's clock, which is local \
+                     time and may be wrong; the GPS records only the time of day. Give the UTC \
+                     date with --override-date (override_date= in Python) if it is not {date}.",
+                    describe_input(r)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn derive_output_path(
     output_path: Option<&PathBuf>,
     first_resolved: &ResolvedInput,
 ) -> Result<PathBuf, String> {
-    let default_output = first_resolved.header.with_extension("nc");
+    let default_output = first_resolved
+        .header
+        .with_file_name(default_output_name(first_resolved));
     match output_path {
         Some(path) => {
             if path.is_dir() {
-                Ok(path
-                    .join(first_resolved.header.file_stem().unwrap())
-                    .with_extension("nc"))
+                Ok(path.join(default_output_name(first_resolved)))
             } else {
                 if let Some(parent) = path.parent() {
                     if !parent.as_os_str().is_empty() && !parent.is_dir() {
@@ -134,14 +203,20 @@ pub fn build_processed_gpr_with_progress(
     if expanded.is_empty() {
         return Err("No input files were provided.".into());
     }
-    let mut resolved_inputs = expanded
+    let resolved_inputs = expanded
         .iter()
         .map(|input| crate::formats::resolve_input(input))
         .collect::<Result<Vec<crate::formats::ResolvedInput>, String>>()?;
     if resolved_inputs.is_empty() {
         return Err("No input files were resolved.".into());
     }
+    // Before `--cor`, so one positions file is refused for several lines as
+    // it is for several files: trace numbers start over in each line.
+    let mut resolved_inputs = formats::with_lines(resolved_inputs, options.lines.as_ref())?;
     formats::with_coordinates(&mut resolved_inputs, options.cor_path.as_deref())?;
+    if !options.quiet {
+        warn_iceradar_assumptions(&resolved_inputs, options)?;
+    }
     if !options.quiet {
         for resolved in &resolved_inputs {
             println!(
@@ -166,6 +241,7 @@ pub fn build_processed_gpr_with_progress(
             .transpose()?,
         antenna_mhz_override: options.override_antenna_mhz,
         antenna_separation_override: options.override_antenna_separation,
+        date_override: options.override_date,
     };
     let first_resolved = resolved_inputs.remove(0);
     let (first_meta, first_location) = input::load_meta_and_location(
@@ -175,13 +251,14 @@ pub fn build_processed_gpr_with_progress(
         options.dem_path.as_ref(),
         options.override_antenna_mhz,
         options.override_antenna_separation,
+        options.override_date,
     )?;
-    let mut gpr = GPR::from_meta_and_loc(first_location, first_meta).map_err(|e| {
-        format!(
-            "Error loading GPR data from {:?}: {:?}",
-            first_resolved.data, e
-        )
-    })?;
+    let mut gpr = input::load_gpr(
+        &first_resolved,
+        first_meta,
+        first_location,
+        options.override_date,
+    )?;
     gpr.user_metadata = options.user_metadata.clone();
     gpr.inputs = Some(inputs);
 
@@ -193,16 +270,23 @@ pub fn build_processed_gpr_with_progress(
             options.dem_path.as_ref(),
             options.override_antenna_mhz,
             options.override_antenna_separation,
+            options.override_date,
         )?;
-        let other = GPR::from_meta_and_loc(location, meta)
-            .map_err(|e| format!("Error loading GPR data from {:?}: {:?}", resolved.data, e))?;
+        let other = input::load_gpr(&resolved, meta, location, options.override_date)?;
         if !options.quiet {
             println!(
-                "Merging {:?} -> {:?}",
-                resolved.header, first_resolved.header
+                "Merging {} -> {}",
+                describe_input(&resolved),
+                describe_input(&first_resolved)
             );
         }
-        gpr.merge(&other)?;
+        gpr.merge(&other).map_err(|e| {
+            format!(
+                "Cannot merge {} into {}: {e}",
+                describe_input(&resolved),
+                describe_input(&first_resolved)
+            )
+        })?;
     }
 
     let start_time = std::time::SystemTime::now();
