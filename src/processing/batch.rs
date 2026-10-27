@@ -150,6 +150,9 @@ pub struct BatchPlan {
 pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     let expanded_filepaths = input::expand_cli_inputs(&params.filepaths)?;
     formats::check_cor_count(expanded_filepaths.len(), params.options.cor_path.as_deref())?;
+    for path in &expanded_filepaths {
+        refuse_multiline(path)?;
+    }
     let threshold = params
         .merge
         .as_deref()
@@ -249,6 +252,30 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     })
 }
 
+/// Refuse a file of several IceRadar lines, which a batch cannot split into
+/// recordings yet, with what to do instead. Before anything is processed,
+/// so a batch fails as a whole rather than partway.
+fn refuse_multiline(path: &Path) -> Result<(), String> {
+    let Ok(resolved) = formats::resolve_input(path) else {
+        // Reported, with its context, when the input is read.
+        return Ok(());
+    };
+    if resolved.kind != formats::FormatKind::IceRadar {
+        return Ok(());
+    }
+    let lines = crate::io::iceradar_lines(&resolved.header).map_err(|e| e.to_string())?;
+    if lines.len() > 1 {
+        return Err(format!(
+            "{} holds {} IceRadar lines, and batch processing does not split a file into \
+             lines yet. Process its lines with `ridal process --lines` (`ridal.process(..., \
+             lines=...)` in Python).",
+            path.display(),
+            lines.len()
+        ));
+    }
+    Ok(())
+}
+
 /// One input's header and positions, as planning a batch reads them.
 fn read_for_grouping(path: &Path, params: &BatchRunParams) -> Result<GroupingRecording, String> {
     let mut resolved = formats::resolve_input(path)
@@ -264,6 +291,7 @@ fn read_for_grouping(path: &Path, params: &BatchRunParams) -> Result<GroupingRec
         None,
         params.options.override_antenna_mhz,
         params.options.override_antenna_separation,
+        params.options.override_date,
     )
     .map_err(|e| format!("{}: {e}", path.display()))?;
     GroupingRecording::of(&meta, &location)

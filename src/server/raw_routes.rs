@@ -758,6 +758,7 @@ pub(super) fn read_recordings(
         crs,
         override_antenna_mhz: antenna_mhz,
         override_antenna_separation: antenna_separation,
+        override_date: None,
     })
     .map_err(|e| match dem {
         Some(dem) => format!(

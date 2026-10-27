@@ -592,6 +592,7 @@ pub fn bundles_of(
             Ok(Bundle {
                 format: crate::formats::format_info(resolved.kind).name.to_string(),
                 files: out,
+                part: (!resolved.part.is_whole()).then_some(resolved.part),
             })
         })
         .collect()

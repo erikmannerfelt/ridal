@@ -18,7 +18,7 @@ with the command you ran, the full message and the output of
   Ubuntu) or process without `--dem`.
 
 **"Unsupported input extension"**
-: Ridal reads Malå RAMAC, pulseEKKO and GSSI files (see
+: Ridal reads Malå RAMAC, pulseEKKO, GSSI and IceRadar files (see
   {doc}`../guide/file-formats`), and the input has to be the header, data or
   positions file of one of them.
 

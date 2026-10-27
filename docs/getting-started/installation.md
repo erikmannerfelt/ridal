@@ -63,8 +63,8 @@ ask for a DEM or a CRS that needs them.
 
 ## Supported radar formats
 
-Ridal currently reads Malå (`.rd3`), GSSI (`.dzt`) and pulseEKKO (`.dt1`)
-data. See {doc}`../guide/file-formats` for details.
+Ridal currently reads Malå (`.rd3`), GSSI (`.dzt`), pulseEKKO (`.dt1`) and
+IceRadar (`.h5`) data. See {doc}`../guide/file-formats` for details.
 
 :::{note}
 Before February 2026, Ridal was called `rsgpr`. The CLI and Python interfaces

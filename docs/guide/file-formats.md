@@ -2,16 +2,18 @@
 
 ## Input formats
 
-Ridal reads three families of impulse GPR data. Each recording consists of
-several files that share a name but have different extensions, and any one of
-them can be given as the input, since Ridal finds the others beside it
-regardless of the case of their extensions.
+Ridal reads four families of impulse GPR data. A recording of the first
+three consists of several files that share a name but have different
+extensions, and any one of them can be given as the input, since Ridal finds
+the others beside it regardless of the case of their extensions. An IceRadar
+recording is a single file (see [below](#iceradar)).
 
 | Format | Header | Data | Positions |
 |---|---|---|---|
 | Malå RAMAC (`ramac`) | `.rad` | `.rd3` | `.cor` |
 | Sensors & Software pulseEKKO (`pulseekko`) | `.hd` | `.dt1` | `.gp2` |
 | GSSI (`gssi`) | `.DZT` | `.DZT` | `.DZG` |
+| Blue System Integration IceRadar (`iceradar`) | `.h5`/`.hdf5` | the same file | the same file |
 
 `ridal formats` prints the same table, and `ridal.all_format_descriptions`
 holds it in Python. A path without an extension also works, as long as only
@@ -20,7 +22,8 @@ one format's header sits beside it.
 Positions are required, because a radargram without positions cannot be
 placed on a map, and Ridal refuses to read a recording without them. GSSI and
 pulseEKKO positions are read from the NMEA sentences (`$GPGGA`) in their
-sidecar files. Positions from anywhere else, for any format, can be given as
+sidecar files, and IceRadar positions from the GPS fields stored with each
+trace. Positions from anywhere else, for any format, can be given as
 a coordinate CSV, either beside the recording as `<stem>.coords.csv` or with
 `--cor` (see {ref}`coordinate-csv`).
 
@@ -44,17 +47,83 @@ Antenna frequency
 
 Antenna separation
 : The distance between the transmitter and the receiver (in meters), read
-  from the RAMAC and pulseEKKO headers. A GSSI header does not record it, so
-  it is 0 for GSSI data unless `--override-antenna-separation` gives it. The
-  separation matters for `correct_antenna_separation` and for depths near the
-  surface (see {doc}`coordinates`).
+  from the RAMAC and pulseEKKO headers. GSSI and IceRadar files do not record
+  it, so it is 0 for them, with a warning, unless
+  `--override-antenna-separation` gives it. The separation matters for
+  `correct_antenna_separation` and for depths near the surface (see
+  {doc}`coordinates`).
+
+Date
+: GPS positions in pulseEKKO and IceRadar files carry only a time of day,
+  and the date comes from elsewhere: a pulseEKKO file's header, where in
+  older files it was typed by hand, and an IceRadar line's acquisition PC
+  clock, which is local time. Either can be wrong.
+  `--override-date YYYY-MM-DD` gives the UTC date instead. It is refused for formats whose positions carry their own dates, and for
+  positions from a coordinate CSV.
 
 The medium velocity is not read from any file; it is given with
 `--velocity`, which defaults to 0.168 m/ns (a typical value for most glacier
 ice).
 
 In the GUI, the **Process…** dialog and **Add raw data in bulk…** take the
-same two overrides (see {doc}`gui`).
+antenna overrides (see {doc}`gui`), but not yet the date.
+
+(iceradar)=
+### IceRadar
+
+An IceRadar file is HDF5 holding one or more *lines*. Each line is a
+sequence of traces, stored one per group with the digitizer settings and the
+GPS fix of that trace. Two versions of the acquisition software are known,
+with differently named fields, and Ridal reads both. There is no public
+description of the format, so what follows is what Ridal assumes.
+
+Lines
+: A file of one line is read like any other recording. A file of several
+  needs `--lines` (`lines=` in Python), and fails with a list of its lines
+  and their trace counts until it is given: one line (`--lines 3`), several
+  merged in the order given (`--lines 0,2-4`), or `--lines all`. Lines are
+  merged as several files are, so lines recorded with different settings,
+  such as a different record length, are refused with the reason. The
+  output of one line of a multi-line file is named `<stem>_line_<N>.nc`.
+  `batch-process` does not split a file into lines yet, and refuses a file
+  of several.
+
+Antenna
+: IceRadar files record neither the antenna frequency nor the antenna
+  separation. `--override-antenna-mhz` is required, and the separation is
+  0 m with a warning unless `--override-antenna-separation` gives it.
+
+Date
+: The GPS gives the time of day in UTC. The date is the acquisition PC's,
+  which is local time and may be off by hours, so Ridal warns that it used
+  it. A file whose PC clock was at its reset value (1 January 2000) is
+  refused until `--override-date` gives the date. A line that runs past
+  midnight UTC continues into the next day.
+
+Positions
+: Positions are read as north and east, since the files do not record the
+  hemisphere, and one version names the longitude `Long_ W` for data from
+  east of Greenwich. A trace's fix is used only when the file marks it valid
+  and every field is shaped as GPS gives it, since some files hold shifted
+  fields in traces marked valid. Traces without a usable fix are placed by
+  interpolation, as between the fixes of any other format. A
+  coordinate CSV ({ref}`coordinate-csv`) for a file of several lines needs a
+  `line` column, and trace N in it is the file's `location_N`.
+
+Traces
+: Samples are converted from volts to millivolts. Traces that captured
+  nothing (a stacking count of 0) are kept, as the zeros they hold, so that
+  trace N is the file's `location_N`, and their GPS fixes are used;
+  `remove_empty_traces`, the first step of the default profile, leaves them
+  out. When the record length
+  changes within a line, the traces are aligned on the trigger and the
+  shorter ones are padded with zeros to the longest. The time window starts
+  at the start of the record, before the trigger, so time zero is found by
+  `zero_corr` as for the other formats.
+
+Autosaves
+: The software keeps a copy of the first part of a recording as
+  `<name>.hdf5.x1`. Ridal refuses it and names the file it belongs to.
 
 ### From positions to traces
 

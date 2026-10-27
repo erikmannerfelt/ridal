@@ -151,6 +151,7 @@ What the server answers. Each mirrors a schema in
 .. autoclass:: ridal.client.Source
 .. autoclass:: ridal.client.SourceNames
 .. autoclass:: ridal.client.Bundle
+.. autoclass:: ridal.client.Part
 .. autoclass:: ridal.client.BundleFile
 .. autoclass:: ridal.client.SourceDem
 .. autoclass:: ridal.client.Recording

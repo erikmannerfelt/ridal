@@ -20,6 +20,7 @@ pub struct InfoParams {
     pub crs: Option<String>,
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
+    pub override_date: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -369,6 +370,7 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
             "override_antenna_separation",
             params.override_antenna_separation.is_some(),
         ),
+        ("override_date", params.override_date.is_some()),
     ];
     if let Some(netcdf) = expanded.iter().find(|input| input::is_netcdf(input)) {
         let given: Vec<&str> = raw_only
@@ -407,6 +409,7 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
             params.dem_path.as_ref(),
             params.override_antenna_mhz,
             params.override_antenna_separation,
+            params.override_date,
         )?;
         records.push(Inspected::Raw(info_record(&resolved, &meta, &location)?));
     }
@@ -429,6 +432,7 @@ pub(crate) mod tests {
             crs: None,
             override_antenna_mhz: None,
             override_antenna_separation: None,
+            override_date: None,
         }
     }
 
@@ -702,13 +706,16 @@ mod coordinate_tests {
             crs: None,
             override_antenna_mhz: None,
             override_antenna_separation: None,
+            override_date: None,
         }
     }
 
     fn read(resolved: &formats::ResolvedInput) -> Result<super::GPRLocation, String> {
-        crate::processing::input::load_meta_and_location(resolved, 0.168, None, None, None, None)
-            .map(|(_, location)| location)
-            .map_err(|e| e.to_string())
+        crate::processing::input::load_meta_and_location(
+            resolved, 0.168, None, None, None, None, None,
+        )
+        .map(|(_, location)| location)
+        .map_err(|e| e.to_string())
     }
 
     #[test]

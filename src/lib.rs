@@ -204,6 +204,77 @@ pub mod ridal {
         Ok(Some(parts?.join(",")))
     }
 
+    /// `override_date=`: a `datetime.date` or a `"YYYY-MM-DD"` string. A
+    /// `datetime.datetime` is refused rather than cut to its date, since its
+    /// time zone could make that the wrong day.
+    fn date_arg(py: Python<'_>, value: Option<Py<PyAny>>) -> PyResult<Option<chrono::NaiveDate>> {
+        use pyo3::exceptions::{PyTypeError, PyValueError};
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let value = value.bind(py);
+        let datetime = py.import("datetime")?;
+        let text = if value.is_instance(&datetime.getattr("datetime")?)? {
+            return Err(PyTypeError::new_err(
+                "override_date must be a date, not a datetime: give the UTC date, \
+                 for example dt.date() after converting it to UTC",
+            ));
+        } else if value.is_instance(&datetime.getattr("date")?)? {
+            value.call_method0("isoformat")?.extract::<String>()?
+        } else if let Ok(text) = value.extract::<String>() {
+            text
+        } else {
+            return Err(PyTypeError::new_err(
+                "override_date must be a datetime.date or a \"YYYY-MM-DD\" string",
+            ));
+        };
+        chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
+            .map(Some)
+            .map_err(|e| {
+                PyValueError::new_err(format!(
+                    "override_date {text:?} is not a YYYY-MM-DD date: {e}"
+                ))
+            })
+    }
+
+    /// `lines=`: an int, a sequence of ints, or a string as `--lines` takes
+    /// it (`"all"`, `"0,2-4"`).
+    fn lines_arg(
+        py: Python<'_>,
+        value: Option<Py<PyAny>>,
+    ) -> PyResult<Option<formats::LineSelection>> {
+        use pyo3::exceptions::{PyTypeError, PyValueError};
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let value = value.bind(py);
+        if let Ok(text) = value.extract::<String>() {
+            return text
+                .parse::<formats::LineSelection>()
+                .map(Some)
+                .map_err(PyValueError::new_err);
+        }
+        let lines = if let Ok(line) = value.extract::<u32>() {
+            vec![line]
+        } else if let Ok(lines) = value.extract::<Vec<u32>>() {
+            lines
+        } else {
+            return Err(PyTypeError::new_err(
+                "lines must be an int, a sequence of ints, or a string such as \"all\" or \"0,2-4\"",
+            ));
+        };
+        // Through the parser, so a repeated or empty selection is refused
+        // here as it is on the command line.
+        let text = lines
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        text.parse::<formats::LineSelection>()
+            .map(Some)
+            .map_err(PyValueError::new_err)
+    }
+
     /// The processing options `process()` and `batch_process()` share.
     #[allow(clippy::too_many_arguments)]
     fn processing_options(
@@ -222,6 +293,8 @@ pub mod ridal {
         no_export: bool,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
+        override_date: Option<Py<PyAny>>,
+        lines: Option<Py<PyAny>>,
         metadata: Option<Py<PyAny>>,
         group_name: Option<String>,
         group_id: Option<String>,
@@ -245,6 +318,8 @@ pub mod ridal {
             render_topo,
             override_antenna_mhz,
             override_antenna_separation,
+            override_date: date_arg(py, override_date)?,
+            lines: lines_arg(py, lines)?,
             user_metadata: optional_metadata(py, metadata)?,
             group: group_name,
             group_id,
@@ -370,8 +445,8 @@ pub mod ridal {
     /// cor : path-like, optional
     ///     Positions to use instead of the recording's own. A file (the
     ///     format's own positions file, such as a ``.cor``, or a Ridal
-    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
-    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording
+    ///     or the lines of one IceRadar file, or a directory holding ``<stem>.coords.csv`` or the format's own
     ///     positions file for each. Without it, a ``<stem>.coords.csv``
     ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
@@ -410,6 +485,17 @@ pub mod ridal {
     ///     Override the antenna center frequency inferred from the input data.
     /// override_antenna_separation : float, optional
     ///     Override the antenna separation inferred from the input data.
+    /// override_date : datetime.date or str, optional
+    ///     The UTC date of recordings whose files record only a time of day,
+    ///     or a date that may be wrong: IceRadar, whose date is the
+    ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
+    ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
+    /// lines : int, sequence of int or str, optional
+    ///     Which lines of a file holding several (IceRadar) to read: one
+    ///     (``3``), several merged in the order given (``[0, 2, 3]`` or
+    ///     ``"0,2-3"``), or ``"all"``. Lines recorded with different settings
+    ///     cannot be merged. Required for a file of more than one line, and
+    ///     refused for formats without lines.
     /// metadata : mapping, optional
     ///     Additional user metadata to attach to the result. This should be a
     ///     JSON-serializable mapping. Root keys are interpreted as strings.
@@ -492,6 +578,8 @@ pub mod ridal {
         no_export=false,
         override_antenna_mhz=None,
         override_antenna_separation=None,
+        override_date=None,
+        lines=None,
         metadata=None,
         radargram_id=None,
         radargram_name=None,
@@ -520,6 +608,8 @@ pub mod ridal {
         no_export: bool,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
+        override_date: Option<Py<PyAny>>,
+        lines: Option<Py<PyAny>>,
         metadata: Option<Py<PyAny>>,
         radargram_id: Option<String>,
         radargram_name: Option<String>,
@@ -572,6 +662,8 @@ pub mod ridal {
             no_export || return_dataset,
             override_antenna_mhz,
             override_antenna_separation,
+            override_date,
+            lines,
             metadata,
             group_name,
             group_id,
@@ -624,8 +716,8 @@ pub mod ridal {
     /// cor : path-like, optional
     ///     Positions to use instead of the recording's own. A file (the
     ///     format's own positions file, such as a ``.cor``, or a Ridal
-    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
-    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording
+    ///     or the lines of one IceRadar file, or a directory holding ``<stem>.coords.csv`` or the format's own
     ///     positions file for each. Without it, a ``<stem>.coords.csv``
     ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
@@ -635,6 +727,19 @@ pub mod ridal {
     ///     If omitted, the most appropriate WGS84 UTM zone is used.
     /// override_antenna_mhz : float, optional
     ///     Override the antenna center frequency inferred from the input data.
+    /// override_antenna_separation : float, optional
+    ///     Override the antenna separation inferred from the input data.
+    /// override_date : datetime.date or str, optional
+    ///     The UTC date of recordings whose files record only a time of day,
+    ///     or a date that may be wrong: IceRadar, whose date is the
+    ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
+    ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
+    /// lines : int, sequence of int or str, optional
+    ///     Which lines of a file holding several (IceRadar) to read: one
+    ///     (``3``), several merged in the order given (``[0, 2, 3]`` or
+    ///     ``"0,2-3"``), or ``"all"``. Lines recorded with different settings
+    ///     cannot be merged. Required for a file of more than one line, and
+    ///     refused for formats without lines.
     /// metadata : mapping, optional
     ///     Additional user metadata to attach to the returned dataset. This should
     ///     be a JSON-serializable mapping. Root keys are interpreted as strings.
@@ -677,6 +782,8 @@ pub mod ridal {
         crs=None,
         override_antenna_mhz=None,
         override_antenna_separation=None,
+        override_date=None,
+        lines=None,
         metadata=None,
         return_dataset_format="xarray_dict"
     ))]
@@ -689,6 +796,8 @@ pub mod ridal {
         crs: Option<String>,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
+        override_date: Option<Py<PyAny>>,
+        lines: Option<Py<PyAny>>,
         metadata: Option<Py<PyAny>>,
         return_dataset_format: &str,
     ) -> PyResult<Py<PyAny>> {
@@ -713,6 +822,8 @@ pub mod ridal {
             false,
             override_antenna_mhz,
             override_antenna_separation,
+            override_date,
+            lines,
             metadata,
             None,
             None,
@@ -754,8 +865,8 @@ pub mod ridal {
     /// cor : path-like, optional
     ///     Positions to use instead of the recording's own. A file (the
     ///     format's own positions file, such as a ``.cor``, or a Ridal
-    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
-    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording
+    ///     or the lines of one IceRadar file, or a directory holding ``<stem>.coords.csv`` or the format's own
     ///     positions file for each. Without it, a ``<stem>.coords.csv``
     ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
@@ -797,6 +908,13 @@ pub mod ridal {
     ///     https://docs.rs/parse_duration/latest/parse_duration/#syntax
     /// override_antenna_mhz : float, optional
     ///     Override the antenna center frequency inferred from the input data.
+    /// override_antenna_separation : float, optional
+    ///     Override the antenna separation inferred from the input data.
+    /// override_date : datetime.date or str, optional
+    ///     The UTC date of recordings whose files record only a time of day,
+    ///     or a date that may be wrong: IceRadar, whose date is the
+    ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
+    ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
     /// metadata : mapping, optional
     ///     Additional user metadata to attach independently to each produced output.
     ///     This should be a JSON-serializable mapping. Root keys are interpreted as
@@ -875,6 +993,7 @@ pub mod ridal {
         merge=None,
         override_antenna_mhz=None,
         override_antenna_separation=None,
+        override_date=None,
         metadata=None,
         group_id=None,
         group_name=None,
@@ -902,6 +1021,7 @@ pub mod ridal {
         merge: Option<String>,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
+        override_date: Option<Py<PyAny>>,
         metadata: Option<Py<PyAny>>,
         group_id: Option<String>,
         group_name: Option<String>,
@@ -941,6 +1061,9 @@ pub mod ridal {
                 no_export,
                 override_antenna_mhz,
                 override_antenna_separation,
+                override_date,
+                // Batch processing does not split a file into lines yet.
+                None,
                 metadata,
                 group_name,
                 group_id,
@@ -1289,8 +1412,8 @@ pub mod ridal {
     /// cor : path-like, optional
     ///     Positions to use instead of the recording's own. A file (the
     ///     format's own positions file, such as a ``.cor``, or a Ridal
-    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
-    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording
+    ///     or the lines of one IceRadar file, or a directory holding ``<stem>.coords.csv`` or the format's own
     ///     positions file for each. Without it, a ``<stem>.coords.csv``
     ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
@@ -1302,6 +1425,11 @@ pub mod ridal {
     ///     Override the antenna center frequency inferred from the input data.
     /// override_antenna_separation : float, optional
     ///     Override the antenna separation inferred from the input data.
+    /// override_date : datetime.date or str, optional
+    ///     The UTC date of recordings whose files record only a time of day,
+    ///     or a date that may be wrong: IceRadar, whose date is the
+    ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
+    ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
     ///
     /// Returns
     /// -------
@@ -1343,6 +1471,7 @@ pub mod ridal {
         crs=None,
         override_antenna_mhz=None,
         override_antenna_separation=None,
+        override_date=None,
     ))]
     fn info(
         py: Python<'_>,
@@ -1353,6 +1482,7 @@ pub mod ridal {
         crs: Option<String>,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
+        override_date: Option<Py<PyAny>>,
     ) -> PyResult<Vec<Py<PyAny>>> {
         let input_paths = inputs_to_paths(py, inputs.bind(py))?;
         let cor_path = optional_path(py, cor)?;
@@ -1366,6 +1496,7 @@ pub mod ridal {
             crs,
             override_antenna_mhz,
             override_antenna_separation,
+            override_date: date_arg(py, override_date)?,
         };
         let records = crate::inspect::inspect(params)
             .map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;

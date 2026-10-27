@@ -344,7 +344,17 @@ impl GPR {
             )?),
             _ => Err(format!("Unknown filetype: {:?}", metadata.data_filepath)),
         }?;
+        Self::from_meta_loc_and_data(location, metadata, data)
+    }
 
+    /// A radargram from data read elsewhere: for a format whose data file
+    /// alone does not say what to read, such as one line of an IceRadar
+    /// file.
+    pub fn from_meta_loc_and_data(
+        location: GPRLocation,
+        metadata: GPRMeta,
+        data: Array2<f32>,
+    ) -> Result<GPR, Box<dyn Error>> {
         let n_traces = data.shape()[1];
         if n_traces == 0 {
             return Err("the data file holds no traces".into());

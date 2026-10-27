@@ -718,7 +718,7 @@ pub struct RecordingArgs {
     #[arg(short, long, default_value_t = crate::processing::DEFAULT_MEDIUM_VELOCITY)]
     pub velocity: f32,
 
-    /// Positions to use instead of the recording's own: a file (the format's own, such as a ".cor", or a Ridal coordinate CSV of trace,time,lon,lat[,alt]) for one recording, or a directory holding "<stem>.coords.csv" or the format's own positions file for each. Without it, a "<stem>.coords.csv" beside a recording is used before its own positions file.
+    /// Positions to use instead of the recording's own: a file (the format's own, such as a ".cor", or a Ridal coordinate CSV of trace,time,lon,lat[,alt]) for one recording or the lines of one IceRadar file, or a directory holding "<stem>.coords.csv" or the format's own positions file for each. Without it, a "<stem>.coords.csv" beside a recording is used before its own positions file.
     #[arg(short, long)]
     pub cor: Option<PathBuf>,
 
@@ -737,6 +737,12 @@ pub struct RecordingArgs {
     /// Override the antenna separation (in m) from file metadata
     #[arg(long)]
     pub override_antenna_separation: Option<f32>,
+
+    /// The UTC date (YYYY-MM-DD) of recordings whose files record only a
+    /// time of day, or a date that is wrong: IceRadar, whose date is the
+    /// acquisition PC's clock, and pulseEKKO.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    pub override_date: Option<chrono::NaiveDate>,
 }
 
 /// How a recording is processed and what is written: shared by `process`
@@ -823,6 +829,8 @@ impl RunArgs {
             render_topo: self.render_topo,
             override_antenna_mhz: recording.override_antenna_mhz,
             override_antenna_separation: recording.override_antenna_separation,
+            override_date: recording.override_date,
+            lines: None,
             user_metadata: user_metadata::parse_cli_metadata(&self.metadata)?,
             group,
             group_id,
@@ -842,6 +850,14 @@ pub struct ProcessArgs {
 
     #[command(flatten)]
     pub run: RunArgs,
+
+    /// Which lines of a file holding several (IceRadar) to process: "all",
+    /// or line numbers and ranges separated by commas, such as "3" or
+    /// "0,2-4". Several lines are merged in the order given, and lines
+    /// recorded with different settings cannot be. Required for a file of
+    /// more than one line.
+    #[arg(long, value_name = "LINES")]
+    pub lines: Option<crate::formats::LineSelection>,
 
     /// Export the location track to CSV. If no value is given, a sidecar path is derived from the output path.
     #[arg(short, long)]
@@ -1312,9 +1328,12 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
         render_path: args.render.clone(),
         radargram_id: args.radargram_id.clone(),
         display_name: args.display_name.clone(),
-        options: args
-            .run
-            .options(args.group.clone(), args.group_id.clone())?,
+        options: crate::processing::ProcessingOptions {
+            lines: args.lines.clone(),
+            ..args
+                .run
+                .options(args.group.clone(), args.group_id.clone())?
+        },
     };
 
     let result = crate::processing::run(params).map_err(|e| e.to_string())?;
@@ -1428,6 +1447,7 @@ fn info_command(args: InfoArgs) -> Result<(), String> {
         crs: args.recording.crs,
         override_antenna_mhz: args.recording.override_antenna_mhz,
         override_antenna_separation: args.recording.override_antenna_separation,
+        override_date: args.recording.override_date,
     };
     let records = crate::inspect::inspect(params).map_err(|e| format!("{e:?}"))?;
     if args.json {

@@ -11678,7 +11678,8 @@
         "description": "The files of one raw recording, as they were read.\n\n`coordinates` is the file the positions were actually read from: a\n`--cor` override when one was given, otherwise the recording's own.",
         "required": [
           "format",
-          "files"
+          "files",
+          "part"
         ],
         "properties": {
           "format": {
@@ -11690,6 +11691,17 @@
             "items": {
               "$ref": "#/components/schemas/BundleFile"
             }
+          },
+          "part": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Part",
+                "description": "The part of the file read, for a format whose files can hold\nseveral recordings (an IceRadar line), and `null` for the whole file."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -15808,6 +15820,24 @@
           },
           "x_scale": {
             "type": "boolean"
+          }
+        }
+      },
+      "Part": {
+        "type": "object",
+        "description": "Which part of a file holding several recordings one recording is.\n\nEvery field `None` (the default) is the whole file, which is every\nrecording of a format whose files hold one. Lines (IceRadar) are\nrecorded one after another and may be merged in order; a field for\nchannels, recorded side by side, would sit beside `line` and never be\nmerged. Internal: users choose with the format's own word (`--lines`).",
+        "required": [
+          "line"
+        ],
+        "properties": {
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The line, of an IceRadar file.",
+            "minimum": 0
           }
         }
       },

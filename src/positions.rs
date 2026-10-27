@@ -115,7 +115,7 @@ pub fn build(request: &Request) -> Result<Built, String> {
     let header_name = file_name(&resolved.header);
     // Nothing here depends on the antenna, so one whose frequency the
     // header does not state should not stop it.
-    let meta = crate::processing::input::load_meta(&resolved, 0.168, Some(0.), None)
+    let meta = crate::processing::input::load_meta(&resolved, 0.168, Some(0.), None, None)
         .map_err(|e| format!("{}: {e}", resolved.header.display()))?;
     let n_traces = meta.last_trace;
     if n_traces == 0 {
@@ -188,7 +188,12 @@ pub fn build(request: &Request) -> Result<Built, String> {
         .as_ref()
         .map(|given| coords::UtmCrs::optimal_crs(&given[0].position).to_epsg_str());
     let own = if own_path.is_file() {
-        match crate::processing::input::load_positions(&resolved, &own_path, working_crs.as_ref()) {
+        match crate::processing::input::load_positions(
+            &resolved,
+            &own_path,
+            working_crs.as_ref(),
+            None,
+        ) {
             Ok(own) => Some(own),
             Err(e) if given.is_some() || request.track.is_some() => {
                 warnings.push(format!(
@@ -897,10 +902,13 @@ mod tests {
             &resolved,
             &formats::own_positions(&resolved),
             None,
+            None,
         )
         .unwrap()
         .range_fill(0, TRACES as u32, 0.2);
-        let from_csv = crate::io::load_coords_csv(&csv, Some(&from_cor.crs)).unwrap();
+        let from_csv =
+            crate::io::load_coords_csv(&csv, crate::io::CsvPart::Whole, Some(&from_cor.crs))
+                .unwrap();
         assert_eq!(from_csv.time_source, TimeSource::Recorded);
         assert_eq!(from_csv.cor_points.len(), TRACES);
         for (a, b) in from_csv.cor_points.iter().zip(&from_cor.cor_points) {
@@ -974,7 +982,7 @@ mod tests {
 
         let csv = dir.path().join("out.coords.csv");
         crate::io::write_coords_csv(&csv, &built.rows, &built.comments).unwrap();
-        let read = crate::io::load_coords_csv(&csv, None).unwrap();
+        let read = crate::io::load_coords_csv(&csv, crate::io::CsvPart::Whole, None).unwrap();
         assert_eq!(read.time_source, TimeSource::Synthetic);
         assert!(matches!(
             read.correction,

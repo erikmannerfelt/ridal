@@ -5,6 +5,7 @@ pub enum FormatKind {
     Ramac,
     PulseEkko,
     Gssi,
+    IceRadar,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -35,6 +36,34 @@ pub struct ResolvedInput {
     pub header: PathBuf,
     pub data: PathBuf,
     pub coordinates: PathBuf,
+    /// Which part of the file is the recording: all of it, unless the
+    /// format's files can hold several recordings. Set by [`with_lines`].
+    pub part: Part,
+}
+
+/// Which part of a file holding several recordings one recording is.
+///
+/// Every field `None` (the default) is the whole file, which is every
+/// recording of a format whose files hold one. Lines (IceRadar) are
+/// recorded one after another and may be merged in order; a field for
+/// channels, recorded side by side, would sit beside `line` and never be
+/// merged. Internal: users choose with the format's own word (`--lines`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct Part {
+    /// The line, of an IceRadar file.
+    // Defaulted, so a field added beside it later still reads a recipe
+    // written before it.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub line: Option<u32>,
+}
+
+impl Part {
+    /// Whether this is the whole file.
+    pub fn is_whole(&self) -> bool {
+        *self == Part::default()
+    }
 }
 
 pub fn all_formats() -> Vec<FormatInfo> {
@@ -78,6 +107,19 @@ pub fn all_formats() -> Vec<FormatInfo> {
                 coordinates: ".DZG",
             },
         },
+        FormatInfo {
+            name: "iceradar",
+            description: "Blue System Integration IceRadar HDF5 format",
+            capabilities: FormatCapabilities {
+                read: true,
+                write: false,
+            },
+            files: FormatFiles {
+                header: ".h5",
+                data: ".h5",
+                coordinates: ".h5",
+            },
+        },
     ]
 }
 
@@ -95,6 +137,30 @@ pub fn format_info(kind: FormatKind) -> FormatInfo {
             .into_iter()
             .find(|fmt| fmt.name == "gssi")
             .unwrap(),
+        FormatKind::IceRadar => all_formats()
+            .into_iter()
+            .find(|fmt| fmt.name == "iceradar")
+            .unwrap(),
+    }
+}
+
+/// The format's name as its maker writes it, for messages.
+pub fn display_name(kind: FormatKind) -> &'static str {
+    match kind {
+        FormatKind::Ramac => "RAMAC",
+        FormatKind::PulseEkko => "pulseEKKO",
+        FormatKind::Gssi => "GSSI",
+        FormatKind::IceRadar => "IceRadar",
+    }
+}
+
+/// Whether the format's header gives the antenna separation. Where it does
+/// not, the separation is 0 m unless the user gives one, which processing
+/// warns about.
+pub fn records_antenna_separation(kind: FormatKind) -> bool {
+    match kind {
+        FormatKind::Ramac | FormatKind::PulseEkko => true,
+        FormatKind::Gssi | FormatKind::IceRadar => false,
     }
 }
 
@@ -189,6 +255,9 @@ pub fn resolve_input(input: &Path) -> Result<ResolvedInput, String> {
 /// whether or not it exists, and whatever [`resolve_input`] or `--cor`
 /// chose instead.
 pub fn own_positions(resolved: &ResolvedInput) -> PathBuf {
+    if resolved.kind == FormatKind::IceRadar {
+        return resolved.header.clone();
+    }
     let native = format_info(resolved.kind).files.coordinates;
     resolve_sidecar(&resolved.header, native.trim_start_matches('.'))
 }
@@ -210,7 +279,8 @@ pub fn check_cor_count(n_recordings: usize, cor: Option<&Path>) -> Result<(), St
 /// Apply `--cor` (`cor=` in Python) to resolved recordings.
 ///
 /// - `None`: each keeps the positions [`resolve_input`] found.
-/// - A file: the positions of the one recording given.
+/// - A file: the positions of the one recording given, or of every line
+///   given of one IceRadar file.
 /// - A directory: for each recording, `<stem>.coords.csv` in it, or else
 ///   the format's own positions file with that stem (`<stem>.cor`), where
 ///   `<stem>` is the header's.
@@ -222,10 +292,16 @@ pub fn with_coordinates(resolved: &mut [ResolvedInput], cor: Option<&Path>) -> R
     let Some(cor) = cor else {
         return Ok(());
     };
-    check_cor_count(resolved.len(), Some(cor))?;
+    // The lines of one IceRadar file are one recording here: a coordinate
+    // CSV holds them all, telling them apart by its `line` column.
+    let mut files = resolved.iter().map(|r| &r.header).collect::<Vec<_>>();
+    files.dedup();
+    check_cor_count(files.len(), Some(cor))?;
     if !cor.is_dir() {
-        if let [one] = resolved {
-            one.coordinates = cor.to_path_buf();
+        if files.len() == 1 {
+            for recording in resolved.iter_mut() {
+                recording.coordinates = cor.to_path_buf();
+            }
         }
         return Ok(());
     }
@@ -248,6 +324,133 @@ pub fn with_coordinates(resolved: &mut [ResolvedInput], cor: Option<&Path>) -> R
     Ok(())
 }
 
+/// Whether an extension is that of an IceRadar autosave: `x1` in
+/// `name.hdf5.x1`.
+fn is_iceradar_autosave(extension: &str) -> bool {
+    extension.len() > 1
+        && extension.starts_with('x')
+        && extension[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Which lines of a multi-line file to read: `--lines`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineSelection {
+    All,
+    /// In the order given, which is the order they are merged in.
+    Some(Vec<u32>),
+}
+
+impl std::str::FromStr for LineSelection {
+    type Err = String;
+
+    /// `all`, or a comma-separated list of line numbers and ranges:
+    /// `3`, `0,2-4`.
+    fn from_str(text: &str) -> Result<Self, String> {
+        if text.trim().eq_ignore_ascii_case("all") {
+            return Ok(LineSelection::All);
+        }
+        let bad = |part: &str| {
+            format!(
+                "{part:?} in lines {text:?} is not a line number or a range: give \"all\", or \
+                 numbers and ranges separated by commas, such as 0,2-4"
+            )
+        };
+        let mut lines = Vec::new();
+        for part in text.split(',').map(str::trim) {
+            match part.split_once('-') {
+                Some((from, to)) => {
+                    let from = from.trim().parse::<u32>().map_err(|_| bad(part))?;
+                    let to = to.trim().parse::<u32>().map_err(|_| bad(part))?;
+                    if to < from {
+                        return Err(bad(part));
+                    }
+                    lines.extend(from..=to);
+                }
+                None => lines.push(part.parse::<u32>().map_err(|_| bad(part))?),
+            }
+        }
+        if let Some(line) = lines
+            .iter()
+            .enumerate()
+            .find_map(|(i, line)| lines[..i].contains(line).then_some(line))
+        {
+            return Err(format!("Line {line} is given twice in lines {text:?}"));
+        }
+        Ok(LineSelection::Some(lines))
+    }
+}
+
+/// Expand each multi-line recording into one input per selected line, in
+/// the order given, for the caller to merge as it merges several files.
+///
+/// A file of one line needs no selection. A file of several needs one, and
+/// the error lists its lines. A selection for inputs that hold no lines is
+/// refused rather than ignored.
+pub fn with_lines(
+    resolved: Vec<ResolvedInput>,
+    selection: Option<&LineSelection>,
+) -> Result<Vec<ResolvedInput>, String> {
+    if selection.is_some() && resolved.iter().all(|r| r.kind != FormatKind::IceRadar) {
+        return Err(
+            "--lines (lines= in Python) applies to IceRadar files only; none was given".to_string(),
+        );
+    }
+    let mut out = Vec::new();
+    for recording in resolved {
+        if recording.kind != FormatKind::IceRadar {
+            out.push(recording);
+            continue;
+        }
+        let lines = crate::io::iceradar_lines(&recording.header).map_err(|e| e.to_string())?;
+        let available = lines.iter().map(|(n, _)| *n).collect::<Vec<_>>();
+        let chosen = match (selection, &lines[..]) {
+            // Left unset, so the output and the recipe are those of a
+            // file without lines; the reader takes the only one.
+            (None, [_]) => {
+                out.push(recording);
+                continue;
+            }
+            (None, _) => {
+                let listing = lines
+                    .iter()
+                    .map(|(n, traces)| format!("line_{n} ({traces} traces)"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!(
+                    "{} holds {} lines: {listing}. Choose which to process with --lines (lines= in Python): \
+                     one (--lines {first}), several, merged in the order given (--lines \
+                     {first},{second}), or all of them (--lines all). Lines recorded with \
+                     different settings cannot be merged.",
+                    recording.header.display(),
+                    lines.len(),
+                    first = available[0],
+                    second = available[1],
+                ));
+            }
+            (Some(LineSelection::All), _) => available.clone(),
+            (Some(LineSelection::Some(wanted)), _) => {
+                if let Some(missing) = wanted.iter().find(|n| !available.contains(n)) {
+                    return Err(format!(
+                        "{} has no line {missing}; its lines are {}",
+                        recording.header.display(),
+                        available
+                            .iter()
+                            .map(u32::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                wanted.clone()
+            }
+        };
+        out.extend(chosen.into_iter().map(|line| ResolvedInput {
+            part: Part { line: Some(line) },
+            ..recording.clone()
+        }));
+    }
+    Ok(out)
+}
+
 /// A recording's files from any one of them, with the format's own
 /// positions file.
 fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
@@ -263,6 +466,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             header: resolve_sidecar(input, "rad"),
             data: resolve_sidecar(input, "rd3"),
             coordinates: resolve_sidecar(input, "cor"),
+            part: Part::default(),
         }),
         Some("rd3") | Some("cor") => Ok(ResolvedInput {
             input: input.to_path_buf(),
@@ -270,6 +474,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             header: resolve_sidecar(input, "rad"),
             data: resolve_sidecar(input, "rd3"),
             coordinates: resolve_sidecar(input, "cor"),
+            part: Part::default(),
         }),
         Some("hd") => Ok(ResolvedInput {
             input: input.to_path_buf(),
@@ -277,6 +482,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             header: resolve_sidecar(input, "hd"),
             data: resolve_sidecar(input, "dt1"),
             coordinates: resolve_sidecar(input, "gp2"),
+            part: Part::default(),
         }),
         Some("dt1") | Some("gp2") => Ok(ResolvedInput {
             input: input.to_path_buf(),
@@ -284,6 +490,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             header: resolve_sidecar(input, "hd"),
             data: resolve_sidecar(input, "dt1"),
             coordinates: resolve_sidecar(input, "gp2"),
+            part: Part::default(),
         }),
         Some("dzt") | Some("dzg") | Some("dzx") => Ok(ResolvedInput {
             input: input.to_path_buf(),
@@ -291,9 +498,24 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             header: resolve_sidecar(input, "dzt"),
             data: resolve_sidecar(input, "dzt"),
             coordinates: resolve_sidecar(input, "dzg"),
+            part: Part::default(),
         }),
+        // One file is header, data and positions at once.
+        Some("h5") | Some("hdf5") => Ok(ResolvedInput {
+            input: input.to_path_buf(),
+            kind: FormatKind::IceRadar,
+            header: input.to_path_buf(),
+            data: input.to_path_buf(),
+            coordinates: input.to_path_buf(),
+            part: Part::default(),
+        }),
+        Some(autosave) if is_iceradar_autosave(autosave) => Err(format!(
+            "{:?} looks like an IceRadar autosave, a copy of the first part of the file it is named after. Give that file ({:?}) instead.",
+            input,
+            input.with_extension("")
+        )),
         Some(other) => Err(format!(
-            "Unsupported input extension '.{other}' for {:?}. Supported formats are RAMAC (.rad/.rd3/.cor), pulseEKKO (.hd/.dt1/.gp2), and GSSI (.dzt/.dzg/.dzx), and a recording's <stem>{COORDS_CSV_SUFFIX}.",
+            "Unsupported input extension '.{other}' for {:?}. Supported formats are RAMAC (.rad/.rd3/.cor), pulseEKKO (.hd/.dt1/.gp2), GSSI (.dzt/.dzg/.dzx) and IceRadar (.h5/.hdf5), and a recording's <stem>{COORDS_CSV_SUFFIX}.",
             input
         )),
         None => {
@@ -307,6 +529,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
                     header: ramac.clone(),
                     data: resolve_sidecar(&ramac, "rd3"),
                     coordinates: resolve_sidecar(&ramac, "cor"),
+                    part: Part::default(),
                 }),
                 (None, Some(pulseekko), None) => Ok(ResolvedInput {
                     input: input.to_path_buf(),
@@ -314,6 +537,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
                     header: pulseekko.clone(),
                     data: resolve_sidecar(&pulseekko, "dt1"),
                     coordinates: resolve_sidecar(&pulseekko, "gp2"),
+                    part: Part::default(),
                 }),
                 (None, None, Some(gssi)) => Ok(ResolvedInput {
                     input: input.to_path_buf(),
@@ -321,6 +545,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
                     header: gssi.clone(),
                     data: gssi.clone(),
                     coordinates: resolve_sidecar(&gssi, "dzg"),
+                    part: Part::default(),
                 }),
                 (Some(ramac), Some(pulseekko), None) => Err(format!(
                     "Ambiguous extension-less input {:?}: both {:?} and {:?} exist.",
@@ -365,9 +590,31 @@ mod tests {
             vec![
                 "ramac".to_string(),
                 "pulseekko".to_string(),
-                "gssi".to_string()
+                "gssi".to_string(),
+                "iceradar".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn an_iceradar_file_is_its_own_header_data_and_positions() {
+        for name in ["stor.h5", "heli.HDF5"] {
+            let resolved = resolve_input(Path::new(name)).unwrap();
+            assert_eq!(resolved.kind, FormatKind::IceRadar);
+            assert_eq!(resolved.data, PathBuf::from(name));
+            assert_eq!(resolved.coordinates, PathBuf::from(name));
+            assert_eq!(own_positions(&resolved), PathBuf::from(name));
+            assert!(resolved.part.is_whole());
+        }
+        let error = resolve_input(Path::new("heli.hdf5.x1")).unwrap_err();
+        assert!(error.contains("autosave"), "{error}");
+        assert!(error.contains("heli.hdf5\""), "{error}");
+
+        // --lines is refused rather than ignored for formats without lines.
+        let rad = vec![resolve_input(Path::new("line01.rad")).unwrap()];
+        let all = Some(LineSelection::All);
+        assert!(with_lines(rad.clone(), all.as_ref()).is_err());
+        assert_eq!(with_lines(rad, None).unwrap().len(), 1);
     }
 
     #[test]

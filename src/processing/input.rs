@@ -45,12 +45,14 @@ pub(crate) fn load_meta_and_location(
     dem_path: Option<&PathBuf>,
     override_antenna_mhz: Option<f32>,
     override_antenna_separation: Option<f32>,
+    override_date: Option<chrono::NaiveDate>,
 ) -> Result<(GPRMeta, GPRLocation), Box<dyn Error>> {
     let gpr_meta = load_meta(
         resolved,
         medium_velocity,
         override_antenna_mhz,
         override_antenna_separation,
+        override_date,
     )?;
 
     let positions = &resolved.coordinates;
@@ -68,7 +70,7 @@ pub(crate) fn load_meta_and_location(
         )
         .into());
     }
-    let mut gpr_location = load_positions(resolved, positions, crs)?;
+    let mut gpr_location = load_positions(resolved, positions, crs, override_date)?;
 
     if let Some(dem_path) = dem_path {
         gpr_location.get_dem_elevations(dem_path)?;
@@ -94,6 +96,7 @@ pub(crate) fn load_meta(
     medium_velocity: f32,
     override_antenna_mhz: Option<f32>,
     override_antenna_separation: Option<f32>,
+    override_date: Option<chrono::NaiveDate>,
 ) -> Result<GPRMeta, Box<dyn Error>> {
     if !resolved.header.is_file() {
         return Err(format!("File not found: {:?}", resolved.header).into());
@@ -117,7 +120,46 @@ pub(crate) fn load_meta(
             override_antenna_mhz,
             override_antenna_separation,
         )?,
+        FormatKind::IceRadar => io::load_iceradar_meta(
+            &resolved.header,
+            iceradar_line(resolved)?,
+            medium_velocity,
+            override_antenna_mhz,
+            override_antenna_separation,
+            override_date,
+        )?,
     })
+}
+
+/// The line of an IceRadar recording to read: the one [`formats::with_lines`]
+/// chose, or the only one. A file of several lines that was not expanded
+/// fails with the list of them.
+pub(crate) fn iceradar_line(resolved: &ResolvedInput) -> Result<u32, Box<dyn Error>> {
+    if let Some(line) = resolved.part.line {
+        return Ok(line);
+    }
+    // Refuses a file of several lines, listing them.
+    formats::with_lines(vec![resolved.clone()], None)?;
+    Ok(io::iceradar_lines(&resolved.header)?[0].0)
+}
+
+/// A whole radargram: the header, the positions and the data, of one
+/// recording or of one line of it.
+pub(crate) fn load_gpr(
+    resolved: &ResolvedInput,
+    meta: GPRMeta,
+    location: GPRLocation,
+    override_date: Option<chrono::NaiveDate>,
+) -> Result<crate::gpr::GPR, Box<dyn Error>> {
+    let gpr = match resolved.kind {
+        FormatKind::IceRadar => {
+            let data =
+                io::load_iceradar_data(&resolved.header, iceradar_line(resolved)?, override_date)?;
+            crate::gpr::GPR::from_meta_loc_and_data(location, meta, data)
+        }
+        _ => crate::gpr::GPR::from_meta_and_loc(location, meta),
+    };
+    gpr.map_err(|e| format!("Error loading GPR data from {:?}: {:?}", resolved.data, e).into())
 }
 
 /// The positions in `positions`, for the recording `resolved`: a Ridal
@@ -126,9 +168,38 @@ pub(crate) fn load_positions(
     resolved: &ResolvedInput,
     positions: &Path,
     crs: Option<&String>,
+    override_date: Option<chrono::NaiveDate>,
 ) -> Result<GPRLocation, Box<dyn Error>> {
+    // Only these record a time of day without a trustworthy date.
+    let dated_by_override = !formats::is_coords_csv(positions)
+        && matches!(resolved.kind, FormatKind::IceRadar | FormatKind::PulseEkko);
+    if override_date.is_some() && !dated_by_override {
+        return Err(format!(
+            "--override-date (override_date= in Python) applies to positions read from IceRadar \
+             and pulseEKKO files; \
+             {} gives its own dates",
+            positions.display()
+        )
+        .into());
+    }
     if formats::is_coords_csv(positions) {
-        return io::load_coords_csv(positions, crs);
+        let part = match resolved.kind {
+            // One CSV holds every line of the file, as the file does.
+            FormatKind::IceRadar => io::CsvPart::Line {
+                line: iceradar_line(resolved)?,
+                several: io::iceradar_lines(&resolved.header)?.len() > 1,
+            },
+            _ => io::CsvPart::Whole,
+        };
+        return io::load_coords_csv(positions, part, crs);
+    }
+    if resolved.kind == FormatKind::IceRadar && positions == resolved.header {
+        return io::load_iceradar_positions(
+            &resolved.header,
+            iceradar_line(resolved)?,
+            override_date,
+            crs,
+        );
     }
     let native = formats::format_info(resolved.kind).files.coordinates;
     let is_native = positions
@@ -147,8 +218,15 @@ pub(crate) fn load_positions(
     }
     match resolved.kind {
         FormatKind::Ramac => io::load_cor(positions, crs),
-        FormatKind::PulseEkko => io::load_pe_gp2(positions, crs),
+        FormatKind::PulseEkko => io::load_pe_gp2(positions, crs, override_date),
         FormatKind::Gssi => io::load_gssi_dzg(positions, crs),
+        FormatKind::IceRadar => Err(format!(
+            "{} cannot hold the positions of {}: an IceRadar recording's positions are in \
+             the file itself, or in a Ridal coordinate CSV (.csv).",
+            positions.display(),
+            resolved.header.display(),
+        )
+        .into()),
     }
 }
 
@@ -188,4 +266,60 @@ pub(crate) fn expand_cli_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, Stri
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resolved(kind: FormatKind, header: &str) -> ResolvedInput {
+        ResolvedInput {
+            input: header.into(),
+            kind,
+            header: header.into(),
+            data: header.into(),
+            coordinates: header.into(),
+            part: formats::Part::default(),
+        }
+    }
+
+    // Each refusal comes before anything is read, so no file exists.
+    #[test]
+    fn the_date_is_overridden_only_for_positions_without_their_own() {
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 8, 15);
+        let refused = |resolved: &ResolvedInput, positions: &str| {
+            load_positions(resolved, Path::new(positions), None, date)
+                .unwrap_err()
+                .to_string()
+        };
+
+        let error = refused(&resolved(FormatKind::Ramac, "a.rad"), "a.cor");
+        assert!(error.contains("--override-date"), "{error}");
+        assert!(error.contains("a.cor gives its own dates"), "{error}");
+
+        // Formats the date applies to, but not to positions from a CSV.
+        for kind in [FormatKind::IceRadar, FormatKind::PulseEkko] {
+            let error = refused(&resolved(kind, "a.h5"), "a.coords.csv");
+            assert!(
+                error.contains("a.coords.csv gives its own dates"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn iceradar_positions_are_in_the_file_itself_or_a_csv() {
+        let error = load_positions(
+            &resolved(FormatKind::IceRadar, "a.h5"),
+            Path::new("b.h5"),
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("b.h5 cannot hold the positions of a.h5"),
+            "{error}"
+        );
+    }
 }
