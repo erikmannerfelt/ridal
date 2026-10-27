@@ -152,9 +152,11 @@ What the server answers. Each mirrors a schema in
 .. autoclass:: ridal.client.SourceNames
 .. autoclass:: ridal.client.Bundle
 .. autoclass:: ridal.client.Part
+.. autoclass:: ridal.client.SidecarOverrides
 .. autoclass:: ridal.client.BundleFile
 .. autoclass:: ridal.client.SourceDem
 .. autoclass:: ridal.client.Recording
+.. autoclass:: ridal.client.SidecarSummary
 .. autoclass:: ridal.client.Dem
 .. autoclass:: ridal.client.Draft
    :members: finished

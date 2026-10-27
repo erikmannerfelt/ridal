@@ -33,6 +33,8 @@ mod recipe;
 mod render;
 #[cfg(feature = "server")]
 mod server;
+/// A recording's `<stem>.ridal.toml`, overriding its header (#527).
+mod sidecar;
 /// A site: server-wide identity and hosting for one or more projects (#214).
 /// Outside the `server` feature because the CLI creates and manages sites.
 mod site;
@@ -182,6 +184,24 @@ pub mod ridal {
         Ok(Some(Some(fspath(py, bound)?)))
     }
 
+    /// The `sidecar=` argument: `None` or `True` for the sidecar beside
+    /// each recording, `False` for none, or a path, as `--sidecar` and
+    /// `--no-sidecar` choose.
+    fn sidecar_arg(py: Python<'_>, value: Option<Py<PyAny>>) -> PyResult<crate::sidecar::Choice> {
+        let Some(obj) = value else {
+            return Ok(crate::sidecar::Choice::Beside);
+        };
+        let bound = obj.bind(py);
+        if let Ok(flag) = bound.cast::<PyBool>() {
+            return Ok(if flag.is_true() {
+                crate::sidecar::Choice::Beside
+            } else {
+                crate::sidecar::Choice::Ignore
+            });
+        }
+        Ok(crate::sidecar::Choice::File(fspath(py, bound)?))
+    }
+
     /// The `steps=` argument as the CLI's `--steps` text: a string as it is,
     /// or a list or tuple of steps joined with commas.
     fn steps_text(py: Python<'_>, steps: Option<Py<PyAny>>) -> PyResult<Option<String>> {
@@ -294,6 +314,7 @@ pub mod ridal {
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
+        sidecar: Option<Py<PyAny>>,
         lines: Option<Py<PyAny>>,
         metadata: Option<Py<PyAny>>,
         group_name: Option<String>,
@@ -320,6 +341,7 @@ pub mod ridal {
             override_antenna_separation,
             override_date: date_arg(py, override_date)?,
             lines: lines_arg(py, lines)?,
+            sidecar: sidecar_arg(py, sidecar)?,
             user_metadata: optional_metadata(py, metadata)?,
             group: group_name,
             group_id,
@@ -490,6 +512,12 @@ pub mod ridal {
     ///     or a date that may be wrong: IceRadar, whose date is the
     ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
     ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
+    /// sidecar : path-like or bool, optional
+    ///     Where to read overrides from (a ``.ridal.toml``). By default
+    ///     (``None`` or ``True``), the ``<stem>.ridal.toml`` beside each
+    ///     recording, if there is one; a path, for one recording or the lines
+    ///     of one IceRadar file; or ``False`` for none. The ``override_*``
+    ///     arguments take precedence over it.
     /// lines : int, sequence of int or str, optional
     ///     Which lines of a file holding several (IceRadar) to read: one
     ///     (``3``), several merged in the order given (``[0, 2, 3]`` or
@@ -579,6 +607,7 @@ pub mod ridal {
         override_antenna_mhz=None,
         override_antenna_separation=None,
         override_date=None,
+        sidecar=None,
         lines=None,
         metadata=None,
         radargram_id=None,
@@ -609,6 +638,7 @@ pub mod ridal {
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
+        sidecar: Option<Py<PyAny>>,
         lines: Option<Py<PyAny>>,
         metadata: Option<Py<PyAny>>,
         radargram_id: Option<String>,
@@ -663,6 +693,7 @@ pub mod ridal {
             override_antenna_mhz,
             override_antenna_separation,
             override_date,
+            sidecar,
             lines,
             metadata,
             group_name,
@@ -734,6 +765,12 @@ pub mod ridal {
     ///     or a date that may be wrong: IceRadar, whose date is the
     ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
     ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
+    /// sidecar : path-like or bool, optional
+    ///     Where to read overrides from (a ``.ridal.toml``). By default
+    ///     (``None`` or ``True``), the ``<stem>.ridal.toml`` beside each
+    ///     recording, if there is one; a path, for one recording or the lines
+    ///     of one IceRadar file; or ``False`` for none. The ``override_*``
+    ///     arguments take precedence over it.
     /// lines : int, sequence of int or str, optional
     ///     Which lines of a file holding several (IceRadar) to read: one
     ///     (``3``), several merged in the order given (``[0, 2, 3]`` or
@@ -783,6 +820,7 @@ pub mod ridal {
         override_antenna_mhz=None,
         override_antenna_separation=None,
         override_date=None,
+        sidecar=None,
         lines=None,
         metadata=None,
         return_dataset_format="xarray_dict"
@@ -797,6 +835,7 @@ pub mod ridal {
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
+        sidecar: Option<Py<PyAny>>,
         lines: Option<Py<PyAny>>,
         metadata: Option<Py<PyAny>>,
         return_dataset_format: &str,
@@ -823,6 +862,7 @@ pub mod ridal {
             override_antenna_mhz,
             override_antenna_separation,
             override_date,
+            sidecar,
             lines,
             metadata,
             None,
@@ -915,6 +955,12 @@ pub mod ridal {
     ///     or a date that may be wrong: IceRadar, whose date is the
     ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
     ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
+    /// sidecar : path-like or bool, optional
+    ///     Where to read overrides from (a ``.ridal.toml``). By default
+    ///     (``None`` or ``True``), the ``<stem>.ridal.toml`` beside each
+    ///     recording, if there is one; a path, for one recording or the lines
+    ///     of one IceRadar file; or ``False`` for none. The ``override_*``
+    ///     arguments take precedence over it.
     /// metadata : mapping, optional
     ///     Additional user metadata to attach independently to each produced output.
     ///     This should be a JSON-serializable mapping. Root keys are interpreted as
@@ -994,6 +1040,7 @@ pub mod ridal {
         override_antenna_mhz=None,
         override_antenna_separation=None,
         override_date=None,
+        sidecar=None,
         metadata=None,
         group_id=None,
         group_name=None,
@@ -1022,6 +1069,7 @@ pub mod ridal {
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
+        sidecar: Option<Py<PyAny>>,
         metadata: Option<Py<PyAny>>,
         group_id: Option<String>,
         group_name: Option<String>,
@@ -1062,6 +1110,7 @@ pub mod ridal {
                 override_antenna_mhz,
                 override_antenna_separation,
                 override_date,
+                sidecar,
                 // Batch processing does not split a file into lines yet.
                 None,
                 metadata,
@@ -1430,6 +1479,12 @@ pub mod ridal {
     ///     or a date that may be wrong: IceRadar, whose date is the
     ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
     ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
+    /// sidecar : path-like or bool, optional
+    ///     Where to read overrides from (a ``.ridal.toml``). By default
+    ///     (``None`` or ``True``), the ``<stem>.ridal.toml`` beside each
+    ///     recording, if there is one; a path, for one recording or the lines
+    ///     of one IceRadar file; or ``False`` for none. The ``override_*``
+    ///     arguments take precedence over it.
     ///
     /// Returns
     /// -------
@@ -1472,6 +1527,7 @@ pub mod ridal {
         override_antenna_mhz=None,
         override_antenna_separation=None,
         override_date=None,
+        sidecar=None,
     ))]
     fn info(
         py: Python<'_>,
@@ -1483,6 +1539,7 @@ pub mod ridal {
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
+        sidecar: Option<Py<PyAny>>,
     ) -> PyResult<Vec<Py<PyAny>>> {
         let input_paths = inputs_to_paths(py, inputs.bind(py))?;
         let cor_path = optional_path(py, cor)?;
@@ -1497,6 +1554,7 @@ pub mod ridal {
             override_antenna_mhz,
             override_antenna_separation,
             override_date: date_arg(py, override_date)?,
+            sidecar: sidecar_arg(py, sidecar)?,
         };
         let records = crate::inspect::inspect(params)
             .map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;

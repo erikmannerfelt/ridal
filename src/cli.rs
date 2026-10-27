@@ -743,6 +743,26 @@ pub struct RecordingArgs {
     /// acquisition PC's clock, and pulseEKKO.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub override_date: Option<chrono::NaiveDate>,
+
+    /// A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it.
+    #[arg(long, value_name = "PATH", conflicts_with = "no_sidecar")]
+    pub sidecar: Option<PathBuf>,
+
+    /// Read no sidecar, even when a "<stem>.ridal.toml" is beside a recording.
+    #[arg(long)]
+    pub no_sidecar: bool,
+}
+
+impl RecordingArgs {
+    /// Which sidecar each recording is read with: `--sidecar` and
+    /// `--no-sidecar`.
+    fn sidecar_choice(&self) -> crate::sidecar::Choice {
+        match (&self.sidecar, self.no_sidecar) {
+            (Some(path), _) => crate::sidecar::Choice::File(path.clone()),
+            (None, true) => crate::sidecar::Choice::Ignore,
+            (None, false) => crate::sidecar::Choice::Beside,
+        }
+    }
 }
 
 /// How a recording is processed and what is written: shared by `process`
@@ -831,6 +851,7 @@ impl RunArgs {
             override_antenna_separation: recording.override_antenna_separation,
             override_date: recording.override_date,
             lines: None,
+            sidecar: recording.sidecar_choice(),
             user_metadata: user_metadata::parse_cli_metadata(&self.metadata)?,
             group,
             group_id,
@@ -1439,6 +1460,7 @@ fn coords_command(args: &CoordsArgs) -> Result<(), String> {
 
 fn info_command(args: InfoArgs) -> Result<(), String> {
     validate_cli_dem(args.recording.dem.as_deref())?;
+    let sidecar = args.recording.sidecar_choice();
     let params = crate::inspect::InfoParams {
         filepaths: args.inputs,
         dem_path: args.recording.dem,
@@ -1448,6 +1470,7 @@ fn info_command(args: InfoArgs) -> Result<(), String> {
         override_antenna_mhz: args.recording.override_antenna_mhz,
         override_antenna_separation: args.recording.override_antenna_separation,
         override_date: args.recording.override_date,
+        sidecar,
     };
     let records = crate::inspect::inspect(params).map_err(|e| format!("{e:?}"))?;
     if args.json {
@@ -1696,6 +1719,27 @@ fn print_info_record(record: &crate::inspect::InfoRecord) {
     println!("Antenna:\t{}", record.metadata.antenna_name);
     println!("Antenna MHz:\t{}", record.metadata.antenna_mhz);
     println!("Antenna sep:\t{} m", record.metadata.antenna_separation_m);
+    if let Some(sidecar) = &record.sidecar {
+        println!();
+        println!("Overrides from {}", sidecar.path);
+        println!("{}", "-".repeat(15 + sidecar.path.chars().count()));
+        let header = |value: Option<f32>, unit: &str| match value {
+            Some(value) => format!("header: {value}{unit}"),
+            None => "not in the header".to_string(),
+        };
+        if let Some(mhz) = sidecar.applied.antenna_mhz {
+            println!(
+                "Antenna MHz:\t{mhz} ({})",
+                header(sidecar.header.antenna_mhz, "")
+            );
+        }
+        if let Some(m) = sidecar.applied.antenna_separation_m {
+            println!(
+                "Antenna sep:\t{m} m ({})",
+                header(sidecar.header.antenna_separation_m, " m")
+            );
+        }
+    }
     println!();
     println!("Location");
     println!("--------");
@@ -2624,6 +2668,32 @@ mod tests {
             }
             _ => panic!("Expected process command"),
         }
+    }
+
+    #[test]
+    fn a_sidecar_is_chosen_or_ignored_but_not_both() {
+        let choice = |extra: &[&str]| {
+            let args =
+                Args::try_parse_from(["ridal", "info", "line01.rad"].iter().chain(extra).copied())
+                    .map_err(|e| e.kind())?;
+            match args.command {
+                Commands::Info(info) => Ok(info.recording.sidecar_choice()),
+                _ => panic!("Expected info command"),
+            }
+        };
+        assert_eq!(choice(&[]), Ok(crate::sidecar::Choice::Beside));
+        assert_eq!(
+            choice(&["--sidecar", "other.toml"]),
+            Ok(crate::sidecar::Choice::File("other.toml".into()))
+        );
+        assert_eq!(
+            choice(&["--no-sidecar"]),
+            Ok(crate::sidecar::Choice::Ignore)
+        );
+        assert_eq!(
+            choice(&["--sidecar", "other.toml", "--no-sidecar"]),
+            Err(clap::error::ErrorKind::ArgumentConflict)
+        );
     }
 
     #[test]

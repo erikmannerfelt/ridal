@@ -102,6 +102,12 @@ pub struct Bundle {
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub part: Option<crate::formats::Part>,
+    /// What the recording's sidecar overrode (#527): only the values it
+    /// decided, not those an argument gave instead, and `null` without any.
+    // Defaulted, so a recipe from before sidecars reads as having none.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub overrides: Option<crate::sidecar::Overrides>,
 }
 
 /// The inputs of a processing run, as gathered when the raw files are
@@ -260,6 +266,31 @@ impl Recipe {
             put(&mut hasher, b"date_override");
             put(&mut hasher, date.as_bytes());
         }
+        // Hashed by value, not by the sidecar's bytes, so a comment or a
+        // reformatted file is the same revision.
+        if self.bundles.iter().any(|b| b.overrides.is_some()) {
+            put(&mut hasher, b"sidecar_overrides");
+            for bundle in &self.bundles {
+                let Some(overrides) = &bundle.overrides else {
+                    hasher.update(&[0]);
+                    continue;
+                };
+                hasher.update(&[1]);
+                put(&mut hasher, b"antenna_mhz");
+                put_optional(
+                    &mut hasher,
+                    overrides.antenna_mhz.map(f32::to_le_bytes).as_ref(),
+                );
+                put(&mut hasher, b"antenna_separation_m");
+                put_optional(
+                    &mut hasher,
+                    overrides
+                        .antenna_separation_m
+                        .map(f32::to_le_bytes)
+                        .as_ref(),
+                );
+            }
+        }
         hasher.finalize().to_hex().to_string()
     }
 
@@ -332,6 +363,9 @@ pub fn bundle_of(resolved: &crate::formats::ResolvedInput) -> Result<Bundle, Str
         format: crate::formats::format_info(resolved.kind).name.to_string(),
         files,
         part: (!resolved.part.is_whole()).then_some(resolved.part),
+        // What the sidecar decides depends on the arguments as well, so
+        // the caller that knows both sets it.
+        overrides: None,
     })
 }
 
@@ -361,6 +395,7 @@ mod tests {
                     file(FileRole::Coordinates, "DAT_0001_A1.cor", "cc"),
                 ],
                 part: None,
+                overrides: None,
             }],
             dem: None,
             dem_resampling: crate::dem::Resampling::Bilinear,
@@ -406,9 +441,53 @@ mod tests {
         assert_ne!(dated.hash(), recipe().hash());
         // An old recipe, without either, reads as having neither.
         assert!(!recipe().to_json().contains("date_override"));
-        let old = recipe().to_json().replace(",\"part\":null", "");
+        let old = recipe()
+            .to_json()
+            .replace(",\"part\":null", "")
+            .replace(",\"overrides\":null", "");
         assert!(!old.contains("part"), "{old}");
         assert_eq!(serde_json::from_str::<Recipe>(&old).unwrap(), recipe());
+    }
+
+    #[test]
+    fn sidecar_overrides_change_the_hash_only_when_given() {
+        let mut overridden = recipe();
+        overridden.bundles[0].overrides = None;
+        assert_eq!(overridden.hash(), recipe().hash());
+        let old = recipe().to_json().replace(",\"overrides\":null", "");
+        assert!(!old.contains("overrides"), "{old}");
+        assert_eq!(serde_json::from_str::<Recipe>(&old).unwrap(), recipe());
+
+        let separation = crate::sidecar::Overrides {
+            antenna_separation_m: Some(4.),
+            ..Default::default()
+        };
+        overridden.bundles[0].overrides = Some(separation);
+        assert_ne!(overridden.hash(), recipe().hash());
+        let mut other = overridden.clone();
+        other.bundles[0].overrides = Some(crate::sidecar::Overrides {
+            antenna_separation_m: Some(6.),
+            ..Default::default()
+        });
+        assert_ne!(other.hash(), overridden.hash());
+        // The same value from an argument is a different recipe: the
+        // sidecar can change without the command line changing.
+        let mut argument = recipe();
+        argument.antenna_separation_override = Some(4.);
+        assert_ne!(argument.hash(), overridden.hash());
+        // Which key a value is for counts, not only the value.
+        let mut frequency = recipe();
+        frequency.bundles[0].overrides = Some(crate::sidecar::Overrides {
+            antenna_mhz: Some(4.),
+            ..Default::default()
+        });
+        assert_ne!(frequency.hash(), overridden.hash());
+
+        let read: Recipe = serde_json::from_str(&overridden.to_json()).unwrap();
+        assert_eq!(read, overridden);
+        assert!(overridden
+            .to_json()
+            .contains(r#""overrides":{"antenna_mhz":null,"antenna_separation_m":4.0}"#));
     }
 
     #[test]

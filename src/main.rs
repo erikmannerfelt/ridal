@@ -35,6 +35,7 @@ mod recipe;
 mod render;
 #[cfg(feature = "server")]
 mod server;
+mod sidecar;
 mod site;
 mod source;
 #[cfg(feature = "server")]

@@ -21,6 +21,7 @@ pub struct InfoParams {
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
     pub override_date: Option<chrono::NaiveDate>,
+    pub sidecar: crate::sidecar::Choice,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +93,23 @@ pub struct InfoRecord {
     pub metadata: MetadataSummary,
     pub location: LocationSummary,
     pub related_files: RelatedFiles,
+    /// What the recording's sidecar overrode, or `null` when it was read
+    /// without one or the sidecar decided nothing (#527).
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub sidecar: Option<SidecarSummary>,
+}
+
+/// What a recording's sidecar overrode, beside what its header says.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct SidecarSummary {
+    pub path: String,
+    /// The values the sidecar decided: those no argument gave instead.
+    /// `metadata` already holds them.
+    pub applied: crate::sidecar::Overrides,
+    /// What the header says of each value in `applied`, left out where
+    /// the format does not record it.
+    pub header: crate::sidecar::Overrides,
 }
 
 /// Whether `records`, in merge order, can be merged into one radargram, from
@@ -283,6 +301,7 @@ fn info_record(
     resolved: &ResolvedInput,
     meta: &GPRMeta,
     location: &GPRLocation,
+    sidecar: Option<SidecarSummary>,
 ) -> Result<InfoRecord, String> {
     let fmt = formats::format_info(resolved.kind);
     Ok(InfoRecord {
@@ -298,7 +317,49 @@ fn info_record(
             data: resolved.data.to_string_lossy().to_string(),
             coordinates: resolved.coordinates.to_string_lossy().to_string(),
         },
+        sidecar,
     })
+}
+
+/// What the sidecar of `resolved` decided, beside what its header says,
+/// or `None` when it decided nothing. `meta` is the recording as read,
+/// with every override.
+fn sidecar_summary(
+    resolved: &ResolvedInput,
+    meta: &GPRMeta,
+    params: &InfoParams,
+) -> Result<Option<SidecarSummary>, Box<dyn std::error::Error>> {
+    let applied = crate::sidecar::applied(
+        resolved,
+        params.override_antenna_mhz,
+        params.override_antenna_separation,
+    )?;
+    let Some(path) = resolved.sidecar.as_ref().filter(|_| !applied.is_empty()) else {
+        return Ok(None);
+    };
+    let bare = ResolvedInput {
+        sidecar: None,
+        ..resolved.clone()
+    };
+    let read = |mhz| input::load_meta(&bare, meta.medium_velocity, mhz, None, params.override_date);
+    // A format that does not record the frequency cannot be read without
+    // one; the one the recording was read with stands in, and only the
+    // separation is taken from that read.
+    let (header_mhz, header) = match read(None) {
+        Ok(header) => (Some(header.antenna_mhz), header),
+        Err(_) => (None, read(Some(meta.antenna_mhz))?),
+    };
+    let header_separation =
+        formats::records_antenna_separation(resolved.kind).then_some(header.antenna_separation);
+    Ok(Some(SidecarSummary {
+        path: path.to_string_lossy().to_string(),
+        applied,
+        header: crate::sidecar::Overrides {
+            antenna_mhz: header_mhz.filter(|_| applied.antenna_mhz.is_some()),
+            antenna_separation_m: header_separation
+                .filter(|_| applied.antenna_separation_m.is_some()),
+        },
+    }))
 }
 
 /// Inspect a NetCDF file as Ridal output, without loading its amplitudes.
@@ -394,6 +455,7 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
         .map(|input| formats::resolve_input(input))
         .collect::<Result<Vec<_>, String>>()?;
     formats::with_coordinates(&mut raw, params.cor_path.as_deref())?;
+    crate::sidecar::with_sidecar(&mut raw, &params.sidecar)?;
     let mut raw = raw.into_iter();
 
     for input in expanded {
@@ -411,7 +473,10 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
             params.override_antenna_separation,
             params.override_date,
         )?;
-        records.push(Inspected::Raw(info_record(&resolved, &meta, &location)?));
+        let sidecar = sidecar_summary(&resolved, &meta, &params)?;
+        records.push(Inspected::Raw(info_record(
+            &resolved, &meta, &location, sidecar,
+        )?));
     }
 
     Ok(records)
@@ -433,6 +498,7 @@ pub(crate) mod tests {
             override_antenna_mhz: None,
             override_antenna_separation: None,
             override_date: None,
+            sidecar: crate::sidecar::Choice::Beside,
         }
     }
 
@@ -625,6 +691,7 @@ pub(crate) mod tests {
                 data: String::new(),
                 coordinates: String::new(),
             },
+            sidecar: None,
         }
     }
 
@@ -707,6 +774,7 @@ mod coordinate_tests {
             override_antenna_mhz: None,
             override_antenna_separation: None,
             override_date: None,
+            sidecar: crate::sidecar::Choice::Beside,
         }
     }
 

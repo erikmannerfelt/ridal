@@ -56,6 +56,8 @@ RECORDS: Final[dict[type, tuple[str, dict[str, str]]]] = {
     models.LocationSummary: ("LocationSummary", {}),
     models.RelatedFiles: ("RelatedFiles", {}),
     models.Recording: ("InfoRecord", {}),
+    models.SidecarOverrides: ("Overrides", {}),
+    models.SidecarSummary: ("SidecarSummary", {}),
     models.SourceView: ("SourceView", {}),
     models.Dem: ("DemView", {}),
     models.StepProgress: ("StepProgress", {}),
