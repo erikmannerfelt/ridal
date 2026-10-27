@@ -259,3 +259,59 @@ pub(crate) fn expand_cli_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, Stri
 
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resolved(kind: FormatKind, header: &str) -> ResolvedInput {
+        ResolvedInput {
+            input: header.into(),
+            kind,
+            header: header.into(),
+            data: header.into(),
+            coordinates: header.into(),
+            part: formats::Part::default(),
+        }
+    }
+
+    // Each refusal comes before anything is read, so no file exists.
+    #[test]
+    fn the_date_is_overridden_only_for_positions_without_their_own() {
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 8, 15);
+        let refused = |resolved: &ResolvedInput, positions: &str| {
+            load_positions(resolved, Path::new(positions), None, date)
+                .unwrap_err()
+                .to_string()
+        };
+
+        let error = refused(&resolved(FormatKind::Ramac, "a.rad"), "a.cor");
+        assert!(error.contains("--override-date"), "{error}");
+        assert!(error.contains("a.cor gives its own dates"), "{error}");
+
+        // Formats the date applies to, but not to positions from a CSV.
+        for kind in [FormatKind::IceRadar, FormatKind::PulseEkko] {
+            let error = refused(&resolved(kind, "a.h5"), "a.coords.csv");
+            assert!(
+                error.contains("a.coords.csv gives its own dates"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn iceradar_positions_are_in_the_file_itself_or_a_csv() {
+        let error = load_positions(
+            &resolved(FormatKind::IceRadar, "a.h5"),
+            Path::new("b.h5"),
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("b.h5 cannot hold the positions of a.h5"),
+            "{error}"
+        );
+    }
+}

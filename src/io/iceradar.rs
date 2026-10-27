@@ -1223,6 +1223,96 @@ mod tests {
     }
 
     #[test]
+    fn files_that_are_not_iceradar_lines_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let empty = dir.path().join("empty.h5");
+        netcdf::create(&empty).unwrap();
+        let error = iceradar_lines(&empty).unwrap_err().to_string();
+        assert!(error.contains("no line_N groups"), "{error}");
+
+        // The groups of a line, but a trace without either layout's metadata.
+        let foreign = dir.path().join("foreign.h5");
+        {
+            let mut file = netcdf::create(&foreign).unwrap();
+            let mut line = file.add_group("line_0").unwrap();
+            let mut location = line.add_group("location_0").unwrap();
+            let mut capture = location.add_group("datacapture_0").unwrap();
+            capture.add_dimension("phony_dim_0", 4).unwrap();
+            capture
+                .add_variable::<f64>("echogram_0", &["phony_dim_0"])
+                .unwrap();
+        }
+        let error = read_line_meta(&foreign, 0, None).err().unwrap().to_string();
+        assert!(error.contains("not an IceRadar layout"), "{error}");
+
+        let blank = dir.path().join("blank.h5");
+        write_fixture(
+            &blank,
+            Layout::V2,
+            &[vec![trace(40, 0, None), trace(40, 0, None)]],
+            "6/18/2024 1:30:00 PM",
+        );
+        let error = read_line_meta(&blank, 0, None).err().unwrap().to_string();
+        assert!(error.contains("Every trace of line_0"), "{error}");
+    }
+
+    #[test]
+    fn a_pc_date_that_cannot_be_read_asks_for_one() {
+        let dir = tempfile::tempdir().unwrap();
+        for layout in [Layout::V1, Layout::V2] {
+            let path = dir.path().join(format!("{layout:?}.h5"));
+            write_fixture(&path, layout, &[vec![trace(40, 256, None)]], "18.6.2024");
+            let error = read_line_meta(&path, 0, None).err().unwrap().to_string();
+            assert!(error.contains("gives no date"), "{layout:?}: {error}");
+            assert!(error.contains("\"18.6.2024\""), "{layout:?}: {error}");
+            assert!(error.contains("--override-date"), "{layout:?}: {error}");
+            // A given date does not need the PC's.
+            let date = chrono::NaiveDate::from_ymd_opt(2024, 6, 18).unwrap();
+            assert_eq!(
+                iceradar_date(&path, 0, Some(date)).unwrap(),
+                IceRadarDate::Given(date)
+            );
+        }
+    }
+
+    #[test]
+    fn what_was_assumed_is_said_unless_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stor.h5");
+        let line = || vec![trace(40, 256, Some("103045.6"))];
+        write_fixture(&path, Layout::V1, &[line(), line()], "6/18/2024 1:30:00 PM");
+        let resolved = crate::formats::with_lines(
+            vec![crate::formats::resolve_input(&path).unwrap()],
+            Some(&"all".parse().unwrap()),
+        )
+        .unwrap();
+
+        let options = crate::processing::ProcessingOptions::default();
+        let warnings = crate::processing::iceradar_assumptions(&resolved, &options).unwrap();
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings[0].contains("taken as 0 m"), "{}", warnings[0]);
+        for (warning, n) in warnings[1..].iter().zip(0..) {
+            assert!(
+                warning.contains(&format!("line_{n} is dated 2024-06-18")),
+                "{warning}"
+            );
+        }
+
+        let options = crate::processing::ProcessingOptions {
+            override_antenna_separation: Some(10.),
+            override_date: chrono::NaiveDate::from_ymd_opt(2024, 6, 18),
+            ..Default::default()
+        };
+        let warnings = crate::processing::iceradar_assumptions(&resolved, &options).unwrap();
+        assert_eq!(warnings, Vec::<String>::new());
+        assert_eq!(
+            crate::processing::iceradar_assumptions(&[], &Default::default()).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn line_selections_parse() {
         use crate::formats::LineSelection;
         assert_eq!("all".parse::<LineSelection>(), Ok(LineSelection::All));

@@ -116,24 +116,27 @@ fn describe_input(resolved: &ResolvedInput) -> String {
     }
 }
 
-/// Say what an IceRadar file did not record and Ridal assumed instead: the
-/// antenna separation, and a date taken from the PC clock.
-fn warn_iceradar_assumptions(
+/// What an IceRadar file did not record and Ridal assumed instead, as
+/// warnings to show: the antenna separation, and a date taken from the PC
+/// clock. Empty when no input is IceRadar, or the user gave both.
+pub(crate) fn iceradar_assumptions(
     resolved: &[ResolvedInput],
     options: &ProcessingOptions,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let iceradar = resolved
         .iter()
         .filter(|r| r.kind == formats::FormatKind::IceRadar)
         .collect::<Vec<_>>();
+    let mut warnings = Vec::new();
     if iceradar.is_empty() {
-        return Ok(());
+        return Ok(warnings);
     }
     if options.override_antenna_separation.is_none() {
-        eprintln!(
+        warnings.push(
             "Warning: IceRadar files do not record the antenna separation, so it is taken as \
              0 m. Give it with --override-antenna-separation \
              (override_antenna_separation= in Python)."
+                .to_string(),
         );
     }
     if options.override_date.is_none() {
@@ -142,16 +145,16 @@ fn warn_iceradar_assumptions(
             if let crate::io::IceRadarDate::PcClock(date) =
                 crate::io::iceradar_date(&r.header, line, None)?
             {
-                eprintln!(
+                warnings.push(format!(
                     "Warning: {} is dated {date} by the acquisition PC's clock, which is local \
                      time and may be wrong; the GPS records only the time of day. Give the UTC \
                      date with --override-date (override_date= in Python) if it is not {date}.",
                     describe_input(r)
-                );
+                ));
             }
         }
     }
-    Ok(())
+    Ok(warnings)
 }
 
 fn derive_output_path(
@@ -215,7 +218,9 @@ pub fn build_processed_gpr_with_progress(
     let mut resolved_inputs = formats::with_lines(resolved_inputs, options.lines.as_ref())?;
     formats::with_coordinates(&mut resolved_inputs, options.cor_path.as_deref())?;
     if !options.quiet {
-        warn_iceradar_assumptions(&resolved_inputs, options)?;
+        for warning in iceradar_assumptions(&resolved_inputs, options)? {
+            eprintln!("{warning}");
+        }
     }
     if !options.quiet {
         for resolved in &resolved_inputs {
