@@ -18961,7 +18961,7 @@
                 "$ref": "#/components/schemas/NamedFile"
               }
             },
-            "description": "The recordings, in merge order, each the files it is made of by name\nand hash, as `POST /api/v1/raw` answered. Which file is the header,\nthe data and the positions is read from the names."
+            "description": "The recordings, in merge order, each the files it is made of by name\nand hash, as `POST /api/v1/raw` answered. Which file is the header,\nthe data and the positions is read from the names. A\n`<stem>.ridal.toml` among them is the recording's sidecar: its\noverrides are kept as the bundle's `overrides`, and the file itself\nis not. A recording given without one keeps the overrides it had,\nwhen it is made of the same files; an empty sidecar removes them."
           },
           "crs": {
             "type": [

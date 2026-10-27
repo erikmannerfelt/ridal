@@ -56,7 +56,8 @@ that `ridal project init` writes already leaves them in.
 
 `raw/` holds the raw recordings uploaded to the project. It may be the only
 copy of them on the server, so back it up too. Each `sources/<radargram_id>.json`
-names the recordings a radargram is made from, in merge order, and optionally
+names the recordings a radargram is made from, in merge order, each with the
+values of its sidecar if it had one (see {doc}`sidecar`), and optionally
 the CRS, the DEM and the antenna frequency and separation it is processed
 with where the files do not say them.
 

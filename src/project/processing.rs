@@ -468,8 +468,20 @@ pub fn state_of(
                 .to_string(),
         ),
     }
-    if recipe.bundles != source.bundles {
+    let expected = source.expected_bundles();
+    let without_overrides = |bundles: &[crate::recipe::Bundle]| {
+        bundles
+            .iter()
+            .map(|b| crate::recipe::Bundle {
+                overrides: None,
+                ..b.clone()
+            })
+            .collect::<Vec<_>>()
+    };
+    if without_overrides(&recipe.bundles) != without_overrides(&expected) {
         reasons.push("its raw data has been switched since".to_string());
+    } else if recipe.bundles != expected {
+        reasons.push("its recordings' sidecar overrides have changed since".to_string());
     }
     if recipe.dem.as_ref().map(|d| &d.blake3) != source.dem.as_ref().map(|d| &d.file.blake3) {
         reasons.push("its DEM has changed since".to_string());
@@ -868,6 +880,26 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        // A recording's sidecar now overrides it (#527): stale, saying so.
+        let mut overridden = source("aa");
+        overridden.bundles[0].overrides = Some(crate::sidecar::Overrides {
+            antenna_separation_m: Some(4.),
+            ..Default::default()
+        });
+        match state(&v1, &overridden) {
+            ProcessingState::Stale { reasons, .. } => {
+                assert!(reasons[0].contains("sidecar overrides"), "{reasons:?}")
+            }
+            other => panic!("{other:?}"),
+        }
+        // Unless the source's own setting takes precedence over it, as it
+        // does when the radargram is processed.
+        overridden.antenna_separation = Some(1.);
+        assert!(matches!(
+            state(&v1, &overridden),
+            ProcessingState::Stale { reasons, .. }
+                if !reasons.iter().any(|r| r.contains("sidecar"))
+        ));
         // A CRS the source now names that the file was not processed in.
         let mut crs = source("aa");
         crs.crs = Some("EPSG:32634".to_string());

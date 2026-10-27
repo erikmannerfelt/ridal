@@ -392,13 +392,14 @@ pub(super) async fn prepare(
     std::fs::create_dir_all(output_dir).or_internal("job_failed")?;
     let output = output_dir.join(format!("{name}.nc"));
 
-    let recordings = source.recordings();
+    let recordings = source.bundles.clone();
     let (laid_out, dem) = {
         let data_dir = data_dir.clone();
         let work = work.clone();
         let dem = source.dem.as_ref().map(|d| d.file.clone());
         tokio::task::spawn_blocking(move || {
-            let laid_out = raw::materialize(&data_dir, &recordings, &work)?;
+            // With each recording's sidecar written from its overrides.
+            let laid_out = raw::materialize_bundles(&data_dir, &recordings, &work)?;
             // Under its own name, which the processed file records.
             let dem = dem
                 .map(|dem| raw::materialize_file(&data_dir, &dem, &work.join("dem")))

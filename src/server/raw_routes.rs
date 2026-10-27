@@ -248,20 +248,56 @@ pub(super) fn header_filename(name: &str) -> String {
         .collect()
 }
 
-/// Where each of a source's files goes in its zip, and where it is stored.
+/// What a zip entry holds: a stored file, or a recording's sidecar,
+/// written from the overrides the source keeps.
+enum ZipContent {
+    Stored(std::path::PathBuf),
+    Text(String),
+}
+
+/// Where each of a source's files goes in its zip, and what it holds.
 ///
 /// Under a directory named after the radargram, so that unpacking two zips
 /// side by side keeps them apart. A merged source has one numbered
 /// directory per recording, in merge order, as [`raw::materialize`] lays
-/// them out to be read: two recordings may share file names.
+/// them out to be read: two recordings may share file names. A recording
+/// with overrides gets its `<stem>.ridal.toml` beside it, so the files
+/// unpacked are read as the source is.
 fn source_zip_entries(
     data_dir: &std::path::Path,
     id: &crate::identity::RadargramId,
     source: &Source,
-) -> Result<Vec<(String, std::path::PathBuf)>, ApiError> {
+) -> Result<Vec<(String, ZipContent)>, ApiError> {
     let merged = source.bundles.len() > 1;
     let mut entries = Vec::new();
     for (index, bundle) in source.bundles.iter().enumerate() {
+        let in_zip = |name: &str| {
+            if merged {
+                format!("{id}/{}/{name}", index + 1)
+            } else {
+                format!("{id}/{name}")
+            }
+        };
+        if let Some(overrides) = &bundle.overrides {
+            let header = bundle
+                .files
+                .iter()
+                .find(|f| f.role == crate::recipe::FileRole::Header)
+                .ok_or_else(|| {
+                    ApiError::internal(
+                        "source_read_failed",
+                        format!("A recording of '{id}' has no header."),
+                    )
+                })?;
+            let stem = std::path::Path::new(&header.file.name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            entries.push((
+                in_zip(&format!("{stem}{}", crate::sidecar::SIDECAR_SUFFIX)),
+                ZipContent::Text(crate::sidecar::to_toml(overrides)),
+            ));
+        }
         for file in &bundle.files {
             let name = raw::plain_name(&file.file.name).or_internal("source_read_failed")?;
             let stored = raw::file_path(data_dir, &file.file.blake3)
@@ -275,12 +311,7 @@ fn source_zip_entries(
                         ),
                     )
                 })?;
-            let in_zip = if merged {
-                format!("{id}/{}/{name}", index + 1)
-            } else {
-                format!("{id}/{name}")
-            };
-            entries.push((in_zip, stored));
+            entries.push((in_zip(name), ZipContent::Stored(stored)));
         }
     }
     Ok(entries)
@@ -329,15 +360,21 @@ impl std::io::Write for ChannelWriter {
 /// Stored, not deflated: raw radar data is mostly noise to a compressor,
 /// and a file of several GB is not worth the CPU. Zip64 throughout, since
 /// a stream cannot go back to widen a header once a file turns out large.
-fn write_zip(
-    entries: &[(String, std::path::PathBuf)],
-    writer: impl std::io::Write,
-) -> std::io::Result<()> {
+fn write_zip(entries: &[(String, ZipContent)], writer: impl std::io::Write) -> std::io::Result<()> {
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Stored)
         .large_file(true);
     let mut zip = zip::ZipWriter::new_stream(writer);
-    for (name, path) in entries {
+    for (name, content) in entries {
+        let path = match content {
+            ZipContent::Stored(path) => path,
+            ZipContent::Text(text) => {
+                zip.start_file(name.as_str(), options)
+                    .map_err(std::io::Error::other)?;
+                std::io::Write::write_all(&mut zip, text.as_bytes())?;
+                continue;
+            }
+        };
         let mut file = std::fs::File::open(path)?;
         // When the file was stored, which is when it was uploaded: what a
         // stored file has to say about its age. Left at the format's
@@ -536,7 +573,11 @@ pub async fn get_source(
 pub struct SourceBody {
     /// The recordings, in merge order, each the files it is made of by name
     /// and hash, as `POST /api/v1/raw` answered. Which file is the header,
-    /// the data and the positions is read from the names.
+    /// the data and the positions is read from the names. A
+    /// `<stem>.ridal.toml` among them is the recording's sidecar: its
+    /// overrides are kept as the bundle's `overrides`, and the file itself
+    /// is not. A recording given without one keeps the overrides it had,
+    /// when it is made of the same files; an empty sidecar removes them.
     pub recordings: Vec<Vec<NamedFile>>,
     /// An EPSG code, such as `EPSG:32633`. Without it, the positions go in
     /// the UTM zone that suits them best.
@@ -666,15 +707,18 @@ pub async fn put_source(
         "invalid_antenna_separation",
         "antenna separation (m)",
     )?;
+    // Compared against `expected` with the rest when the new one is written.
+    let previous = raw::read_source(project.documents(), &id)
+        .or_internal("source_read_failed")?
+        .map(|(source, _)| source);
     let names = match body.names {
         Some(names) => names.map(source_names).transpose()?.flatten(),
         // Kept, so that switching the recordings of a radargram not
-        // processed yet does not forget what it is to be called. Compared
-        // against `expected` with the rest when it is written.
-        None => raw::read_source(project.documents(), &id)
-            .or_internal("source_read_failed")?
-            .and_then(|(source, _)| source.names),
+        // processed yet does not forget what it is to be called.
+        None => previous.as_ref().and_then(|source| source.names.clone()),
     };
+    // A recording given without a sidecar keeps the overrides it had (#527).
+    let kept = previous.map(|source| source.bundles).unwrap_or_default();
     let dem = body
         .dem
         .as_deref()
@@ -686,10 +730,10 @@ pub async fn put_source(
     let result = tokio::task::spawn_blocking(move || {
         let work = raw::incoming_path(&data_dir)?.with_extension("source");
         let outcome = (|| -> Result<_, String> {
-            let bundles = raw::bundles_of(&data_dir, &body.recordings, &work)?;
+            let bundles = raw::bundles_of(&data_dir, &body.recordings, &work, &kept)?;
             let records = read_recordings(
                 &data_dir,
-                &body.recordings,
+                &bundles,
                 &work.join("read"),
                 crs.clone(),
                 dem.as_ref(),
@@ -739,14 +783,14 @@ pub async fn put_source(
 /// removes.
 pub(super) fn read_recordings(
     data_dir: &std::path::Path,
-    recordings: &[Vec<NamedFile>],
+    recordings: &[crate::recipe::Bundle],
     work: &std::path::Path,
     crs: Option<String>,
     dem: Option<&raw::SourceDem>,
     antenna_mhz: Option<f32>,
     antenna_separation: Option<f32>,
 ) -> Result<Vec<crate::inspect::InfoRecord>, String> {
-    let headers: Vec<std::path::PathBuf> = raw::materialize(data_dir, recordings, work)?
+    let headers: Vec<std::path::PathBuf> = raw::materialize_bundles(data_dir, recordings, work)?
         .into_iter()
         .map(|resolved| resolved.header)
         .collect();
@@ -759,7 +803,7 @@ pub(super) fn read_recordings(
         override_antenna_mhz: antenna_mhz,
         override_antenna_separation: antenna_separation,
         override_date: None,
-        // Only the recording's own files are laid out, so there is none.
+        // The one `materialize_bundles` wrote from the bundle's overrides.
         sidecar: crate::sidecar::Choice::Beside,
     })
     .map_err(|e| match dem {

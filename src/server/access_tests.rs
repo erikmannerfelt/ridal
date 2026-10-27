@@ -7299,6 +7299,105 @@ fn unzip(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
+/// #527: a sidecar uploaded with a recording is kept as its values, read
+/// with the recording, kept when the source is saved again without it, and
+/// written back beside the recording in the raw data's zip.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_recordings_sidecar_is_kept_as_its_values() {
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    let stem = "dronbreen-20250327-DAT_0066_A1";
+    let recording = upload_recording(&app, stem, &erik).await;
+    let upload_sidecar = |text: &'static str| {
+        let app = app.clone();
+        let erik = erik.clone();
+        async move {
+            let name = format!("{stem}.ridal.toml");
+            let stored = post_bytes(
+                &app,
+                &format!("/api/v1/raw?filename={name}"),
+                text.as_bytes().to_vec(),
+                Some(&erik),
+            )
+            .await;
+            assert_eq!(stored.status, StatusCode::CREATED, "{}", stored.text);
+            json!({"name": name, "blake3": stored.body["blake3"]})
+        }
+    };
+    let set = |files: Value| {
+        let app = app.clone();
+        let erik = erik.clone();
+        async move {
+            put(
+                &app,
+                "/api/v1/sources/ours",
+                &json!({"recordings": [files]}),
+                Some(&erik),
+            )
+            .await
+        }
+    };
+    let with = |extra: Value| {
+        let mut files = recording.as_array().unwrap().clone();
+        files.push(extra);
+        Value::Array(files)
+    };
+
+    let sidecar = upload_sidecar("[overrides]\nantenna_separation_m = 4.5\n").await;
+    let saved = set(with(sidecar)).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    let bundle = &saved.body["source"]["bundles"][0];
+    assert_eq!(bundle["overrides"]["antenna_separation_m"], 4.5);
+    assert_eq!(bundle["files"].as_array().unwrap().len(), 3, "{bundle}");
+    let read = &saved.body["recordings"][0];
+    assert_eq!(read["metadata"]["antenna_separation_m"], 4.5);
+    assert_eq!(read["sidecar"]["header"]["antenna_separation_m"], 6.2);
+
+    // Saved again with the recording's own files, as the GUI does when
+    // the antenna settings change: the values stay.
+    let again = set(recording.clone()).await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.text);
+    assert_eq!(
+        again.body["source"]["bundles"][0]["overrides"]["antenna_separation_m"],
+        4.5
+    );
+
+    // The zip holds the recording as it is read.
+    let (status, _, bytes) = download_bytes(&app, "/api/v1/sources/ours/raw.zip", &erik).await;
+    assert_eq!(status, StatusCode::OK);
+    let files = unzip(&bytes);
+    let written = String::from_utf8(files[&format!("ours/{stem}.ridal.toml")].clone()).unwrap();
+    assert!(written.contains("antenna_separation_m = 4.5"), "{written}");
+    assert_eq!(files.len(), 4, "{:?}", files.keys());
+
+    // A mistake in a sidecar is refused before anything is saved, and an
+    // empty one removes the values.
+    let refused = set(with(upload_sidecar("[overrides]\nseparation = 4\n").await)).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    assert!(
+        refused.text.contains("not a valid sidecar"),
+        "{}",
+        refused.text
+    );
+    let cleared = set(with(upload_sidecar("").await)).await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert_eq!(
+        cleared.body["source"]["bundles"][0]["overrides"],
+        Value::Null
+    );
+    assert_eq!(
+        cleared.body["recordings"][0]["metadata"]["antenna_separation_m"],
+        6.2
+    );
+}
+
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_sources_raw_data_and_a_dem_download_under_their_own_names() {
