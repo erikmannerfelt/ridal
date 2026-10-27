@@ -390,7 +390,7 @@ mod tests {
                 "[overrides]\nantena_separation_m = 4\n",
                 "antena_separation_m",
             ),
-            ("[overide]\n", "overide"),
+            ("[override]\n", "unknown field `override`"),
             ("schema = 2\n", "schema = 2"),
             (
                 "[overrides]\nantenna_mhz = 0\n",
