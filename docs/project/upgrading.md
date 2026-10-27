@@ -3,6 +3,54 @@
 What to do when moving an existing project, server or script to a new
 version. {doc}`changelog` lists everything that changed.
 
+## From 0.10 to 0.11
+
+Projects, sites and processed files from 0.10 open as they are, but every
+radargram is now listed as processed by older processing, and some are
+worth reprocessing.
+
+- **Reprocess to get the corrected output.** The core processing version
+  goes from 2 to 5, so every radargram shows as older processing until it
+  is reprocessed. What reprocessing changes:
+  - `latitude`, `longitude` and DEM elevations move by up to 4.6 m (4.4 m
+    on Svalbard) to where the traces were (#481);
+  - **GSSI radargrams** get correct travel times and depths (#506);
+  - `equidistant_traces` may give one trace fewer, since it no longer
+    extrapolates one past the end of the track (#511).
+- **Step lists with `correct_topography` anywhere but last** are refused,
+  as are lists that run it twice (#513). Move it to the end of a saved
+  processing profile, step file or script.
+- **Picks appear half a pixel up and to the left** of where they were
+  drawn (#509). Stored picks are not migrated; they export the same depths
+  as before.
+- **`--cor`** (`cor=` in Python) with a file is refused for several
+  recordings, where it used to apply to all of them, and is refused for a
+  file that is neither the format's own positions file nor a `.csv`
+  (#479). Use `--cor DIR` with one file per recording. A `<stem>.coords.csv`
+  beside a recording is now used before its own positions file.
+- **Cross-site writes.** A web page on another origin can no longer write
+  to a Ridal server unless it is started with
+  `--allow-cross-site-requests`, and `ridal gui` must be opened as
+  `localhost`, `127.0.0.1` or `[::1]` (#514). Scripts and the Python
+  client are unaffected.
+- **Sign-in throttling.** Repeated failed sign-ins to one name get `429`
+  (#515). For a limit per address, add the nginx `limit_req` example in
+  {doc}`../deploy/reverse-proxy`.
+- **Content Security Policy** (#517). Basemap and overlay hosts are
+  allowed automatically. A tile URL with `{s}` past the first label of its
+  host (`https://a.{s}.example.org/…`), or with an IPv6 host, cannot be
+  named in the policy, so its tiles are refused (and logged once); move
+  `{s}` to the start of the host.
+- **DEM uploads** over HTTP must be GeoTIFF (#487).
+- **GDAL before 3.10** samples DEMs at the nearest cell (#461, #463).
+  Those radargrams are listed as older processing; reprocess them after
+  upgrading GDAL.
+- **HTTP API.** An unknown `?profile=` on a page falls back to the next
+  choice instead of returning 400 (a tile URL with one still gets 400).
+  `GET /api/v1/profiles` lists project and personal profiles and leaves
+  out hidden ones. `show_group_maps` may be `true`, `false` or `"listed"`.
+- **Disk.** The on-disk overview cache is rebuilt once.
+
 ## From 0.9 to 0.10
 
 Nothing needs migrating: projects, sites and processed files from 0.9 work
