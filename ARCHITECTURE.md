@@ -1081,7 +1081,19 @@ writer once there are writers (#99). The user-facing description is
   values of the bundle made of the same files, because the GUI saves a
   source with its own files when only its antenna settings change; an
   empty sidecar removes them.
-- **Open:** a command to write sidecars in bulk (`ridal override`).
+- **Writing them** (`sidecar::edit`, `ridal override`, `ridal.override()`)
+  edits in place with `toml_edit`, since a sidecar may be hand-written:
+  comments, `[native.*]` tables and layout survive, and a new `[lines.N]`
+  table is made with implicit parents, so it reads as one
+  `[lines.N.overrides]` header. Every recording's result is parsed and
+  checked as a reader would before any file is written, and each write is a
+  temporary sibling renamed over the old file. Numbers are written as the
+  shortest decimal that reads back as the same `f32`, so `0.1` stays `0.1`.
+  `--template` writes every key commented out with the header's value
+  (`load_meta` without the sidecar), and never replaces a sidecar. A
+  `.ridal.toml` stands for its recording in `formats::resolve_input`, as a
+  `.coords.csv` does, so a glob of a survey's directory names each
+  recording however many of its files match.
 
 ## Render pipeline
 

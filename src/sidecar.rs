@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::formats::{self, FormatKind, ResolvedInput};
 
+pub mod edit;
+
 /// What a sidecar beside a recording is called, after the recording's
 /// stem: `DAT_0001_A1.ridal.toml`.
 pub const SIDECAR_SUFFIX: &str = ".ridal.toml";
@@ -48,8 +50,7 @@ pub struct Overrides {
     pub antenna_separation_m: Option<f32>,
 }
 
-/// One key of `[overrides]`, for the reference page.
-#[cfg(test)]
+/// One key of `[overrides]`, for `ridal override` and the reference page.
 pub struct OverrideKey {
     pub name: &'static str,
     pub unit: &'static str,
@@ -61,7 +62,6 @@ pub struct OverrideKey {
 /// Every key of `[overrides]`. `every_override_key_is_listed` checks this
 /// against [`Overrides`], and `docs/reference/sidecar.md` is generated
 /// from it.
-#[cfg(test)]
 pub const OVERRIDE_KEYS: &[OverrideKey] = &[
     OverrideKey {
         name: "antenna_mhz",
@@ -112,16 +112,21 @@ impl Overrides {
         Ok(())
     }
 
+    /// Each key, by its name in a sidecar, and its value.
+    pub fn entries(&self) -> [(&'static str, Option<f32>); 2] {
+        [
+            ("antenna_mhz", self.antenna_mhz),
+            ("antenna_separation_m", self.antenna_separation_m),
+        ]
+    }
+
     /// `key = value` for each value set, for messages.
     pub fn describe(&self) -> String {
-        let mut parts = Vec::new();
-        if let Some(mhz) = self.antenna_mhz {
-            parts.push(format!("antenna_mhz = {mhz}"));
-        }
-        if let Some(m) = self.antenna_separation_m {
-            parts.push(format!("antenna_separation_m = {m}"));
-        }
-        parts.join(", ")
+        self.entries()
+            .iter()
+            .filter_map(|(key, value)| value.map(|value| format!("{key} = {value}")))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -157,7 +162,13 @@ struct Sidecar {
 fn read(path: &Path) -> Result<Sidecar, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
-    let sidecar: Sidecar = toml::from_str(&text)
+    parse(&text, path)
+}
+
+/// Check the text of a sidecar, which messages call `path`, without
+/// regard to the recording it is for.
+fn parse(text: &str, path: &Path) -> Result<Sidecar, String> {
+    let sidecar: Sidecar = toml::from_str(text)
         .map_err(|e| format!("{} is not a valid sidecar: {e}", path.display()))?;
     let invalid = |what: String| format!("{} is not a valid sidecar: {what}", path.display());
     if let Some(schema) = sidecar.schema {
@@ -218,6 +229,24 @@ pub fn overrides_of(resolved: &ResolvedInput) -> Result<Overrides, String> {
     if sidecar.lines.is_empty() {
         return Ok(sidecar.overrides);
     }
+    check_lines(&sidecar, path, resolved)?;
+    // A file of one line is read without `part.line` set (`with_lines`).
+    let line = match resolved.part.line {
+        Some(line) => line,
+        None => crate::processing::input::iceradar_line(resolved).map_err(|e| e.to_string())?,
+    };
+    Ok(match sidecar.lines.get(&line.to_string()) {
+        Some(table) => sidecar.overrides.under(table.overrides),
+        None => sidecar.overrides,
+    })
+}
+
+/// Refuse `[lines]` tables that do not fit the file of `resolved`: any at
+/// all for a format without lines, and a line the file does not have.
+fn check_lines(sidecar: &Sidecar, path: &Path, resolved: &ResolvedInput) -> Result<(), String> {
+    if sidecar.lines.is_empty() {
+        return Ok(());
+    }
     if resolved.kind != FormatKind::IceRadar {
         return Err(format!(
             "{} has [lines] tables, but {} is a {} file, which holds no lines",
@@ -247,15 +276,7 @@ pub fn overrides_of(resolved: &ResolvedInput) -> Result<Overrides, String> {
             ));
         }
     }
-    // A file of one line is read without `part.line` set (`with_lines`).
-    let line = match resolved.part.line {
-        Some(line) => line,
-        None => crate::processing::input::iceradar_line(resolved).map_err(|e| e.to_string())?,
-    };
-    Ok(match sidecar.lines.get(&line.to_string()) {
-        Some(table) => sidecar.overrides.under(table.overrides),
-        None => sidecar.overrides,
-    })
+    Ok(())
 }
 
 /// What the sidecar of `resolved` sets that the arguments do not: the
@@ -639,5 +660,8 @@ mod tests {
         let mut listed = OVERRIDE_KEYS.iter().map(|k| k.name).collect::<Vec<_>>();
         listed.sort();
         assert_eq!(fields, listed);
+        let mut entries = all.entries().map(|(key, _)| key).to_vec();
+        entries.sort();
+        assert_eq!(entries, listed);
     }
 }

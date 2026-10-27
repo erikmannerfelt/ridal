@@ -399,6 +399,47 @@ Seconds between traces, for made-up times. Defaults to the header's
 A DEM to take every altitude from, before any other
 ```
 
+## `ridal override`
+
+```{program} ridal override
+```
+
+Set or remove values in recordings' sidecars ("<stem>.ridal.toml" beside each), which take precedence over their headers (#527)
+
+```console
+$ ridal override [OPTIONS] <--antenna-mhz <ANTENNA_MHZ>|--antenna-separation-m <ANTENNA_SEPARATION_M>|--unset <KEY>|--template> <INPUTS>...
+```
+
+**Arguments**
+
+```{option} <INPUTS>
+Recordings, by any of their files, or glob patterns. Each gets its own "<stem>.ridal.toml" beside its header, made if there is none; comments and anything else in an existing one are kept
+
+Required.
+```
+
+**Options**
+
+```{option} --antenna-mhz <ANTENNA_MHZ>
+The antenna's center frequency, in MHz
+```
+
+```{option} --antenna-separation-m <ANTENNA_SEPARATION_M>
+The horizontal distance between the transmitter and the receiver, in m
+```
+
+```{option} --unset <KEY>
+Remove a value, by its key in the sidecar (antenna_mhz, antenna_separation_m). Repeatable, or comma-separated
+```
+
+```{option} --lines <LINES>
+For an IceRadar file: change these lines' own values (line 3, 0,2-4 or all), which take precedence over the file's, instead of the file's
+```
+
+```{option} --template
+Write a sidecar that sets nothing, with every key commented out beside what the header says of it, for each recording that has none
+```
+
 ## `ridal steps`
 
 ```{program} ridal steps

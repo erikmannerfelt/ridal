@@ -70,6 +70,9 @@ const PROGRAM_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 /// coords(...)
 ///     Write a recording's positions as a coordinate CSV, from partial
 ///     positions, a GNSS track, a DEM and a start time.
+/// override(...)
+///     Set or remove values in recordings' sidecars (``<stem>.ridal.toml``),
+///     which take precedence over their headers.
 /// process(...)
 ///     Process one or more GPR files into a single output or an in-memory
 ///     dataset.
@@ -1568,6 +1571,113 @@ pub mod ridal {
                 json_to_py(py, &text)
             })
             .collect::<PyResult<Vec<Py<PyAny>>>>()
+    }
+
+    /// Set or remove values in recordings' sidecars.
+    ///
+    /// Each recording's ``<stem>.ridal.toml`` beside its header is made if
+    /// there is none and edited in place otherwise, keeping its comments and
+    /// anything else in it. Every sidecar is checked before any is written,
+    /// so a mistake leaves them all as they were. Its values take precedence
+    /// over the header's when the recording is read, and the ``override_*``
+    /// arguments of a run take precedence over them. This is
+    /// ``ridal override`` on the command line.
+    ///
+    /// Parameters
+    /// ----------
+    /// inputs : path-like or sequence of path-like
+    ///     Recordings, by any of their files, or glob patterns. A recording
+    ///     named by several of its files is changed once.
+    /// antenna_mhz : float, optional
+    ///     The antenna's center frequency, in MHz.
+    /// antenna_separation_m : float, optional
+    ///     The horizontal distance between the transmitter and the receiver,
+    ///     in m.
+    /// unset : str or sequence of str, optional
+    ///     Keys to remove: ``"antenna_mhz"``, ``"antenna_separation_m"``.
+    /// lines : int, sequence of int or str, optional
+    ///     For an IceRadar file, the lines whose own values to change instead
+    ///     of the file's, as ``process()`` takes them: ``3``, ``[0, 2]``,
+    ///     ``"0,2-4"`` or ``"all"``. A line's values take precedence over the
+    ///     file's.
+    /// template : bool, default False
+    ///     Instead, write a sidecar that sets nothing, every key commented out
+    ///     beside what the header says of it, for each recording that has
+    ///     none. Not with the other options.
+    ///
+    /// Returns
+    /// -------
+    /// list of str
+    ///     The sidecars written. One already as asked, or left alone by
+    ///     ``template``, is not listed.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If nothing is asked for, or ``template`` is given with anything
+    ///     else.
+    /// RuntimeError
+    ///     If an input is not a recording, a value is out of range, a key is
+    ///     unknown, ``lines`` is given for a format without them or names a
+    ///     line a file does not have, or an existing sidecar is not valid.
+    #[pyfunction]
+    #[pyo3(name = "override", signature = (
+        inputs,
+        *,
+        antenna_mhz=None,
+        antenna_separation_m=None,
+        unset=None,
+        lines=None,
+        template=false,
+    ))]
+    fn override_(
+        py: Python<'_>,
+        inputs: Py<PyAny>,
+        antenna_mhz: Option<f32>,
+        antenna_separation_m: Option<f32>,
+        unset: Option<Py<PyAny>>,
+        lines: Option<Py<PyAny>>,
+        template: bool,
+    ) -> PyResult<Vec<String>> {
+        use pyo3::exceptions::PyValueError;
+        let inputs = inputs_to_paths(py, inputs.bind(py))?;
+        let unset: Vec<String> = match unset {
+            None => Vec::new(),
+            Some(value) => {
+                let value = value.bind(py);
+                match value.extract::<String>() {
+                    Ok(one) => vec![one],
+                    Err(_) => value.extract::<Vec<String>>()?,
+                }
+            }
+        };
+        let lines = lines_arg(py, lines)?;
+        let set = crate::sidecar::Overrides {
+            antenna_mhz,
+            antenna_separation_m,
+        };
+        let outcomes = if template {
+            if !set.is_empty() || !unset.is_empty() || lines.is_some() {
+                return Err(PyValueError::new_err(
+                    "template=True writes a sidecar that sets nothing; give it alone",
+                ));
+            }
+            crate::sidecar::edit::template(&inputs)
+        } else {
+            if set.is_empty() && unset.is_empty() {
+                return Err(PyValueError::new_err(
+                    "nothing to change: give antenna_mhz, antenna_separation_m, unset or \
+                     template=True",
+                ));
+            }
+            crate::sidecar::edit::apply(&inputs, &crate::sidecar::edit::Edit { set, unset, lines })
+        }
+        .map_err(PyRuntimeError::new_err)?;
+        Ok(outcomes
+            .iter()
+            .filter(|outcome| outcome.written())
+            .map(|outcome| outcome.path().display().to_string())
+            .collect())
     }
 
     /// The body of a replace preflight for a processed file (#331). Private.

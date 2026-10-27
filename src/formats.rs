@@ -206,12 +206,16 @@ pub fn is_coords_csv(path: &Path) -> bool {
 
 /// The recording stem of a `<stem>.coords.csv`.
 fn coords_csv_stem(path: &Path) -> Option<&str> {
+    stem_before(path, COORDS_CSV_SUFFIX)
+}
+
+/// The recording stem of a file named `<stem><suffix>`, whatever the case
+/// of the suffix.
+fn stem_before<'a>(path: &'a Path, suffix: &str) -> Option<&'a str> {
     let name = path.file_name()?.to_str()?;
-    let split = name.len().checked_sub(COORDS_CSV_SUFFIX.len())?;
-    (split > 0
-        && name.is_char_boundary(split)
-        && name[split..].eq_ignore_ascii_case(COORDS_CSV_SUFFIX))
-    .then(|| &name[..split])
+    let split = name.len().checked_sub(suffix.len())?;
+    (split > 0 && name.is_char_boundary(split) && name[split..].eq_ignore_ascii_case(suffix))
+        .then(|| &name[..split])
 }
 
 /// `<stem>.coords.csv` in `dir`, whatever the case of its name.
@@ -245,8 +249,11 @@ fn header_stem(resolved: &ResolvedInput) -> Result<&str, String> {
 /// one, and the format's own positions file otherwise. Its sidecar is a
 /// `<stem>.ridal.toml` beside the header, if there is one.
 pub fn resolve_input(input: &Path) -> Result<ResolvedInput, String> {
-    // A coordinate CSV stands for its recording, as a `.cor` does.
-    let mut resolved = match coords_csv_stem(input) {
+    // A coordinate CSV stands for its recording, as a `.cor` does, and so
+    // does a sidecar.
+    let stem =
+        coords_csv_stem(input).or_else(|| stem_before(input, crate::sidecar::SIDECAR_SUFFIX));
+    let mut resolved = match stem {
         Some(stem) => ResolvedInput {
             input: input.to_path_buf(),
             ..resolve_files(&input.with_file_name(stem))?
@@ -747,5 +754,19 @@ mod tests {
         assert_eq!(coords_csv_stem(Path::new(".coords.csv")), None);
         assert_eq!(coords_csv_stem(Path::new("L1.csv")), None);
         assert!(resolve_input(Path::new("L1.csv")).is_err());
+    }
+
+    #[test]
+    fn a_sidecar_stands_for_its_recording() {
+        // The stem has no extension, so its files must be there.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("L1.rad"), "").unwrap();
+        let sidecar = dir.path().join("L1.Ridal.toml");
+        let resolved = resolve_input(&sidecar).unwrap();
+        assert_eq!(resolved.kind, FormatKind::Ramac);
+        assert_eq!(resolved.header, dir.path().join("L1.rad"));
+        assert_eq!(resolved.input, sidecar);
+        assert!(resolve_input(Path::new("L1.toml")).is_err());
+        assert!(resolve_input(Path::new(".ridal.toml")).is_err());
     }
 }

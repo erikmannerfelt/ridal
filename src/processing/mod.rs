@@ -128,33 +128,29 @@ pub(crate) fn assumptions(
     options: &ProcessingOptions,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut warnings = Vec::new();
+    let given = crate::sidecar::Overrides {
+        antenna_mhz: options.override_antenna_mhz,
+        antenna_separation_m: options.override_antenna_separation,
+    };
     for r in resolved {
         let sidecar = crate::sidecar::overrides_of(r)?;
-        let shadowed = [
-            (
-                "--override-antenna-mhz",
-                options.override_antenna_mhz,
-                sidecar.antenna_mhz,
-                "antenna_mhz",
-            ),
-            (
-                "--override-antenna-separation",
-                options.override_antenna_separation,
-                sidecar.antenna_separation_m,
-                "antenna_separation_m",
-            ),
-        ];
-        for (argument, given, beside, key) in shadowed {
-            if let (Some(given), Some(beside)) = (given, beside) {
-                if given != beside {
-                    warnings.push(format!(
-                        "Warning: {argument} {given} takes precedence over {key} = {beside} in {}.",
-                        r.sidecar
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_default()
-                    ));
-                }
+        for ((key, given), (_, beside)) in given.entries().into_iter().zip(sidecar.entries()) {
+            let (Some(given), Some(beside)) = (given, beside) else {
+                continue;
+            };
+            if given != beside {
+                let argument = crate::sidecar::OVERRIDE_KEYS
+                    .iter()
+                    .find(|k| k.name == key)
+                    .expect("every key is listed")
+                    .argument;
+                warnings.push(format!(
+                    "Warning: {argument} {given} takes precedence over {key} = {beside} in {}.",
+                    r.sidecar
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_default()
+                ));
             }
         }
     }
