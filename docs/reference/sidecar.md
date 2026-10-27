@@ -95,6 +95,25 @@ UPDATE_SIDECAR_MD=1 cargo test --no-default-features -F cli sidecar_md -->
 
 <!-- end of generated keys -->
 
+## On a server
+
+A sidecar uploaded with a recording's files, in **Add raw data in bulk…**,
+**New radargram from raw data…** or `PUT /api/v1/sources/{radargram_id}`,
+belongs to the recording of its stem. The server keeps the values it sets,
+with the recording in the radargram's source, rather than the file itself:
+`[native.*]` tables, comments and layout are not kept. Whenever the
+recording is read or processed, a sidecar with those values is written
+beside it, and the raw data's zip
+(`GET /api/v1/sources/{radargram_id}/raw.zip`) holds one too, so the files
+downloaded are read as the server reads them.
+
+Saving a source again with a recording's own files, as changing its antenna
+settings does, keeps the values; uploading an empty sidecar with it removes
+them. The source's own antenna frequency and separation are set for every
+recording of the radargram, like an option for a run, and take precedence
+over the sidecars. A change to a recording's sidecar values makes what was
+processed before stale.
+
 ## In processed files
 
 What a sidecar decided is part of the processed file's recipe

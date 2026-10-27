@@ -9,7 +9,10 @@
 //! - **Sources**, one document per radargram id, `sources/<id>.json`: the
 //!   recordings it is made from, in merge order, each a list of files by
 //!   name and hash, and optionally a DEM and a CRS. Switching a radargram's
-//!   source (a better `.cor`, say) is writing this document.
+//!   source (a better `.cor`, say) is writing this document. A recording's
+//!   sidecar (#527) is kept as the values it sets (`Bundle::overrides`),
+//!   not as a file, and is written beside the recording whenever the
+//!   recording is laid out to be read ([`materialize_bundles`]).
 //! - **DEMs**, one document per DEM, `dems/<id>.json`: a DEM uploaded once
 //!   for the project, with a name, that any number of sources link to by
 //!   id. A source keeps the linked file's hash beside the id, so recipes
@@ -105,19 +108,24 @@ impl Source {
             .chain(self.dem.iter().map(|d| d.file.blake3.as_str()))
     }
 
-    /// The recordings as a client names them, in merge order.
-    pub fn recordings(&self) -> Vec<Vec<NamedFile>> {
+    /// The bundles a recipe of this source records: each recording's
+    /// sidecar values but those the source's own antenna settings take
+    /// precedence over, as `sidecar::applied` leaves them out when the
+    /// source is processed.
+    pub fn expected_bundles(&self) -> Vec<Bundle> {
         self.bundles
             .iter()
             .map(|bundle| {
-                bundle
-                    .files
-                    .iter()
-                    .map(|f| NamedFile {
-                        name: f.file.name.clone(),
-                        blake3: f.file.blake3.clone(),
-                    })
-                    .collect()
+                let applied = bundle.overrides.map(|o| crate::sidecar::Overrides {
+                    antenna_mhz: o.antenna_mhz.filter(|_| self.antenna_mhz.is_none()),
+                    antenna_separation_m: o
+                        .antenna_separation_m
+                        .filter(|_| self.antenna_separation.is_none()),
+                });
+                Bundle {
+                    overrides: applied.filter(|o| !o.is_empty()),
+                    ..bundle.clone()
+                }
             })
             .collect()
     }
@@ -493,6 +501,50 @@ pub fn materialize(
     Ok(resolved)
 }
 
+/// Lay a source's recordings out under `dir`, as [`materialize`] does, with
+/// a sidecar written beside each recording that has overrides, so that it
+/// is read as it would be from the files the source was made from.
+pub fn materialize_bundles(
+    data_dir: &Path,
+    bundles: &[Bundle],
+    dir: &Path,
+) -> Result<Vec<crate::formats::ResolvedInput>, String> {
+    let named = bundles
+        .iter()
+        .map(|bundle| {
+            bundle
+                .files
+                .iter()
+                .map(|f| NamedFile {
+                    name: f.file.name.clone(),
+                    blake3: f.file.blake3.clone(),
+                })
+                .collect()
+        })
+        .collect::<Vec<_>>();
+    let mut resolved = materialize(data_dir, &named, dir)?;
+    for (recording, bundle) in resolved.iter_mut().zip(bundles) {
+        // The bundle alone says whether there is one, whatever a directory
+        // laid out before left beside the header.
+        recording.sidecar = None;
+        let Some(overrides) = &bundle.overrides else {
+            continue;
+        };
+        let stem = recording
+            .header
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| format!("{} has no usable name", recording.header.display()))?;
+        let path = recording
+            .header
+            .with_file_name(format!("{stem}{}", crate::sidecar::SIDECAR_SUFFIX));
+        std::fs::write(&path, crate::sidecar::to_toml(overrides))
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        recording.sidecar = Some(path);
+    }
+    Ok(resolved)
+}
+
 /// Lay one stored file out in `dir` under its own name, as [`materialize`]
 /// does a recording's, and return where. For a DEM, whose name is then
 /// what the processed file records rather than its hash.
@@ -540,16 +592,30 @@ fn link(stored: &Path, laid: &Path) -> Result<(), String> {
 /// the role its reader gives it, found from the names by laying them out
 /// under `dir`. A file the reader does not use is refused, since a source
 /// should say exactly what a radargram is made from.
+///
+/// A recording's sidecar, `<stem>.ridal.toml` among its files, is read
+/// into the bundle's `overrides` rather than listed (#527); an empty one
+/// sets none. A recording without one keeps the overrides of the bundle in
+/// `kept` (the source as it was) made of the same files, so that saving a
+/// source again with its own files does not lose them.
 pub fn bundles_of(
     data_dir: &Path,
     bundles: &[Vec<NamedFile>],
     dir: &Path,
+    kept: &[Bundle],
 ) -> Result<Vec<Bundle>, String> {
     let resolved = materialize(data_dir, bundles, dir)?;
     resolved
         .iter()
         .zip(bundles)
         .map(|(resolved, files)| {
+            let is_sidecar = |name: &str| {
+                resolved
+                    .sidecar
+                    .as_deref()
+                    .and_then(Path::file_name)
+                    .is_some_and(|n| n == name)
+            };
             let role_of = |name: &str| {
                 let is = |path: &Path| path.file_name().is_some_and(|n| n == name);
                 if is(&resolved.header) {
@@ -563,7 +629,7 @@ pub fn bundles_of(
                 }
             };
             let mut out = Vec::new();
-            for file in files {
+            for file in files.iter().filter(|f| !is_sidecar(&f.name)) {
                 let role = role_of(&file.name).ok_or_else(|| {
                     format!(
                         "{} is not part of the {} recording {}",
@@ -589,12 +655,18 @@ pub fn bundles_of(
                 FileRole::Data => 1,
                 FileRole::Coordinates => 2,
             });
+            let overrides = if files.iter().any(|f| is_sidecar(&f.name)) {
+                Some(crate::sidecar::overrides_of(resolved)?).filter(|o| !o.is_empty())
+            } else {
+                kept.iter()
+                    .find(|bundle| bundle.files == out)
+                    .and_then(|bundle| bundle.overrides)
+            };
             Ok(Bundle {
                 format: crate::formats::format_info(resolved.kind).name.to_string(),
                 files: out,
                 part: (!resolved.part.is_whole()).then_some(resolved.part),
-                // A project's recordings are not laid out with a sidecar.
-                overrides: None,
+                overrides,
             })
         })
         .collect()
@@ -658,7 +730,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let files = recording(dir.path(), LINE);
         let work = tempfile::tempdir().unwrap();
-        let bundles = bundles_of(dir.path(), std::slice::from_ref(&files), work.path()).unwrap();
+        let bundles =
+            bundles_of(dir.path(), std::slice::from_ref(&files), work.path(), &[]).unwrap();
         assert_eq!(bundles[0].format, "ramac");
         let roles: Vec<FileRole> = bundles[0].files.iter().map(|f| f.role).collect();
         assert_eq!(
@@ -673,9 +746,122 @@ mod tests {
         // A file the recording does not use is refused.
         let mut extra = files;
         extra.push(upload(dir.path(), "assets/mala/README.md"));
-        let refused =
-            bundles_of(dir.path(), &[extra], tempfile::tempdir().unwrap().path()).unwrap_err();
+        let refused = bundles_of(
+            dir.path(),
+            &[extra],
+            tempfile::tempdir().unwrap().path(),
+            &[],
+        )
+        .unwrap_err();
         assert!(refused.contains("README.md is not part of"), "{refused}");
+    }
+
+    /// A sidecar named for the fixture, uploaded.
+    fn sidecar(data_dir: &Path, text: &str) -> NamedFile {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join(format!("{LINE}.ridal.toml"));
+        std::fs::write(&path, text).unwrap();
+        upload(data_dir, path.to_str().unwrap())
+    }
+
+    #[test]
+    fn a_sidecar_is_kept_as_its_values_and_laid_out_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = recording(dir.path(), LINE);
+        let bundles_with = |extra: Option<NamedFile>, kept: &[Bundle]| {
+            let mut given = files.clone();
+            given.extend(extra);
+            let work = tempfile::tempdir().unwrap();
+            bundles_of(dir.path(), &[given], work.path(), kept).unwrap()
+        };
+        let separation = crate::sidecar::Overrides {
+            antenna_separation_m: Some(4.5),
+            ..Default::default()
+        };
+
+        let with = bundles_with(
+            Some(sidecar(
+                dir.path(),
+                "[overrides]\nantenna_separation_m = 4.5\n",
+            )),
+            &[],
+        );
+        assert_eq!(with[0].overrides, Some(separation));
+        // The file itself is not part of the source.
+        assert_eq!(with[0].files, bundles_with(None, &[])[0].files);
+        // Given again without it, the recording keeps its values; made of
+        // other files, it does not.
+        assert_eq!(bundles_with(None, &with)[0].overrides, Some(separation));
+        let mut other = with.clone();
+        other[0].files[2].file.blake3 = "b".repeat(64);
+        assert_eq!(bundles_with(None, &other)[0].overrides, None);
+        // An empty sidecar removes them.
+        assert_eq!(
+            bundles_with(Some(sidecar(dir.path(), "")), &with)[0].overrides,
+            None
+        );
+        // A mistake in it is refused, naming it.
+        let error = bundles_of(
+            dir.path(),
+            &[[
+                files.clone(),
+                vec![sidecar(dir.path(), "[overrides]\nmhz = 1\n")],
+            ]
+            .concat()],
+            tempfile::tempdir().unwrap().path(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            error.contains(".ridal.toml is not a valid sidecar"),
+            "{error}"
+        );
+
+        // Laid out, the recording is read with the values.
+        let work = tempfile::tempdir().unwrap();
+        let resolved = materialize_bundles(dir.path(), &with, work.path()).unwrap();
+        assert_eq!(
+            crate::sidecar::overrides_of(&resolved[0]).unwrap(),
+            separation
+        );
+        let meta =
+            crate::processing::input::load_meta(&resolved[0], 0.168, None, None, None).unwrap();
+        assert_eq!(meta.antenna_separation, 4.5);
+        let bare = materialize_bundles(dir.path(), &bundles_with(None, &[]), work.path()).unwrap();
+        assert_eq!(bare[0].sidecar, None);
+    }
+
+    #[test]
+    fn a_recipe_is_expected_without_what_the_source_takes_precedence_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = recording(dir.path(), LINE);
+        let work = tempfile::tempdir().unwrap();
+        let mut bundles =
+            bundles_of(dir.path(), std::slice::from_ref(&files), work.path(), &[]).unwrap();
+        bundles[0].overrides = Some(crate::sidecar::Overrides {
+            antenna_mhz: Some(50.),
+            antenna_separation_m: Some(4.5),
+        });
+        let source = |mhz, separation| Source {
+            bundles: bundles.clone(),
+            crs: None,
+            dem: None,
+            antenna_mhz: mhz,
+            antenna_separation: separation,
+            names: None,
+        };
+        assert_eq!(source(None, None).expected_bundles(), bundles);
+        assert_eq!(
+            source(Some(25.), None).expected_bundles()[0].overrides,
+            Some(crate::sidecar::Overrides {
+                antenna_mhz: None,
+                antenna_separation_m: Some(4.5),
+            })
+        );
+        assert_eq!(
+            source(Some(25.), Some(1.)).expected_bundles()[0].overrides,
+            None
+        );
     }
 
     #[test]
@@ -697,7 +883,7 @@ mod tests {
         files.insert(0, csv.clone());
 
         let work = tempfile::tempdir().unwrap();
-        let bundles = bundles_of(dir.path(), &[files], work.path()).unwrap();
+        let bundles = bundles_of(dir.path(), &[files], work.path(), &[]).unwrap();
         assert_eq!(bundles[0].files[2].role, FileRole::Coordinates);
         assert_eq!(bundles[0].files[2].file.name, csv.name);
     }
@@ -737,7 +923,8 @@ mod tests {
         let store = DocumentStore::new(dir.path().to_path_buf());
         let files = recording(dir.path(), LINE);
         let work = tempfile::tempdir().unwrap();
-        let bundles = bundles_of(dir.path(), std::slice::from_ref(&files), work.path()).unwrap();
+        let bundles =
+            bundles_of(dir.path(), std::slice::from_ref(&files), work.path(), &[]).unwrap();
         let id = RadargramId::new("line-01").unwrap();
         let source = Source {
             bundles,
@@ -797,7 +984,8 @@ mod tests {
 
         let files = recording(dir.path(), LINE);
         let work = tempfile::tempdir().unwrap();
-        let bundles = bundles_of(dir.path(), std::slice::from_ref(&files), work.path()).unwrap();
+        let bundles =
+            bundles_of(dir.path(), std::slice::from_ref(&files), work.path(), &[]).unwrap();
         let line = RadargramId::new("line-01").unwrap();
         let source = Source {
             bundles,

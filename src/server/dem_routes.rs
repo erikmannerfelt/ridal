@@ -474,7 +474,7 @@ pub async fn link_dem(
         None => Vec::new(),
         Some(link) => {
             let data_dir = project.data_dir().to_path_buf();
-            let named = source.recordings();
+            let named = source.bundles.clone();
             let crs = source.crs.clone();
             let (mhz, separation) = (source.antenna_mhz, source.antenna_separation);
             let link = link.clone();

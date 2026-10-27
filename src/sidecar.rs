@@ -274,6 +274,13 @@ pub fn applied(
     })
 }
 
+/// A sidecar that sets `overrides` and nothing else, as a server writes
+/// one beside a recording it lays out from values it stores.
+pub fn to_toml(overrides: &Overrides) -> String {
+    let table = toml::to_string(overrides).expect("overrides are plain numbers");
+    format!("schema = {SCHEMA}\n\n[overrides]\n{table}")
+}
+
 /// Which sidecar each recording is read with.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Choice {
@@ -419,6 +426,28 @@ mod tests {
     fn lines_are_refused_for_a_format_without_them() {
         let error = error("[lines.0.overrides]\nantenna_mhz = 50\n");
         assert!(error.contains("which holds no lines"), "{error}");
+    }
+
+    #[test]
+    fn a_written_sidecar_reads_back_as_its_values() {
+        let dir = tempfile::tempdir().unwrap();
+        for overrides in [
+            Overrides::default(),
+            Overrides {
+                antenna_mhz: Some(25.),
+                antenna_separation_m: None,
+            },
+            Overrides {
+                antenna_mhz: Some(100.),
+                antenna_separation_m: Some(0.25),
+            },
+        ] {
+            let path = write(dir.path(), &to_toml(&overrides));
+            assert_eq!(
+                overrides_of(&ramac(dir.path(), Some(path))).unwrap(),
+                overrides
+            );
+        }
     }
 
     #[test]

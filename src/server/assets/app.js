@@ -602,10 +602,12 @@ const RIDAL = Object.freeze({
 
   /** The recording a raw file belongs to: its name without the extension,
    * where `ridal coords`' `<name>.coords.csv` belongs to `<name>` (#13),
-   * as `formats::resolve_input` reads it. */
+   * and so does a sidecar, `<name>.ridal.toml` (#527), as
+   * `formats::resolve_input` reads them. */
   recordingStem(name) {
-    const coords = /\.coords\.csv$/i;
-    if (coords.test(name)) return name.replace(coords, '');
+    for (const suffix of [/\.coords\.csv$/i, /\.ridal\.toml$/i]) {
+      if (suffix.test(name)) return name.replace(suffix, '');
+    }
     const dot = name.lastIndexOf('.');
     return dot > 0 ? name.slice(0, dot) : name;
   },

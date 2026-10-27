@@ -1065,10 +1065,23 @@ writer once there are writers (#99). The user-facing description is
   a different recipe from the same value in a sidecar.
 - **Per line, not per channel yet.** `[lines.<N>]` mirrors `formats::Part`;
   interleaved multi-channel GSSI would get `[channels.<N>]` the same way.
-- **Open: the server.** A project's raw sources do not carry sidecars, so
-  `project::raw` predicts bundles without overrides; storing them and
-  grouping an uploaded sidecar with its recording is the next step of #527,
-  and a command to write sidecars in bulk (`ridal override`) the one after.
+- **On a server, values, not files.** A source keeps a recording's
+  sidecar as `Bundle::overrides`, the type its recipe records, so
+  `state_of` compares the two directly (through
+  `Source::expected_bundles`, which leaves out what the source's own
+  antenna settings take precedence over, as processing does). An uploaded
+  `<stem>.ridal.toml` is found by input resolution when the recording is
+  laid out, read into the bundle by `raw::bundles_of` and left unnamed by
+  the source, so the sweep removes it; `raw::materialize_bundles` writes
+  one from the values whenever a source is laid out to be read, so jobs
+  and reads go through the same `load_meta` as the CLI. Storing the file
+  instead would have kept `[native.*]` and its text, but made recipes and
+  staleness special-case a file whose bytes do not count, and made editing
+  a value an upload. A recording given again without a sidecar keeps the
+  values of the bundle made of the same files, because the GUI saves a
+  source with its own files when only its antenna settings change; an
+  empty sidecar removes them.
+- **Open:** a command to write sidecars in bulk (`ridal override`).
 
 ## Render pipeline
 
