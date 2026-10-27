@@ -107,12 +107,14 @@ Positions
   fields in traces marked valid. Traces without a usable fix are placed by
   interpolation, as between the fixes of any other format. A
   coordinate CSV ({ref}`coordinate-csv`) for a file of several lines needs a
-  `line` column, and its trace numbers count the traces Ridal keeps, without
-  the empty ones.
+  `line` column, and trace N in it is the file's `location_N`.
 
 Traces
 : Samples are converted from volts to millivolts. Traces that captured
-  nothing (a stacking count of 0) are left out. When the record length
+  nothing (a stacking count of 0) are kept, as the zeros they hold, so that
+  trace N is the file's `location_N`, and their GPS fixes are used;
+  `remove_empty_traces`, the first step of the default profile, leaves them
+  out. When the record length
   changes within a line, the traces are aligned on the trigger and the
   shorter ones are padded with zeros to the longest. The time window starts
   at the start of the record, before the trigger, so time zero is found by

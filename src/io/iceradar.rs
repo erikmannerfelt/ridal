@@ -142,13 +142,18 @@ struct TraceMeta {
     fix: Option<Fix>,
 }
 
-/// One line's attributes, and the traces of it that are kept.
+/// One line's attributes, and its traces.
+///
+/// Every trace is kept, empty ones too, so trace N of the radargram is the
+/// file's `location_N`, as a coordinate CSV and other tools number them;
+/// the `remove_empty_traces` step leaves them out. An empty trace's GPS
+/// fix is used like any other.
 #[derive(Debug, Clone)]
 struct LineMeta {
     hardware_id: Option<String>,
-    /// Indices into the file's `location_N`, of the traces kept: all but the
-    /// empty ones.
-    kept: Vec<usize>,
+    /// Indices into the file's `location_N` of the traces that captured
+    /// something, whose settings are the line's: all but the empty ones.
+    captured: Vec<usize>,
     traces: Vec<TraceMeta>,
     date: IceRadarDate,
     /// The first sample of the common grid, in samples from the trigger.
@@ -581,10 +586,10 @@ fn read_line_meta(
         });
     }
 
-    let kept = (0..n)
+    let captured = (0..n)
         .filter(|&i| traces[i].stacking > 0)
         .collect::<Vec<_>>();
-    if kept.is_empty() {
+    if captured.is_empty() {
         return Err(format!(
             "Every trace of {line_name} in {} is empty (stacking 0)",
             path.display()
@@ -594,14 +599,17 @@ fn read_line_meta(
 
     // One sample interval per line: traces of different intervals could
     // not share a time axis.
-    let x_increment = traces[kept[0]].x_increment;
-    let sample_rate = traces[kept[0]].sample_rate;
-    if let Some(&other) = kept.iter().find(|&&i| traces[i].sample_rate != sample_rate) {
+    let x_increment = traces[captured[0]].x_increment;
+    let sample_rate = traces[captured[0]].sample_rate;
+    if let Some(&other) = captured
+        .iter()
+        .find(|&&i| traces[i].sample_rate != sample_rate)
+    {
         return Err(format!(
             "The sample rate changes within {line_name} of {}: {} Hz at location_{} and {} Hz at location_{other}",
             path.display(),
             sample_rate,
-            kept[0],
+            captured[0],
             traces[other].sample_rate
         )
         .into());
@@ -612,8 +620,8 @@ fn read_line_meta(
     // from the earliest first sample to the latest last one, which is the
     // longest record's.
     let start = |t: &TraceMeta| (t.initial_x / x_increment).round() as i64;
-    let first_sample = kept.iter().map(|&i| start(&traces[i])).min().unwrap();
-    let last_sample = kept
+    let first_sample = captured.iter().map(|&i| start(&traces[i])).min().unwrap();
+    let last_sample = captured
         .iter()
         .map(|&i| start(&traces[i]) + traces[i].record_length as i64)
         .max()
@@ -657,7 +665,7 @@ fn read_line_meta(
 
     Ok(LineMeta {
         hardware_id: file.string_attr("/", "HardwareID"),
-        kept,
+        captured,
         traces,
         date,
         first_sample,
@@ -668,8 +676,7 @@ fn read_line_meta(
 }
 
 impl LineMeta {
-    /// The kept traces' fixes as Unix times, with the trace (counted among
-    /// the kept ones) each belongs to.
+    /// The traces' fixes as Unix times, with the trace each belongs to.
     ///
     /// A fix whose time is not after the previous one's is dropped, as a
     /// repeated or out-of-order sentence. A time of day more than twelve
@@ -685,8 +692,8 @@ impl LineMeta {
         let mut out: Vec<(u32, f64, Fix)> = Vec::new();
         let mut day = 0.;
         let mut previous_of_day: Option<f64> = None;
-        for (trace_n, &i) in self.kept.iter().enumerate() {
-            let Some(fix) = self.traces[i].fix else {
+        for (trace_n, trace) in self.traces.iter().enumerate() {
+            let Some(fix) = trace.fix else {
                 continue;
             };
             if let Some(previous) = previous_of_day {
@@ -759,7 +766,7 @@ pub fn load_iceradar_meta(
         antenna_mhz,
         antenna_separation: override_antenna_separation.unwrap_or(0.),
         time_window: (meta.samples as f64 * meta.x_increment * 1e9) as f32,
-        last_trace: meta.kept.len() as u32,
+        last_trace: meta.traces.len() as u32,
         data_filepath: path.to_path_buf(),
         medium_velocity,
     })
@@ -811,8 +818,8 @@ pub fn load_iceradar_positions(
 
 /// The traces of one line of an IceRadar file, in mV, (samples, traces).
 ///
-/// Empty traces (stacking 0) are left out, as in [`load_iceradar_meta`].
-/// Traces with a shorter record than the longest are aligned on the
+/// Empty traces (stacking 0) are columns of zeros, which is what they
+/// hold. Traces with a shorter record than the longest are aligned on the
 /// trigger and padded with zeros: the processing steps are not all
 /// NaN-safe, and the padding is at most the difference in record length.
 pub fn load_iceradar_data(
@@ -823,14 +830,14 @@ pub fn load_iceradar_data(
     let meta = read_line_meta(path, line, date)?;
     let file = H5File::open(path)?;
     let line_name = format!("line_{line}");
-    let mut data = Array2::<f32>::zeros((meta.samples, meta.kept.len()));
-    for (column, &i) in meta.kept.iter().enumerate() {
+    let mut data = Array2::<f32>::zeros((meta.samples, meta.traces.len()));
+    for &i in &meta.captured {
         let trace = &meta.traces[i];
         let (_, values) = file.dataset(&echogram(&line_name, i), true)?;
         let offset =
             ((trace.initial_x / meta.x_increment).round() as i64 - meta.first_sample) as usize;
         for (k, value) in values.iter().enumerate() {
-            data[[offset + k, column]] = (value * 1000.) as f32;
+            data[[offset + k, i]] = (value * 1000.) as f32;
         }
     }
     Ok(data)
@@ -1123,7 +1130,7 @@ mod tests {
         let path = dir.path().join("heli.hdf5");
         let traces = vec![
             trace(40, 256, Some("120000.2")),
-            // Captured nothing: left out.
+            // Captured nothing: kept as zeros, and its fix used.
             trace(40, 0, Some("120000.8")),
             // A shorter record, whose pretrigger is shorter too.
             trace(20, 256, None),
@@ -1140,21 +1147,22 @@ mod tests {
         assert!(error.contains("--override-antenna-mhz"), "{error}");
 
         let gpr = process(&path, None, Some("2024-08-15"), Some(10.)).unwrap();
-        assert_eq!(gpr.data.shape(), &[40, 3]);
+        assert_eq!(gpr.data.shape(), &[40, 4]);
         assert_eq!(gpr.metadata.antenna, "BSI IceRadar GX0/0000");
         assert_eq!(gpr.metadata.antenna_separation, 0.);
         // In mV, and every trace's trigger on the same row.
-        for column in 0..3 {
+        for column in [0, 2, 3] {
             assert_eq!(gpr.data[[2, column]], 10., "trace {column}");
         }
         assert_eq!(gpr.data[[0, 0]], 1.);
+        assert!(gpr.data.column(1).iter().all(|&v| v == 0.));
         // The short trace starts a sample later and ends earlier: zeros.
-        assert_eq!(gpr.data[[0, 1]], 0.);
-        assert_eq!(gpr.data[[1, 1]], 3.);
-        assert_eq!(gpr.data[[21, 1]], 0.);
+        assert_eq!(gpr.data[[0, 2]], 0.);
+        assert_eq!(gpr.data[[1, 2]], 3.);
+        assert_eq!(gpr.data[[21, 2]], 0.);
 
         let points = &gpr.location.cor_points;
-        assert_eq!(points.len(), 3);
+        assert_eq!(points.len(), 4);
         let start = chrono::NaiveDate::from_ymd_opt(2024, 8, 15)
             .unwrap()
             .and_hms_milli_opt(12, 0, 0, 200)
@@ -1163,8 +1171,22 @@ mod tests {
             .timestamp_millis() as f64
             / 1000.;
         assert!((points[0].time_seconds - start).abs() < 1e-6);
-        // The middle trace had no fix: halfway between its neighbours.
-        assert!((points[1].time_seconds - (start + 0.9)).abs() < 1e-6);
+        assert!((points[1].time_seconds - (start + 0.6)).abs() < 1e-6);
+        // The short trace had no fix: halfway between its neighbours.
+        assert!((points[2].time_seconds - (start + 1.2)).abs() < 1e-6);
+
+        // The default profile's first step leaves the empty trace out.
+        let gpr = run(
+            &path,
+            crate::processing::ProcessingOptions {
+                override_antenna_mhz: Some(10.),
+                override_date: chrono::NaiveDate::from_ymd_opt(2024, 8, 15),
+                steps: vec!["remove_empty_traces".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(gpr.width(), 3);
         assert_eq!(gpr.inputs.as_ref().unwrap().bundles[0].part, None);
     }
 
