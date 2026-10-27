@@ -37,7 +37,7 @@ use crate::gpr;
 
 /// The two known attribute layouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Layout {
+pub(crate) enum Layout {
     V1,
     V2,
 }
@@ -854,8 +854,9 @@ pub fn iceradar_date(
     Ok(read_line_meta(path, line, date)?.date)
 }
 
+// Its fixture writer is used by the sidecar's tests too.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]

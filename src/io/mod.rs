@@ -20,7 +20,7 @@
 
 mod coords_csv;
 mod gssi;
-mod iceradar;
+pub(crate) mod iceradar;
 mod mala;
 mod pulseekko;
 mod ridal;

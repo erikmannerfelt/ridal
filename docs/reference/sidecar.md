@@ -17,6 +17,33 @@ schema = 1
 antenna_separation_m = 4.0
 ```
 
+## Writing sidecars
+
+A sidecar can be written by hand, or with `ridal override` (`ridal.override()`
+in Python), which makes each recording's sidecar where there is none and
+edits it in place otherwise, keeping its comments and anything else in it:
+
+```bash
+# Every recording of a survey: one sidecar each.
+ridal override survey/*.rad --antenna-separation-m 4
+
+# One line of an IceRadar file, whose own value then takes precedence.
+ridal override stor.h5 --lines 3 --antenna-separation-m 6
+
+# Remove a value again.
+ridal override survey/DAT_0012_A1.rad --unset antenna_separation_m
+
+# A sidecar that sets nothing, with every key commented out beside what
+# the header says of it.
+ridal override survey/*.rad --template
+```
+
+A recording is named by any of its files, its sidecar included, or by a
+glob, and one named several times is changed once. Every sidecar is
+checked before any is written, so a mistake, such as a value out of range
+or an existing sidecar that is not valid, leaves them all as they were.
+`--template` leaves a recording that already has a sidecar alone.
+
 ## Finding and choosing a sidecar
 
 `ridal process`, `batch-process` and `info` (and `process()`,

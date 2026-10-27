@@ -22,6 +22,9 @@ pub enum Commands {
     /// positions file or from positions, start and end points, a DEM and a
     /// start time given here (#13)
     Coords(CoordsArgs),
+    /// Set or remove values in recordings' sidecars ("<stem>.ridal.toml"
+    /// beside each), which take precedence over their headers (#527)
+    Override(OverrideArgs),
     /// Inspect available processing steps
     Steps(StepsArgs),
     /// Inspect supported formats
@@ -1002,6 +1005,39 @@ pub struct InfoArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[command(group(
+    ArgGroup::new("change")
+        .required(true)
+        .multiple(true)
+        .args(["antenna_mhz", "antenna_separation_m", "unset", "template"]),
+))]
+pub struct OverrideArgs {
+    /// Recordings, by any of their files, or glob patterns. Each gets its own "<stem>.ridal.toml" beside its header, made if there is none; comments and anything else in an existing one are kept.
+    #[arg(required = true)]
+    pub inputs: Vec<PathBuf>,
+
+    /// The antenna's center frequency, in MHz.
+    #[arg(long)]
+    pub antenna_mhz: Option<f32>,
+
+    /// The horizontal distance between the transmitter and the receiver, in m.
+    #[arg(long)]
+    pub antenna_separation_m: Option<f32>,
+
+    /// Remove a value, by its key in the sidecar (antenna_mhz, antenna_separation_m). Repeatable, or comma-separated.
+    #[arg(long, value_name = "KEY", value_delimiter = ',')]
+    pub unset: Vec<String>,
+
+    /// For an IceRadar file: change these lines' own values (line 3, 0,2-4 or all), which take precedence over the file's, instead of the file's.
+    #[arg(long)]
+    pub lines: Option<formats::LineSelection>,
+
+    /// Write a sidecar that sets nothing, with every key commented out beside what the header says of it, for each recording that has none.
+    #[arg(long, conflicts_with_all = ["antenna_mhz", "antenna_separation_m", "unset", "lines"])]
+    pub template: bool,
+}
+
+#[derive(Debug, clap::Args)]
 pub struct CoordsArgs {
     /// Recordings to write positions for (any of their files). Several only
     /// without --positions, --start and --end, which describe one: with
@@ -1213,6 +1249,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::BatchProcess(args) => batch_process_command(&args),
         Commands::Info(args) => info_command(args),
         Commands::Coords(args) => coords_command(&args),
+        Commands::Override(args) => override_command(&args),
         Commands::Steps(args) => steps_command(args),
         Commands::Formats(args) => formats_command(args),
         Commands::Render(args) => render_command(args),
@@ -1412,6 +1449,35 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
     }
     Ok(())
 }
+fn override_command(args: &OverrideArgs) -> Result<(), String> {
+    use crate::sidecar::edit::{self, Outcome};
+    let outcomes = if args.template {
+        edit::template(&args.inputs)?
+    } else {
+        edit::apply(
+            &args.inputs,
+            &edit::Edit {
+                set: crate::sidecar::Overrides {
+                    antenna_mhz: args.antenna_mhz,
+                    antenna_separation_m: args.antenna_separation_m,
+                },
+                unset: args.unset.clone(),
+                lines: args.lines.clone(),
+            },
+        )?
+    };
+    for outcome in outcomes {
+        let path = outcome.path().display();
+        match outcome {
+            Outcome::Created(_) => println!("Wrote {path}"),
+            Outcome::Changed(_) => println!("Changed {path}"),
+            Outcome::Unchanged(_) => println!("{path} is already as asked"),
+            Outcome::Exists(_) => println!("{path} exists already; left as it is"),
+        }
+    }
+    Ok(())
+}
+
 fn coords_command(args: &CoordsArgs) -> Result<(), String> {
     validate_cli_dem(args.dem.as_deref())?;
     let inputs = crate::processing::input::expand_input_paths(&args.inputs)?;

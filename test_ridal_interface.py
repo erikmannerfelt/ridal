@@ -176,6 +176,38 @@ def test_return_dataset_refuses_render_true_but_not_false():
         ridal.process(str(FIXTURE), return_dataset=True, track=True)
 
 
+def test_override_writes_a_sidecar_that_info_reads(tmp_path):
+    # #527: a value set with `override` is read with the recording, and an
+    # argument of a run takes precedence over it.
+    line = "dronbreen-20250327-DAT_0066_A1"
+    for ext in ["rad", "rd3", "cor"]:
+        shutil.copy(Path("assets/mala") / f"{line}.{ext}", tmp_path)
+    rad = tmp_path / f"{line}.rad"
+    sidecar = tmp_path / f"{line}.ridal.toml"
+
+    assert ridal.override(rad, antenna_separation_m=4.5) == [str(sidecar)]
+    assert ridal.override(rad, antenna_separation_m=4.5) == []
+    (record,) = ridal.info(rad)
+    assert record["metadata"]["antenna_separation_m"] == 4.5
+    assert record["sidecar"]["header"]["antenna_separation_m"] == pytest.approx(6.2)
+    (given,) = ridal.info(rad, override_antenna_separation=1.0)
+    assert given["metadata"]["antenna_separation_m"] == 1.0
+
+    assert ridal.override([rad, rad.with_suffix(".rd3")], unset="antenna_separation_m")
+    (record,) = ridal.info(rad)
+    assert record["sidecar"] is None
+
+    with pytest.raises(ValueError, match="nothing to change"):
+        ridal.override(rad)
+    with pytest.raises(ValueError, match="alone"):
+        ridal.override(rad, antenna_mhz=25, template=True)
+    with pytest.raises(RuntimeError, match="IceRadar files only"):
+        ridal.override(rad, antenna_mhz=25, lines="all")
+    sidecar.unlink()
+    assert ridal.override(rad, template=True) == [str(sidecar)]
+    assert "# antenna_separation_m = 6.2" in sidecar.read_text()
+
+
 def test_coords_writes_a_csv_that_process_reads(tmp_path):
     # #13: a recording without positions, its start and end given to
     # `coords`, then processed with nothing else.

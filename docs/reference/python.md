@@ -23,6 +23,14 @@ See {ref}`ridal-coords`.
 .. autofunction:: ridal.coords
 ```
 
+## Sidecars
+
+See {doc}`sidecar`.
+
+```{eval-rst}
+.. autofunction:: ridal.override
+```
+
 ## Processing
 
 ```{eval-rst}

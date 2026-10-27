@@ -37,9 +37,9 @@ The header gives the number of samples, the time window, the sampling
 frequency, the antenna and its separation, and the interval between traces.
 Two of these are sometimes missing or wrong, and can then be given
 explicitly, either for a whole run with an `--override-*` option, or for
-one recording in a sidecar beside it, `<stem>.ridal.toml` (see
-{doc}`../reference/sidecar`). The option takes precedence over the
-sidecar, and the sidecar over the header.
+one recording in a sidecar beside it, `<stem>.ridal.toml`, which
+`ridal override` writes (see {doc}`../reference/sidecar`). The option takes
+precedence over the sidecar, and the sidecar over the header.
 
 Antenna frequency
 : Read from the antenna's name in the header, so that `25 MHz RTA=11` is
