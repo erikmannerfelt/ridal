@@ -759,6 +759,8 @@ pub(super) fn read_recordings(
         override_antenna_mhz: antenna_mhz,
         override_antenna_separation: antenna_separation,
         override_date: None,
+        // Only the recording's own files are laid out, so there is none.
+        sidecar: crate::sidecar::Choice::Beside,
     })
     .map_err(|e| match dem {
         Some(dem) => format!(

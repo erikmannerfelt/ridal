@@ -961,16 +961,41 @@ class Part:
 
 
 @dataclass(frozen=True)
+class SidecarOverrides:
+    """Values from a recording's ``<stem>.ridal.toml`` that take precedence
+    over its header's, each ``None`` where it is not set."""
+
+    antenna_mhz: float | None = None
+    """MHz."""
+    antenna_separation_m: float | None = None
+    """m."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "SidecarOverrides":
+        return _parse(
+            "sidecar overrides",
+            data,
+            lambda d: cls(
+                antenna_mhz=d.get("antenna_mhz"),
+                antenna_separation_m=d.get("antenna_separation_m"),
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class Bundle:
     """One recording of a source: its format and its files.
 
     ``part`` is the part of the file read, for a format whose files hold
     several recordings (an IceRadar line), and ``None`` for the whole file.
+    ``overrides`` is what the recording's sidecar decided, and ``None``
+    without one.
     """
 
     format: str
     files: tuple[BundleFile, ...]
     part: Part | None = None
+    overrides: SidecarOverrides | None = None
 
     @classmethod
     def from_json(cls, data: Any) -> "Bundle":
@@ -981,6 +1006,9 @@ class Bundle:
                 format=d["format"],
                 files=tuple(BundleFile.from_json(f) for f in d["files"]),
                 part=None if d.get("part") is None else Part.from_json(d["part"]),
+                overrides=None
+                if d.get("overrides") is None
+                else SidecarOverrides.from_json(d["overrides"]),
             ),
         )
 
@@ -1159,6 +1187,30 @@ class RelatedFiles:
 
 
 @dataclass(frozen=True)
+class SidecarSummary:
+    """What a recording's sidecar overrode, beside what its header says."""
+
+    path: str
+    applied: SidecarOverrides
+    """The values the sidecar decided: those no argument gave instead."""
+    header: SidecarOverrides
+    """What the header says of each value in ``applied``, ``None`` where the
+    format does not record it."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "SidecarSummary":
+        return _parse(
+            "sidecar",
+            data,
+            lambda d: cls(
+                path=d["path"],
+                applied=SidecarOverrides.from_json(d["applied"]),
+                header=SidecarOverrides.from_json(d["header"]),
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class Recording:
     """What one raw recording's header and positions say, as the server read
     them when its source was set."""
@@ -1168,6 +1220,8 @@ class Recording:
     metadata: MetadataSummary
     location: LocationSummary
     related_files: RelatedFiles
+    sidecar: SidecarSummary | None = None
+    """What the recording's sidecar overrode, or ``None`` without one."""
 
     @classmethod
     def from_json(cls, data: Any) -> "Recording":
@@ -1180,6 +1234,9 @@ class Recording:
                 metadata=MetadataSummary.from_json(d["metadata"]),
                 location=LocationSummary.from_json(d["location"]),
                 related_files=RelatedFiles.from_json(d["related_files"]),
+                sidecar=None
+                if d.get("sidecar") is None
+                else SidecarSummary.from_json(d["sidecar"]),
             ),
         )
 

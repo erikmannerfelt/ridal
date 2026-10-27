@@ -60,6 +60,14 @@ Override the antenna separation (in m) from file metadata
 The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
 ```
 
+```{option} --sidecar <PATH>
+A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it
+```
+
+```{option} --no-sidecar
+Read no sidecar, even when a "<stem>.ridal.toml" is beside a recording
+```
+
 ```{option} --default
 Process with the default profile
 ```
@@ -177,6 +185,14 @@ Override the antenna separation (in m) from file metadata
 
 ```{option} --override-date <YYYY-MM-DD>
 The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
+```
+
+```{option} --sidecar <PATH>
+A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it
+```
+
+```{option} --no-sidecar
+Read no sidecar, even when a "<stem>.ridal.toml" is beside a recording
 ```
 
 ```{option} --default
@@ -304,6 +320,14 @@ Override the antenna separation (in m) from file metadata
 
 ```{option} --override-date <YYYY-MM-DD>
 The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
+```
+
+```{option} --sidecar <PATH>
+A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it
+```
+
+```{option} --no-sidecar
+Read no sidecar, even when a "<stem>.ridal.toml" is beside a recording
 ```
 
 ## `ridal coords`

@@ -1026,6 +1026,50 @@ input resolution treats it as one file would be treated.
   will need. A server source does not record a part either, so reprocessing one of several
   lines fails asking for `--lines` rather than reading the wrong one.
 
+## Sidecars (#527)
+
+A recording's `<stem>.ridal.toml` (`src/sidecar.rs`) holds values that take
+precedence over its header: corrections in `[overrides]`, and in
+`[native.<format>]` fields only one format records, kept for that format's
+writer once there are writers (#99). The user-facing description is
+`docs/reference/sidecar.md`.
+
+- **An overlay applied in one place.** Every reader takes its antenna values
+  through `processing::input::load_meta`, which fills in what the arguments
+  do not give from `sidecar::overrides_of`. Processing, batch grouping,
+  `ridal info` and the ingest planner therefore all see the same effective
+  values, and `MergeKey` and `GPR::merge` refuse recordings whose effective
+  values differ with no sidecar-specific check. Precedence is argument >
+  `[lines.<N>]` > `[overrides]` > header.
+- **Discovery is input resolution**, as for the coordinate CSV:
+  `ResolvedInput::sidecar` is set by `formats::resolve_input` and replaced
+  or cleared by `sidecar::with_sidecar` (`--sidecar`, `--no-sidecar`). Only
+  the path is resolved there; the file is parsed where it is used, so
+  resolving inputs cannot fail on a sidecar's contents. Parsing a small
+  TOML file several times per run costs nothing measurable.
+- **Strict where it changes results, loose where it does not.**
+  `Overrides` and the table structure are `deny_unknown_fields`, so a typo
+  is an error, and a native table's format name is checked, but its
+  contents are not. serde ignores `deny_unknown_fields` on a struct that
+  flattens, which is why the top level repeats `Tables`' fields rather than
+  flattening them.
+- **The recipe records what the sidecar decided, by value**
+  (`Bundle::overrides`): only the values no argument took precedence over,
+  hashed tagged and only when present, as `part` is, so recipes without a
+  sidecar keep their hash. Like `part`, it is written as `null` without
+  one, since a response field is never left out (`openapi`'s
+  `every_response_field_is_required`); a recipe from before reads as
+  having none.
+  Hashing values rather than the file's bytes means a comment or a
+  reformatted sidecar is the same revision. A value given as an argument is
+  a different recipe from the same value in a sidecar.
+- **Per line, not per channel yet.** `[lines.<N>]` mirrors `formats::Part`;
+  interleaved multi-channel GSSI would get `[channels.<N>]` the same way.
+- **Open: the server.** A project's raw sources do not carry sidecars, so
+  `project::raw` predicts bundles without overrides; storing them and
+  grouping an uploaded sidecar with its recording is the next step of #527,
+  and a command to write sidecars in bulk (`ridal override`) the one after.
+
 ## Render pipeline
 
 Fixed order, enforced by module structure rather than just convention:

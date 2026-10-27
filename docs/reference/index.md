@@ -10,6 +10,7 @@ cli
 python
 http-api
 expressions
+sidecar
 project-files
 ```
 

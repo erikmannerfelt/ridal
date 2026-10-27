@@ -38,6 +38,8 @@ pub struct ProcessingOptions {
     pub override_date: Option<chrono::NaiveDate>,
     /// Which lines of a multi-line file (IceRadar) to merge, in order.
     pub lines: Option<formats::LineSelection>,
+    /// Which sidecar each recording is read with (#527).
+    pub sidecar: crate::sidecar::Choice,
     pub user_metadata: user_metadata::UserMetadata,
     /// The group's display name. A group applies uniformly to a whole batch,
     /// since batch runs typically process one survey or campaign.
@@ -63,6 +65,7 @@ impl Default for ProcessingOptions {
             override_antenna_separation: None,
             override_date: None,
             lines: None,
+            sidecar: crate::sidecar::Choice::Beside,
             user_metadata: user_metadata::UserMetadata::new(),
             group: None,
             group_id: None,
@@ -125,10 +128,45 @@ pub(crate) fn assumptions(
     options: &ProcessingOptions,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut warnings = Vec::new();
+    for r in resolved {
+        let sidecar = crate::sidecar::overrides_of(r)?;
+        let shadowed = [
+            (
+                "--override-antenna-mhz",
+                options.override_antenna_mhz,
+                sidecar.antenna_mhz,
+                "antenna_mhz",
+            ),
+            (
+                "--override-antenna-separation",
+                options.override_antenna_separation,
+                sidecar.antenna_separation_m,
+                "antenna_separation_m",
+            ),
+        ];
+        for (argument, given, beside, key) in shadowed {
+            if let (Some(given), Some(beside)) = (given, beside) {
+                if given != beside {
+                    warnings.push(format!(
+                        "Warning: {argument} {given} takes precedence over {key} = {beside} in {}.",
+                        r.sidecar
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_default()
+                    ));
+                }
+            }
+        }
+    }
     if options.override_antenna_separation.is_none() {
         let mut unrecorded = Vec::new();
         for r in resolved {
-            if !formats::records_antenna_separation(r.kind) && !unrecorded.contains(&r.kind) {
+            if !formats::records_antenna_separation(r.kind)
+                && !unrecorded.contains(&r.kind)
+                && crate::sidecar::overrides_of(r)?
+                    .antenna_separation_m
+                    .is_none()
+            {
                 unrecorded.push(r.kind);
             }
         }
@@ -141,7 +179,9 @@ pub(crate) fn assumptions(
             warnings.push(format!(
                 "Warning: {names} files do not record the antenna separation, so it is taken \
                  as 0 m. Give it with --override-antenna-separation \
-                 (override_antenna_separation= in Python)."
+                 (override_antenna_separation= in Python), or as antenna_separation_m in a \
+                 <stem>{} beside each recording.",
+                crate::sidecar::SIDECAR_SUFFIX
             ));
         }
     }
@@ -226,17 +266,37 @@ pub fn build_processed_gpr_with_progress(
     // it is for several files: trace numbers start over in each line.
     let mut resolved_inputs = formats::with_lines(resolved_inputs, options.lines.as_ref())?;
     formats::with_coordinates(&mut resolved_inputs, options.cor_path.as_deref())?;
+    crate::sidecar::with_sidecar(&mut resolved_inputs, &options.sidecar)?;
     if !options.quiet {
         for warning in assumptions(&resolved_inputs, options)? {
             eprintln!("{warning}");
         }
     }
+    // What each recording's sidecar decides, which the recipe records.
+    let applied = resolved_inputs
+        .iter()
+        .map(|resolved| {
+            crate::sidecar::applied(
+                resolved,
+                options.override_antenna_mhz,
+                options.override_antenna_separation,
+            )
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     if !options.quiet {
-        for resolved in &resolved_inputs {
+        for (resolved, applied) in resolved_inputs.iter().zip(&applied) {
             println!(
                 "Positions for {:?} from {:?}",
                 resolved.header, resolved.coordinates
             );
+            if let (Some(sidecar), false) = (&resolved.sidecar, applied.is_empty()) {
+                println!(
+                    "Overrides for {} from {:?}: {}",
+                    describe_input(resolved),
+                    sidecar,
+                    applied.describe()
+                );
+            }
         }
     }
 
@@ -246,7 +306,13 @@ pub fn build_processed_gpr_with_progress(
     let inputs = crate::recipe::Inputs {
         bundles: resolved_inputs
             .iter()
-            .map(crate::recipe::bundle_of)
+            .zip(applied)
+            .map(|(resolved, applied)| {
+                Ok(crate::recipe::Bundle {
+                    overrides: (!applied.is_empty()).then_some(applied),
+                    ..crate::recipe::bundle_of(resolved)?
+                })
+            })
             .collect::<Result<Vec<_>, String>>()?,
         dem: options
             .dem_path
@@ -473,6 +539,7 @@ mod tests {
             data: name.into(),
             coordinates: name.into(),
             part: Default::default(),
+            sidecar: None,
         };
         let warnings = |inputs: &[_], separation| {
             let options = super::ProcessingOptions {
@@ -499,6 +566,34 @@ mod tests {
             "{warning}"
         );
         assert_eq!(warnings(&mixed, Some(0.5)), [""; 0]);
+
+        // A sidecar that gives it silences the warning for its recording
+        // alone, and an argument that disagrees with it is pointed out.
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join("a.ridal.toml");
+        std::fs::write(&sidecar, "[overrides]\nantenna_separation_m = 2\n").unwrap();
+        let with_sidecar = crate::formats::ResolvedInput {
+            sidecar: Some(sidecar),
+            ..input(FormatKind::Gssi, "a.DZT")
+        };
+        assert_eq!(warnings(&[with_sidecar.clone()], None), [""; 0]);
+        let [warning] = &warnings(
+            &[with_sidecar.clone(), input(FormatKind::Gssi, "c.DZT")],
+            None,
+        )[..] else {
+            panic!("expected one warning");
+        };
+        assert!(warning.contains("GSSI files do not record"), "{warning}");
+        let [warning] = &warnings(&[with_sidecar.clone()], Some(0.5))[..] else {
+            panic!("expected one warning");
+        };
+        assert!(
+            warning.contains(
+                "--override-antenna-separation 0.5 takes precedence over antenna_separation_m = 2"
+            ),
+            "{warning}"
+        );
+        assert_eq!(warnings(&[with_sidecar], Some(2.)), [""; 0]);
     }
 
     #[test]

@@ -90,7 +90,8 @@ pub(crate) fn load_meta_and_location(
     Ok((gpr_meta, gpr_location))
 }
 
-/// A recording's header alone.
+/// A recording's header alone, with its sidecar's overrides (#527) where
+/// the arguments give none.
 pub(crate) fn load_meta(
     resolved: &ResolvedInput,
     medium_velocity: f32,
@@ -101,6 +102,9 @@ pub(crate) fn load_meta(
     if !resolved.header.is_file() {
         return Err(format!("File not found: {:?}", resolved.header).into());
     }
+    let sidecar = crate::sidecar::overrides_of(resolved)?;
+    let override_antenna_mhz = override_antenna_mhz.or(sidecar.antenna_mhz);
+    let override_antenna_separation = override_antenna_separation.or(sidecar.antenna_separation_m);
     Ok(match resolved.kind {
         FormatKind::Ramac => io::load_rad(
             &resolved.header,
@@ -280,6 +284,7 @@ mod tests {
             data: header.into(),
             coordinates: header.into(),
             part: formats::Part::default(),
+            sidecar: None,
         }
     }
 

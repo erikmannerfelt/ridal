@@ -150,6 +150,19 @@ pub struct BatchPlan {
 pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     let expanded_filepaths = input::expand_cli_inputs(&params.filepaths)?;
     formats::check_cor_count(expanded_filepaths.len(), params.options.cor_path.as_deref())?;
+    // Each output is processed on its own, where one sidecar for one
+    // recording would pass; refused here for the batch as a whole.
+    if let crate::sidecar::Choice::File(path) = &params.options.sidecar {
+        if expanded_filepaths.len() > 1 {
+            return Err(format!(
+                "{} is one sidecar, but {} recordings were given. Put a <stem>{} beside each \
+                 recording instead.",
+                path.display(),
+                expanded_filepaths.len(),
+                crate::sidecar::SIDECAR_SUFFIX
+            ));
+        }
+    }
     for path in &expanded_filepaths {
         refuse_multiline(path)?;
     }
@@ -284,6 +297,7 @@ fn read_for_grouping(path: &Path, params: &BatchRunParams) -> Result<GroupingRec
         std::slice::from_mut(&mut resolved),
         params.options.cor_path.as_deref(),
     )?;
+    crate::sidecar::with_sidecar(std::slice::from_mut(&mut resolved), &params.options.sidecar)?;
     let (meta, location) = input::load_meta_and_location(
         &resolved,
         params.options.medium_velocity,

@@ -752,7 +752,8 @@ pub fn load_iceradar_meta(
         super::UnknownAntennaFrequency::new(
             antenna.as_str(),
             "IceRadar files do not record the antenna frequency. Give it with \
-             --override-antenna-mhz (override_antenna_mhz= in Python)"
+             --override-antenna-mhz (override_antenna_mhz= in Python), or as antenna_mhz \
+             in a <stem>.ridal.toml beside the file"
                 .to_string(),
         )
     })?;
@@ -1255,6 +1256,68 @@ mod tests {
         let error = process(&path, Some("all"), None, Some(20.)).err().unwrap();
         assert!(error.contains("Cannot merge"), "{error}");
         assert!(error.contains("line_2"), "{error}");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn a_sidecar_overrides_the_file_and_a_line_its_own_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stor.h5");
+        let line = || {
+            vec![
+                trace(40, 256, Some("103045.6")),
+                trace(40, 256, Some("103046.8")),
+            ]
+        };
+        write_fixture(&path, Layout::V1, &[line(), line()], "6/18/2024 1:30:00 PM");
+        let sidecar = dir.path().join("stor.ridal.toml");
+        std::fs::write(
+            &sidecar,
+            "[overrides]\nantenna_mhz = 20\nantenna_separation_m = 4\n\
+             [lines.1.overrides]\nantenna_separation_m = 6\n",
+        )
+        .unwrap();
+        let overrides = |gpr: &crate::gpr::GPR| {
+            gpr.inputs.as_ref().unwrap().bundles[0]
+                .overrides
+                .unwrap_or_default()
+        };
+
+        // No frequency given as an argument: the sidecar's is enough.
+        let first = process(&path, Some("0"), None, None).unwrap();
+        assert_eq!(first.metadata.antenna_mhz, 20.);
+        assert_eq!(first.metadata.antenna_separation, 4.);
+        assert_eq!(
+            overrides(&first),
+            crate::sidecar::Overrides {
+                antenna_mhz: Some(20.),
+                antenna_separation_m: Some(4.)
+            }
+        );
+        let second = process(&path, Some("1"), None, None).unwrap();
+        assert_eq!(second.metadata.antenna_mhz, 20.);
+        assert_eq!(second.metadata.antenna_separation, 6.);
+
+        // Lines that differ in separation are refused as one radargram.
+        let error = process(&path, Some("all"), None, None).err().unwrap();
+        assert!(error.contains("Cannot merge"), "{error}");
+        assert!(error.contains("separations are different"), "{error}");
+
+        // An argument takes precedence, and the recipe records only what
+        // the sidecar decided.
+        let given = process(&path, Some("1"), None, Some(25.)).unwrap();
+        assert_eq!(given.metadata.antenna_mhz, 25.);
+        assert_eq!(
+            overrides(&given),
+            crate::sidecar::Overrides {
+                antenna_mhz: None,
+                antenna_separation_m: Some(6.)
+            }
+        );
+
+        std::fs::write(&sidecar, "[lines.5.overrides]\nantenna_mhz = 20\n").unwrap();
+        let error = process(&path, Some("0"), None, None).err().unwrap();
+        assert!(error.contains("has no line 5"), "{error}");
     }
 
     #[test]

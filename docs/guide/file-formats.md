@@ -36,20 +36,25 @@ a single-channel file whose last trace was cut short is read without it.
 The header gives the number of samples, the time window, the sampling
 frequency, the antenna and its separation, and the interval between traces.
 Two of these are sometimes missing or wrong, and can then be given
-explicitly:
+explicitly, either for a whole run with an `--override-*` option, or for
+one recording in a sidecar beside it, `<stem>.ridal.toml` (see
+{doc}`../reference/sidecar`). The option takes precedence over the
+sidecar, and the sidecar over the header.
 
 Antenna frequency
 : Read from the antenna's name in the header, so that `25 MHz RTA=11` is
   read as 25 MHz. When the name contains no frequency, reading fails with
   "Could not read frequency from the antenna field" until
-  `--override-antenna-mhz` gives one. The frequency is used by `dewow` for
+  `--override-antenna-mhz` or a sidecar's `antenna_mhz` gives one. The frequency is used by `dewow` for
   its default window, among other things.
 
 Antenna separation
 : The distance between the transmitter and the receiver (in meters), read
   from the RAMAC and pulseEKKO headers. GSSI and IceRadar files do not record
   it, so it is 0 for them, with a warning, unless
-  `--override-antenna-separation` gives it. The separation matters for
+  `--override-antenna-separation` or a sidecar's `antenna_separation_m`
+  gives it. A sidecar is the way to give recordings of one survey different
+  separations. The separation matters for
   `correct_antenna_separation` and for depths near the surface (see
   {doc}`coordinates`).
 
@@ -90,8 +95,11 @@ Lines
 
 Antenna
 : IceRadar files record neither the antenna frequency nor the antenna
-  separation. `--override-antenna-mhz` is required, and the separation is
-  0 m with a warning unless `--override-antenna-separation` gives it.
+  separation. `--override-antenna-mhz` (or a sidecar's `antenna_mhz`) is
+  required, and the separation is 0 m with a warning unless
+  `--override-antenna-separation` (or a sidecar's `antenna_separation_m`)
+  gives it. A sidecar can give a line of a multi-line file its own values
+  (`[lines.<N>]`).
 
 Date
 : The GPS gives the time of day in UTC. The date is the acquisition PC's,

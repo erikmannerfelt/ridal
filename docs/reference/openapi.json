@@ -11679,7 +11679,8 @@
         "required": [
           "format",
           "files",
-          "part"
+          "part",
+          "overrides"
         ],
         "properties": {
           "format": {
@@ -11697,6 +11698,17 @@
               {
                 "$ref": "#/components/schemas/Part",
                 "description": "The part of the file read, for a format whose files can hold\nseveral recordings (an IceRadar line), and `null` for the whole file."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "overrides": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Overrides",
+                "description": "What the recording's sidecar overrode (#527): only the values it\ndecided, not those an argument gave instead, and `null` without any."
               },
               {
                 "type": "null"
@@ -14381,7 +14393,8 @@
           "format",
           "metadata",
           "location",
-          "related_files"
+          "related_files",
+          "sidecar"
         ],
         "properties": {
           "input": {
@@ -14398,6 +14411,17 @@
           },
           "related_files": {
             "$ref": "#/components/schemas/RelatedFiles"
+          },
+          "sidecar": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SidecarSummary",
+                "description": "What the recording's sidecar overrode, or `null` when it was read\nwithout one or the sidecar decided nothing (#527)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -15822,6 +15846,33 @@
             "type": "boolean"
           }
         }
+      },
+      "Overrides": {
+        "type": "object",
+        "description": "Values that take precedence over the header's. Each is `None` where\nthe sidecar does not set it.",
+        "required": [
+          "antenna_mhz",
+          "antenna_separation_m"
+        ],
+        "properties": {
+          "antenna_mhz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The antenna's center frequency, in MHz."
+          },
+          "antenna_separation_m": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The horizontal distance between the transmitter and the receiver,\nin m."
+          }
+        },
+        "additionalProperties": false
       },
       "Part": {
         "type": "object",
@@ -18711,6 +18762,28 @@
           },
           "changed": {
             "type": "boolean"
+          }
+        }
+      },
+      "SidecarSummary": {
+        "type": "object",
+        "description": "What a recording's sidecar overrode, beside what its header says.",
+        "required": [
+          "path",
+          "applied",
+          "header"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "applied": {
+            "$ref": "#/components/schemas/Overrides",
+            "description": "The values the sidecar decided: those no argument gave instead.\n`metadata` already holds them."
+          },
+          "header": {
+            "$ref": "#/components/schemas/Overrides",
+            "description": "What the header says of each value in `applied`, left out where\nthe format does not record it."
           }
         }
       },

@@ -39,6 +39,10 @@ pub struct ResolvedInput {
     /// Which part of the file is the recording: all of it, unless the
     /// format's files can hold several recordings. Set by [`with_lines`].
     pub part: Part,
+    /// The recording's sidecar (#527): `<stem>.ridal.toml` beside the
+    /// header when there is one, or what `--sidecar`/`--no-sidecar`
+    /// chose ([`crate::sidecar::with_sidecar`]).
+    pub sidecar: Option<PathBuf>,
 }
 
 /// Which part of a file holding several recordings one recording is.
@@ -212,14 +216,18 @@ fn coords_csv_stem(path: &Path) -> Option<&str> {
 
 /// `<stem>.coords.csv` in `dir`, whatever the case of its name.
 fn find_coords_csv(dir: &Path, stem: &str) -> Option<PathBuf> {
-    let wanted = format!("{stem}{COORDS_CSV_SUFFIX}");
+    find_named(dir, &format!("{stem}{COORDS_CSV_SUFFIX}"))
+}
+
+/// The file called `name` in `dir`, whatever the case of its name.
+pub fn find_named(dir: &Path, name: &str) -> Option<PathBuf> {
     std::fs::read_dir(dir)
         .ok()?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .find(|path| {
             path.file_name()
                 .and_then(|s| s.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case(&wanted))
+                .is_some_and(|found| found.eq_ignore_ascii_case(name))
         })
 }
 
@@ -234,7 +242,8 @@ fn header_stem(resolved: &ResolvedInput) -> Result<&str, String> {
 /// Resolve a recording's files from any one of them.
 ///
 /// Its positions are a `<stem>.coords.csv` beside the header when there is
-/// one, and the format's own positions file otherwise.
+/// one, and the format's own positions file otherwise. Its sidecar is a
+/// `<stem>.ridal.toml` beside the header, if there is one.
 pub fn resolve_input(input: &Path) -> Result<ResolvedInput, String> {
     // A coordinate CSV stands for its recording, as a `.cor` does.
     let mut resolved = match coords_csv_stem(input) {
@@ -248,6 +257,7 @@ pub fn resolve_input(input: &Path) -> Result<ResolvedInput, String> {
     if let Some(csv) = find_coords_csv(dir, header_stem(&resolved)?) {
         resolved.coordinates = csv;
     }
+    resolved.sidecar = crate::sidecar::find_beside(&resolved.header);
     Ok(resolved)
 }
 
@@ -467,6 +477,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             data: resolve_sidecar(input, "rd3"),
             coordinates: resolve_sidecar(input, "cor"),
             part: Part::default(),
+            sidecar: None,
         }),
         Some("rd3") | Some("cor") => Ok(ResolvedInput {
             input: input.to_path_buf(),
@@ -475,6 +486,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             data: resolve_sidecar(input, "rd3"),
             coordinates: resolve_sidecar(input, "cor"),
             part: Part::default(),
+            sidecar: None,
         }),
         Some("hd") => Ok(ResolvedInput {
             input: input.to_path_buf(),
@@ -483,6 +495,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             data: resolve_sidecar(input, "dt1"),
             coordinates: resolve_sidecar(input, "gp2"),
             part: Part::default(),
+            sidecar: None,
         }),
         Some("dt1") | Some("gp2") => Ok(ResolvedInput {
             input: input.to_path_buf(),
@@ -491,6 +504,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             data: resolve_sidecar(input, "dt1"),
             coordinates: resolve_sidecar(input, "gp2"),
             part: Part::default(),
+            sidecar: None,
         }),
         Some("dzt") | Some("dzg") | Some("dzx") => Ok(ResolvedInput {
             input: input.to_path_buf(),
@@ -499,6 +513,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             data: resolve_sidecar(input, "dzt"),
             coordinates: resolve_sidecar(input, "dzg"),
             part: Part::default(),
+            sidecar: None,
         }),
         // One file is header, data and positions at once.
         Some("h5") | Some("hdf5") => Ok(ResolvedInput {
@@ -508,6 +523,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             data: input.to_path_buf(),
             coordinates: input.to_path_buf(),
             part: Part::default(),
+            sidecar: None,
         }),
         Some(autosave) if is_iceradar_autosave(autosave) => Err(format!(
             "{:?} looks like an IceRadar autosave, a copy of the first part of the file it is named after. Give that file ({:?}) instead.",
@@ -530,6 +546,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
                     data: resolve_sidecar(&ramac, "rd3"),
                     coordinates: resolve_sidecar(&ramac, "cor"),
                     part: Part::default(),
+            sidecar: None,
                 }),
                 (None, Some(pulseekko), None) => Ok(ResolvedInput {
                     input: input.to_path_buf(),
@@ -538,6 +555,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
                     data: resolve_sidecar(&pulseekko, "dt1"),
                     coordinates: resolve_sidecar(&pulseekko, "gp2"),
                     part: Part::default(),
+            sidecar: None,
                 }),
                 (None, None, Some(gssi)) => Ok(ResolvedInput {
                     input: input.to_path_buf(),
@@ -546,6 +564,7 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
                     data: gssi.clone(),
                     coordinates: resolve_sidecar(&gssi, "dzg"),
                     part: Part::default(),
+            sidecar: None,
                 }),
                 (Some(ramac), Some(pulseekko), None) => Err(format!(
                     "Ambiguous extension-less input {:?}: both {:?} and {:?} exist.",
