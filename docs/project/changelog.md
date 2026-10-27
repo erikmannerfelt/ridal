@@ -3,6 +3,144 @@
 What changed in each release. {doc}`upgrading` says what to do about the
 changes that affect existing data, scripts or servers.
 
+## 0.11.0
+
+### Positions and coordinates
+
+- **Coordinates are placed correctly** (#480, #481). Converting UTM back
+  to WGS84 was up to 4.6 m off in latitude (4.4 m on Svalbard), so every
+  processed file's `latitude`/`longitude`, and every elevation sampled
+  from a DEM, was for a point that far north of the trace. Both directions
+  now use Krüger's series, as PROJ does, and agree with `cs2cs` to 1 µm.
+- **A coordinate CSV** (#13, #479): `--cor` (`cor=` in Python) reads a
+  Ridal coordinate CSV (`trace`, `time`, `lon`, `lat`, optionally `alt`)
+  for any format, and a `<stem>.coords.csv` beside a recording is used
+  before its own positions file. `--cor DIR` finds one per recording. A
+  recording without positions gets an error saying what to do.
+- **`ridal coords`** (#482) writes that CSV from partial positions: a few
+  points, `--start`/`--end`, a GNSS `--track` (with `--time-offset`), or
+  the recording's own file, with `--dem` for elevations. Synthetic times
+  are marked (`time_source`), and `remove_standstills` does not use the
+  GPS for them. In Python it is `ridal.coords()` (#483), and a
+  `.coords.csv` uploaded in the GUI belongs to its recording (#484).
+- **DEMs with GDAL before 3.10** are sampled at the nearest cell instead
+  of failing with a broken pipe (#461). The revision records it, the
+  Processing page lists those radargrams as older processing, and the
+  server warns its admin at start and in Site settings (#462, #463).
+  `cs2cs` no longer deadlocks on about 10 000 points.
+
+### Processing
+
+- **GSSI travel times and depths are correct** (#506). The time window is
+  the header's `range`, not `range - position`, so depths were off by
+  `range / (range - position)`. A cut-short last trace is dropped instead
+  of failing the file, and multi-channel DZT files are refused.
+- Recordings with different sample counts are no longer merged, and a
+  merge refuses instead of panicking (#507).
+- **`equidistant_traces`** resamples unless every step already matches
+  (it skipped uneven tracks whose trace count happened to match), and no
+  longer extrapolates a trace past the end of the track (#511).
+- **`abslog`** takes its offset from the whole array instead of about ten
+  values, and errors instead of panicking on all-NaN data (#512).
+- **`correct_topography` must be the last step**, and run once; other
+  step lists are refused (#513).
+- **Small radargrams** (#7, #502): a step that leaves no traces or no
+  samples fails, `subset` refuses an empty range, and steps that need a
+  minimum size warn and leave the data unchanged instead of panicking.
+  `equidistant_traces` makes at most 4× the traces it was given.
+- **Malformed files** error instead of panicking in the Malå, GSSI and
+  pulseEKKO readers (#489).
+- `correct_antenna_separation(method=legacy)` is documented as keeping
+  the recorded sample interval, about 2 % off its real grid (#508).
+
+### Picks
+
+- **Picks sit at pixel centres**, as gprinterp's specification defines
+  (#509, #520). Stored picks are not migrated, so picks made before this
+  appear half a pixel up and to the left; they export the same depths.
+  Figure ticks and picks move half a pixel to the true centres.
+- **Picks stay on their horizon when time zero moves** (#470, #471, with
+  gprinterp 0.5.0): they are carried by the recording clock where both
+  revisions have one, and the carry report says how far time zero moved.
+- **Level 2 export is much faster**, and the single-radargram route no
+  longer blocks a server worker (#510).
+
+### Render profiles and figures
+
+- **Project render profiles** (#183, #476): an operator keeps profiles
+  beside the built-ins, offered everywhere a profile is chosen, through
+  `/api/v1/render-profiles` or the Python client. `[render]
+  hidden_profiles` hides built-ins from the lists.
+- **Personal render profiles** (#477): anyone signed in keeps up to 20 of
+  their own (`personal-…`), offered only to them; `[render]
+  personal_profiles = false` turns them off for a project.
+- **A profile editor** in the viewer (Display → Edit profile…) with a live
+  preview (#478). "My render profiles" and an operator's "Render profiles"
+  section are in the settings.
+- **Figures** get a `halo` style, so a transparent figure reads on light
+  and dark pages (#495), and `x_axis.reverse`, `zero_at` and `descending`
+  to mirror a figure and count its labels down (#496, #503).
+- **Slow renders stop** (#473, #475): an overview or figure that runs for
+  more than 2 minutes answers `503 render_timed_out`, a figure stops when
+  its download is cancelled, figures no longer hold up the viewer's
+  tiles, and running renders are listed under "Running" in the site
+  settings and in the heartbeat. The topographic view of a long,
+  steep profile renders in seconds instead of timing out (#472, #474).
+- The Kroppbreen example (`scripts/render_kroppbreen.py`) downloads its
+  data from Zenodo and draws the figure on the front page with the
+  built-in renderer (#493, #504).
+
+### Python
+
+- **`ridal.write_netcdf`** writes a radargram processed elsewhere as a
+  Ridal file, to pick in the GUI, and `ridal.impdar.from_radardata` maps
+  an ImpDAR `RadarData` onto it (#468, #469).
+- The Python client is checked against every operation of the HTTP API
+  (#454, #455).
+
+### Server and GUI
+
+- **Large uploads resume** (#396, #456, #457). Raw files, DEMs and
+  radargrams too large for one request, or behind a proxy that limits a
+  request, are sent in chunks through `/api/v1/uploads` that survive a
+  dropped connection, a retry or a reload of the page.
+- **Download raw data and DEMs** from the browser: a radargram's raw data
+  as one zip, and a project's DEMs under their uploaded names (#460,
+  #464).
+- **The HTTP reference is generated** from an OpenAPI description of every
+  route, also served at `/api/v1/openapi.json`, with each route's
+  permission tested (#330, #449–#453).
+- **Site settings** are linked from a project's menu, and **Maps in the
+  catalog** can hide only groups where everything is unlisted
+  (`show_group_maps = "listed"`) (#446, #447, #459).
+- An unknown `?profile=` on a page falls back to the next choice instead
+  of returning 400. Dialogs whose Close discarded edits now say Cancel.
+- The processing page fits a narrow screen (#465, #466).
+
+### Security
+
+- **Cross-site writes are refused** (#514): a POST, PUT, PATCH or DELETE
+  that a browser marks as cross-site or same-site gets 403
+  `cross_site_request`, and `ridal gui` answers only to localhost,
+  127.0.0.1 and \[::1\] (421 `unexpected_host`).
+  `--allow-cross-site-requests` on `gui` and `server start` turns both
+  off.
+- **Sign-ins are throttled** (#515): failed sign-ins to one name double
+  the wait before the next, from 1 s to 5 min (429 `too_many_attempts`
+  with `Retry-After`). The reverse-proxy guide has an nginx `limit_req`
+  example for limits per address.
+- **Security headers and a Content Security Policy** (#516, #517): every
+  response forbids framing by other sites and sends `Referrer-Policy:
+  same-origin` and `nosniff`; pages only run Ridal's own scripts, and a
+  project's basemap and overlay hosts are allowed automatically.
+- **Uploaded DEMs are opened only as GeoTIFF** (#487), so a VRT cannot
+  make the server read local files or fetch URLs. On the command line,
+  `RIDAL_DEM_GDAL_DRIVERS` widens the list.
+- Headings in a project description no longer take attributes, which
+  allowed script in them (#486).
+- CI fails on any RustSec advisory against a dependency, and the existing
+  ones are cleared (#488, #523).
+
 ## 0.10.0
 
 ### Annotated figures
