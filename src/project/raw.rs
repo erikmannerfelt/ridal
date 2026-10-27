@@ -827,7 +827,17 @@ mod tests {
         let meta =
             crate::processing::input::load_meta(&resolved[0], 0.168, None, None, None).unwrap();
         assert_eq!(meta.antenna_separation, 4.5);
-        let bare = materialize_bundles(dir.path(), &bundles_with(None, &[]), work.path()).unwrap();
+        // Without values, none is read, even one a layout before left there.
+        // A fresh directory, as every layout has: Windows will not replace
+        // a laid-out file.
+        let again = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(again.path().join("0")).unwrap();
+        std::fs::write(
+            again.path().join("0").join(format!("{LINE}.ridal.toml")),
+            "[overrides]\nantenna_separation_m = 1\n",
+        )
+        .unwrap();
+        let bare = materialize_bundles(dir.path(), &bundles_with(None, &[]), again.path()).unwrap();
         assert_eq!(bare[0].sidecar, None);
     }
 
