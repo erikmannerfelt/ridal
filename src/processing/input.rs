@@ -223,7 +223,9 @@ pub(crate) fn load_positions(
     match resolved.kind {
         FormatKind::Ramac => io::load_cor(positions, crs),
         FormatKind::PulseEkko => io::load_pe_gp2(positions, crs, override_date),
-        FormatKind::Gssi => io::load_gssi_dzg(positions, crs),
+        FormatKind::Gssi => {
+            io::load_gssi_dzg(positions, crs, io::gssi_recorded_date(&resolved.header)?)
+        }
         FormatKind::IceRadar => Err(format!(
             "{} cannot hold the positions of {}: an IceRadar recording's positions are in \
              the file itself, or in a Ridal coordinate CSV (.csv).",

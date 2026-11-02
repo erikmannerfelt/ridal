@@ -42,7 +42,9 @@ use crate::gpr::{LocationCorrection, GPR};
 ///   adds a `gain` line of its own. The data are unchanged.
 /// - 5: a GSSI file's time window is its whole `range` (#506), no longer
 ///   shortened by `position`, so its sample interval and depths change.
-pub const CORE_PROCESSING_VERSION: u32 = 5;
+/// - 6: GSSI positions whose GPS dates are a week-number rollover (1024
+///   weeks) behind the DZT's creation date are moved forward by it.
+pub const CORE_PROCESSING_VERSION: u32 = 6;
 
 /// The layout of [`Recipe`] as serialized into `ridal_recipe`.
 pub const RECIPE_FORMAT: u32 = 1;
