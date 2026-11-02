@@ -724,6 +724,25 @@ mod tests {
     }
 
     #[test]
+    fn channels_of_different_sizes_and_a_wrong_height_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = dir.path().join("track.DZT");
+        let mut bytes = test_dzt::two_channel_dzt();
+        std::fs::write(&dzt, &bytes).unwrap();
+        let err = load_dzt(&dzt, SAMPLES + 1, 1).unwrap_err().to_string();
+        assert!(
+            err.contains(&format!("has {SAMPLES} samples per trace")),
+            "{err}"
+        );
+
+        // Channel 2 with twice the samples of channel 1.
+        bytes[1024 + 4..1024 + 6].copy_from_slice(&(2 * SAMPLES as u16).to_le_bytes());
+        std::fs::write(&dzt, bytes).unwrap();
+        let err = gssi_channels(&dzt).unwrap_err().to_string();
+        assert!(err.contains("channels of different sizes"), "{err}");
+    }
+
+    #[test]
     fn channels_that_do_not_fit_before_the_data_are_refused() {
         let dir = tempfile::tempdir().unwrap();
         let dzt = dir.path().join("track.DZT");
