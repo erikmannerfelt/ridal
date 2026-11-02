@@ -66,6 +66,12 @@ Date
   `--override-date YYYY-MM-DD` gives the UTC date instead. It is refused for formats whose positions carry their own dates, and for
   positions from a coordinate CSV.
 
+  GSSI positions carry their own dates, but an older GPS receiver that
+  does not know about a GPS week-number rollover reports dates a multiple
+  of 1024 weeks (19.6 years) too early. When a `.DZG` date is that far
+  before the date the `.DZT` was created, Ridal moves it forward by the
+  rollovers and warns that it did.
+
 The medium velocity is not read from any file; it is given with
 `--velocity`, which defaults to 0.168 m/ns (a typical value for most glacier
 ice).

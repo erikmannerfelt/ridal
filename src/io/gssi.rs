@@ -5,16 +5,99 @@ use ndarray::Array2;
 
 use crate::gpr;
 
-fn gssi_date_to_iso(date: &str) -> Result<String, Box<dyn Error>> {
-    if date.len() != 6 {
-        return Err(format!("Invalid GSSI date: {date}").into());
+/// A `$GPRMC` date, `DDMMYY`, in this century.
+fn gssi_gps_date(date: &str) -> Result<chrono::NaiveDate, Box<dyn Error>> {
+    let field = |range: std::ops::Range<usize>| {
+        date.get(range)
+            .filter(|_| date.len() == 6)
+            .and_then(|s| s.parse::<u32>().ok())
+    };
+    match (field(0..2), field(2..4), field(4..6)) {
+        (Some(day), Some(month), Some(year)) => {
+            chrono::NaiveDate::from_ymd_opt(2000 + year as i32, month, day)
+        }
+        _ => None,
     }
+    .ok_or_else(|| format!("Invalid GSSI date: {date}").into())
+}
 
-    let day = &date[0..2];
-    let month = &date[2..4];
-    let year = &date[4..6];
-    let year = format!("20{year}");
-    Ok(format!("{year}-{month}-{day}"))
+/// How far a GPS receiver's dates are behind the recording when its 10-bit
+/// week number has rolled over: every 1024 weeks.
+const GPS_WEEK_ROLLOVER_DAYS: i64 = 1024 * 7;
+
+/// The days to add to a GPS date of `gps` on a recording made on
+/// `recorded`, when they are a whole number of week rollovers apart: 0
+/// otherwise.
+///
+/// A receiver that does not know about a rollover reports dates 1024 weeks
+/// (19.6 years) too early, with the right time of day. The DZT's creation
+/// date comes from the control unit's clock, which does not roll over,
+/// and is local time, hence the tolerance of two days around each
+/// rollover.
+///
+/// ```text
+/// 2005-09-04 on a file created 2025-04-20 -> 7168 days, 1024 weeks
+/// ```
+fn gps_rollover_days(gps: chrono::NaiveDate, recorded: chrono::NaiveDate) -> i64 {
+    let behind = (recorded - gps).num_days();
+    let rollovers = (behind as f64 / GPS_WEEK_ROLLOVER_DAYS as f64).round() as i64;
+    if rollovers >= 1 && (behind - rollovers * GPS_WEEK_ROLLOVER_DAYS).abs() <= 2 {
+        rollovers * GPS_WEEK_ROLLOVER_DAYS
+    } else {
+        0
+    }
+}
+
+/// The date of a DZT header's `rh_create` field: a packed DOS-style date
+/// and time, local to the control unit. `None` when unset (all zero, as
+/// `rh_modify` usually is).
+fn gssi_create_date(bytes: &[u8]) -> Option<chrono::NaiveDate> {
+    let packed = u32::from_le_bytes(bytes.get(32..36)?.try_into().ok()?);
+    let day = (packed >> 16) & 0x1f;
+    let month = (packed >> 21) & 0xf;
+    let year = (packed >> 25) as i32 + 1980;
+    chrono::NaiveDate::from_ymd_opt(year, month, day)
+}
+
+/// The date a DZT says it was created on, if it says.
+pub fn gssi_recorded_date(dzt: &Path) -> Result<Option<chrono::NaiveDate>, Box<dyn Error>> {
+    let mut header = [0u8; 36];
+    std::io::Read::read_exact(&mut std::fs::File::open(dzt)?, &mut header)?;
+    Ok(gssi_create_date(&header))
+}
+
+/// A DZG's GPS dates corrected for a week-number rollover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpsRollover {
+    /// The first date the receiver reported.
+    pub reported: chrono::NaiveDate,
+    /// That date corrected.
+    pub corrected: chrono::NaiveDate,
+}
+
+/// Whether the GPS dates in `dzg` are a week-number rollover behind the
+/// DZT it belongs to, judged by the first `$GPRMC` date.
+pub fn gssi_gps_rollover(dzt: &Path, dzg: &Path) -> Result<Option<GpsRollover>, Box<dyn Error>> {
+    let Some(recorded) = gssi_recorded_date(dzt)? else {
+        return Ok(None);
+    };
+    let content = std::fs::read_to_string(dzg)?;
+    let Some(date) = content.lines().find_map(|line| {
+        let parts = line.split(',').collect::<Vec<_>>();
+        (parts.first() == Some(&"$GPRMC"))
+            .then(|| parts.get(9).copied())
+            .flatten()
+    }) else {
+        return Ok(None);
+    };
+    let reported = gssi_gps_date(date)?;
+    Ok(match gps_rollover_days(reported, recorded) {
+        0 => None,
+        days => Some(GpsRollover {
+            reported,
+            corrected: reported + chrono::Duration::days(days),
+        }),
+    })
 }
 
 type GssiHeader = (u16, u16, u16, f32, f32, f32, f32, u16, String);
@@ -220,9 +303,13 @@ pub fn load_dzt(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn E
     Ok(Array2::from_shape_vec((width, height), data)?.reversed_axes())
 }
 
+/// The positions in a DZG. `recorded` is the date of the DZT it belongs to
+/// ([`gssi_recorded_date`]), against which GPS dates a week-number rollover
+/// behind are corrected ([`gps_rollover_days`]).
 pub fn load_gssi_dzg(
     filepath: &Path,
     projected_crs: Option<&String>,
+    recorded: Option<chrono::NaiveDate>,
 ) -> Result<gpr::GPRLocation, Box<dyn Error>> {
     let content = std::fs::read_to_string(filepath)?;
     let mut date_str: Option<String> = None;
@@ -238,7 +325,11 @@ pub fn load_gssi_dzg(
             }
             Some("$GPRMC") => {
                 if let Some(date) = parts.get(9) {
-                    date_str = Some(gssi_date_to_iso(date)?);
+                    let mut date = gssi_gps_date(date)?;
+                    if let Some(recorded) = recorded {
+                        date += chrono::Duration::days(gps_rollover_days(date, recorded));
+                    }
+                    date_str = Some(date.format("%Y-%m-%d").to_string());
                 }
             }
             Some("$GPGGA") => {
@@ -279,7 +370,11 @@ pub fn load_gssi_dzg(
 
 #[cfg(test)]
 mod tests {
-    use super::{gssi_antenna_mhz, load_dzt, load_gssi_dzg, load_gssi_dzt};
+    use super::{
+        gps_rollover_days, gssi_antenna_mhz, gssi_create_date, gssi_gps_rollover, load_dzt,
+        load_gssi_dzg, load_gssi_dzt, GpsRollover,
+    };
+    use chrono::NaiveDate;
 
     #[test]
     fn load_dzt_rejects_zero_height_without_panicking() {
@@ -396,10 +491,101 @@ mod tests {
         .join("\n");
         std::fs::write(&dzg_path, dzg_text).unwrap();
 
-        let locations = load_gssi_dzg(&dzg_path, Some(&"EPSG:4326".to_string())).unwrap();
+        let locations = load_gssi_dzg(&dzg_path, Some(&"EPSG:4326".to_string()), None).unwrap();
         assert_eq!(locations.cor_points.len(), 2);
         assert_eq!(locations.cor_points[0].trace_n, 0);
         assert_eq!(locations.cor_points[1].trace_n, 3);
         assert!((locations.cor_points[0].altitude - 753.0).abs() < 1e-6);
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// `rh_create` packed as the control unit writes it.
+    fn packed_create(y: u32, m: u32, d: u32, hour: u32, minute: u32) -> [u8; 4] {
+        (((y - 1980) << 25) | (m << 21) | (d << 16) | (hour << 11) | (minute << 5)).to_le_bytes()
+    }
+
+    #[test]
+    fn create_date_is_decoded_and_unset_is_none() {
+        let mut header = [0u8; 128];
+        header[32..36].copy_from_slice(&packed_create(2025, 4, 20, 16, 57));
+        assert_eq!(gssi_create_date(&header), Some(date(2025, 4, 20)));
+        // rh_modify, as a SIR4000 leaves it.
+        assert_eq!(gssi_create_date(&[0u8; 128]), None);
+    }
+
+    #[test]
+    fn gps_dates_a_rollover_behind_are_corrected_and_others_are_not() {
+        let recorded = date(2025, 4, 20);
+        assert_eq!(gps_rollover_days(date(2005, 9, 4), recorded), 7168);
+        // The creation date is local time, and a recording crosses midnight.
+        assert_eq!(gps_rollover_days(date(2005, 9, 3), recorded), 7168);
+        assert_eq!(gps_rollover_days(date(2005, 9, 5), recorded), 7168);
+        // Two rollovers: a receiver from before 1999.
+        assert_eq!(gps_rollover_days(date(1986, 1, 19), recorded), 2 * 7168);
+        for gps in [
+            recorded,
+            date(2025, 4, 21),
+            date(2005, 8, 1),
+            date(2024, 4, 20),
+        ] {
+            assert_eq!(gps_rollover_days(gps, recorded), 0, "{gps}");
+        }
+    }
+
+    const ROLLED_OVER_DZG: &str = "$GSSIS,0,-1\n\
+        $GPRMC,145326,A,7904.8531,N,01330.2982,E,0.0,354.2,040905,2.6,E,A*15\n\
+        $GPGGA,145326,7904.8531,N,01330.2982,E,1,12,0.7,924.2,M,32.5,M,,*4D\n\
+        $GSSIS,5,-1\n\
+        $GPRMC,145328,A,7904.8532,N,01330.2982,E,3.1,354.7,040905,2.6,E,A*1F\n\
+        $GPGGA,145328,7904.8532,N,01330.2982,E,1,12,0.7,924.2,M,32.5,M,,*40\n";
+
+    #[test]
+    fn a_rolled_over_dzg_is_read_with_the_dzt_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = dir.path().join("track.DZT");
+        let dzg = dir.path().join("track.DZG");
+        let mut bytes = make_gssi_dzt(4);
+        bytes[32..36].copy_from_slice(&packed_create(2025, 4, 20, 16, 57));
+        std::fs::write(&dzt, bytes).unwrap();
+        std::fs::write(&dzg, ROLLED_OVER_DZG).unwrap();
+        let crs = Some("EPSG:4326".to_string());
+
+        let corrected = load_gssi_dzg(&dzg, crs.as_ref(), Some(date(2025, 4, 20))).unwrap();
+        let expected = date(2025, 4, 20).and_hms_opt(14, 53, 26).unwrap();
+        assert_eq!(
+            corrected.cor_points[0].time_seconds,
+            expected.and_utc().timestamp() as f64
+        );
+        let as_reported = load_gssi_dzg(&dzg, crs.as_ref(), None).unwrap();
+        assert_eq!(
+            corrected.cor_points[1].time_seconds - as_reported.cor_points[1].time_seconds,
+            7168. * 86400.
+        );
+
+        assert_eq!(
+            gssi_gps_rollover(&dzt, &dzg).unwrap(),
+            Some(GpsRollover {
+                reported: date(2005, 9, 4),
+                corrected: date(2025, 4, 20),
+            })
+        );
+        let options = crate::processing::ProcessingOptions {
+            override_antenna_separation: Some(0.),
+            ..Default::default()
+        };
+        let resolved = crate::formats::resolve_input(&dzt).unwrap();
+        let warnings = crate::processing::assumptions(&[resolved], &options).unwrap();
+        let [warning] = &warnings[..] else {
+            panic!("expected one warning: {warnings:?}");
+        };
+        assert!(warning.contains("dates it 2005-09-04"), "{warning}");
+        assert!(warning.contains("read as from 2025-04-20"), "{warning}");
+
+        // Without a creation date there is nothing to correct against.
+        std::fs::write(&dzt, make_gssi_dzt(4)).unwrap();
+        assert_eq!(gssi_gps_rollover(&dzt, &dzg).unwrap(), None);
     }
 }

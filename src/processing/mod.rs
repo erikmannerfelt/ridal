@@ -181,6 +181,19 @@ pub(crate) fn assumptions(
             ));
         }
     }
+    for r in resolved.iter().filter(|r| {
+        r.kind == formats::FormatKind::Gssi
+            && r.coordinates.is_file()
+            && !formats::is_coords_csv(&r.coordinates)
+    }) {
+        if let Some(rollover) = crate::io::gssi_gps_rollover(&r.header, &r.coordinates)? {
+            warnings.push(format!(
+                "Warning: the GPS in {:?} dates it {}, a whole number of 1024-week GPS week \
+                 rollovers before the DZT was created; its dates are read as from {}.",
+                r.coordinates, rollover.reported, rollover.corrected
+            ));
+        }
+    }
     if options.override_date.is_none() {
         for r in resolved
             .iter()

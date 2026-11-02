@@ -28,7 +28,7 @@ mod ridal;
 pub use coords_csv::{
     load_coords_csv, write_coords_csv, AltOrigin, CoordsRow, CsvPart, TimeOrigin,
 };
-pub use gssi::{load_dzt, load_gssi_dzg, load_gssi_dzt};
+pub use gssi::{gssi_gps_rollover, gssi_recorded_date, load_dzt, load_gssi_dzg, load_gssi_dzt};
 pub use iceradar::{
     iceradar_date, iceradar_lines, load_iceradar_data, load_iceradar_meta, load_iceradar_positions,
     IceRadarDate,
