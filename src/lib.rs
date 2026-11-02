@@ -298,6 +298,16 @@ pub mod ridal {
             .map_err(PyValueError::new_err)
     }
 
+    /// `channel=`: a GSSI channel, numbered from 1 as `--channel` takes it.
+    fn channel_arg(channel: Option<u32>) -> PyResult<Option<u32>> {
+        match channel {
+            Some(0) => Err(pyo3::exceptions::PyValueError::new_err(
+                "channel is numbered from 1, as GSSI numbers channels; 0 is not a channel",
+            )),
+            channel => Ok(channel),
+        }
+    }
+
     /// The processing options `process()` and `batch_process()` share.
     #[allow(clippy::too_many_arguments)]
     fn processing_options(
@@ -319,6 +329,7 @@ pub mod ridal {
         override_date: Option<Py<PyAny>>,
         sidecar: Option<Py<PyAny>>,
         lines: Option<Py<PyAny>>,
+        channel: Option<u32>,
         metadata: Option<Py<PyAny>>,
         group_name: Option<String>,
         group_id: Option<String>,
@@ -344,6 +355,7 @@ pub mod ridal {
             override_antenna_separation,
             override_date: date_arg(py, override_date)?,
             lines: lines_arg(py, lines)?,
+            channel: channel_arg(channel)?,
             sidecar: sidecar_arg(py, sidecar)?,
             user_metadata: optional_metadata(py, metadata)?,
             group: group_name,
@@ -527,6 +539,12 @@ pub mod ridal {
     ///     ``"0,2-3"``), or ``"all"``. Lines recorded with different settings
     ///     cannot be merged. Required for a file of more than one line, and
     ///     refused for formats without lines.
+    /// channel : int, optional
+    ///     Which channel of a GSSI file recorded with several to read, from 1
+    ///     as GSSI numbers them. Required for a file of more than one
+    ///     channel, and the same channel is read from every file given;
+    ///     channels are recorded side by side and are never merged. Refused
+    ///     when no GSSI file is given.
     /// metadata : mapping, optional
     ///     Additional user metadata to attach to the result. This should be a
     ///     JSON-serializable mapping. Root keys are interpreted as strings.
@@ -612,6 +630,7 @@ pub mod ridal {
         override_date=None,
         sidecar=None,
         lines=None,
+        channel=None,
         metadata=None,
         radargram_id=None,
         radargram_name=None,
@@ -643,6 +662,7 @@ pub mod ridal {
         override_date: Option<Py<PyAny>>,
         sidecar: Option<Py<PyAny>>,
         lines: Option<Py<PyAny>>,
+        channel: Option<u32>,
         metadata: Option<Py<PyAny>>,
         radargram_id: Option<String>,
         radargram_name: Option<String>,
@@ -698,6 +718,7 @@ pub mod ridal {
             override_date,
             sidecar,
             lines,
+            channel,
             metadata,
             group_name,
             group_id,
@@ -780,6 +801,12 @@ pub mod ridal {
     ///     ``"0,2-3"``), or ``"all"``. Lines recorded with different settings
     ///     cannot be merged. Required for a file of more than one line, and
     ///     refused for formats without lines.
+    /// channel : int, optional
+    ///     Which channel of a GSSI file recorded with several to read, from 1
+    ///     as GSSI numbers them. Required for a file of more than one
+    ///     channel, and the same channel is read from every file given;
+    ///     channels are recorded side by side and are never merged. Refused
+    ///     when no GSSI file is given.
     /// metadata : mapping, optional
     ///     Additional user metadata to attach to the returned dataset. This should
     ///     be a JSON-serializable mapping. Root keys are interpreted as strings.
@@ -825,6 +852,7 @@ pub mod ridal {
         override_date=None,
         sidecar=None,
         lines=None,
+        channel=None,
         metadata=None,
         return_dataset_format="xarray_dict"
     ))]
@@ -840,6 +868,7 @@ pub mod ridal {
         override_date: Option<Py<PyAny>>,
         sidecar: Option<Py<PyAny>>,
         lines: Option<Py<PyAny>>,
+        channel: Option<u32>,
         metadata: Option<Py<PyAny>>,
         return_dataset_format: &str,
     ) -> PyResult<Py<PyAny>> {
@@ -867,6 +896,7 @@ pub mod ridal {
             override_date,
             sidecar,
             lines,
+            channel,
             metadata,
             None,
             None,
@@ -964,6 +994,10 @@ pub mod ridal {
     ///     recording, if there is one; a path, for one recording or the lines
     ///     of one IceRadar file; or ``False`` for none. The ``override_*``
     ///     arguments take precedence over it.
+    /// channel : int, optional
+    ///     Which channel of GSSI files recorded with several to read, from 1
+    ///     as GSSI numbers them; each such file's output is named
+    ///     ``<stem>_ch_<N>``. Required for a file of more than one channel.
     /// metadata : mapping, optional
     ///     Additional user metadata to attach independently to each produced output.
     ///     This should be a JSON-serializable mapping. Root keys are interpreted as
@@ -1044,6 +1078,7 @@ pub mod ridal {
         override_antenna_separation=None,
         override_date=None,
         sidecar=None,
+        channel=None,
         metadata=None,
         group_id=None,
         group_name=None,
@@ -1073,6 +1108,7 @@ pub mod ridal {
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
         sidecar: Option<Py<PyAny>>,
+        channel: Option<u32>,
         metadata: Option<Py<PyAny>>,
         group_id: Option<String>,
         group_name: Option<String>,
@@ -1116,6 +1152,7 @@ pub mod ridal {
                 sidecar,
                 // Batch processing does not split a file into lines yet.
                 None,
+                channel,
                 metadata,
                 group_name,
                 group_id,
@@ -1489,6 +1526,9 @@ pub mod ridal {
     ///     of one IceRadar file; or ``False`` for none. The ``override_*``
     ///     arguments take precedence over it.
     ///
+    /// channel : int, optional
+    ///     Which channel of a GSSI file recorded with several to describe,
+    ///     from 1. Required for a file of more than one channel.
     /// Returns
     /// -------
     /// list of dict
@@ -1531,6 +1571,7 @@ pub mod ridal {
         override_antenna_separation=None,
         override_date=None,
         sidecar=None,
+        channel=None,
     ))]
     fn info(
         py: Python<'_>,
@@ -1543,6 +1584,7 @@ pub mod ridal {
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
         sidecar: Option<Py<PyAny>>,
+        channel: Option<u32>,
     ) -> PyResult<Vec<Py<PyAny>>> {
         let input_paths = inputs_to_paths(py, inputs.bind(py))?;
         let cor_path = optional_path(py, cor)?;
@@ -1557,6 +1599,7 @@ pub mod ridal {
             override_antenna_mhz,
             override_antenna_separation,
             override_date: date_arg(py, override_date)?,
+            channel: channel_arg(channel)?,
             sidecar: sidecar_arg(py, sidecar)?,
         };
         let records = crate::inspect::inspect(params)
@@ -1600,6 +1643,10 @@ pub mod ridal {
     ///     of the file's, as ``process()`` takes them: ``3``, ``[0, 2]``,
     ///     ``"0,2-4"`` or ``"all"``. A line's values take precedence over the
     ///     file's.
+    /// channel : int, optional
+    ///     For a GSSI file of several channels, the channel whose own values
+    ///     to change instead of the file's, from 1. A channel's values take
+    ///     precedence over the file's. Not with ``lines``.
     /// template : bool, default False
     ///     Instead, write a sidecar that sets nothing, every key commented out
     ///     beside what the header says of it, for each recording that has
@@ -1618,9 +1665,11 @@ pub mod ridal {
     ///     else.
     /// RuntimeError
     ///     If an input is not a recording, a value is out of range, a key is
-    ///     unknown, ``lines`` is given for a format without them or names a
-    ///     line a file does not have, or an existing sidecar is not valid.
+    ///     unknown, ``lines`` or ``channel`` is given for a format without
+    ///     them or names one a file does not have, or an existing sidecar is
+    ///     not valid.
     #[pyfunction]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(name = "override", signature = (
         inputs,
         *,
@@ -1628,6 +1677,7 @@ pub mod ridal {
         antenna_separation_m=None,
         unset=None,
         lines=None,
+        channel=None,
         template=false,
     ))]
     fn override_(
@@ -1637,6 +1687,7 @@ pub mod ridal {
         antenna_separation_m: Option<f32>,
         unset: Option<Py<PyAny>>,
         lines: Option<Py<PyAny>>,
+        channel: Option<u32>,
         template: bool,
     ) -> PyResult<Vec<String>> {
         use pyo3::exceptions::PyValueError;
@@ -1652,12 +1703,13 @@ pub mod ridal {
             }
         };
         let lines = lines_arg(py, lines)?;
+        let channel = channel_arg(channel)?;
         let set = crate::sidecar::Overrides {
             antenna_mhz,
             antenna_separation_m,
         };
         let outcomes = if template {
-            if !set.is_empty() || !unset.is_empty() || lines.is_some() {
+            if !set.is_empty() || !unset.is_empty() || lines.is_some() || channel.is_some() {
                 return Err(PyValueError::new_err(
                     "template=True writes a sidecar that sets nothing; give it alone",
                 ));
@@ -1670,7 +1722,15 @@ pub mod ridal {
                      template=True",
                 ));
             }
-            crate::sidecar::edit::apply(&inputs, &crate::sidecar::edit::Edit { set, unset, lines })
+            crate::sidecar::edit::apply(
+                &inputs,
+                &crate::sidecar::edit::Edit {
+                    set,
+                    unset,
+                    lines,
+                    channel,
+                },
+            )
         }
         .map_err(PyRuntimeError::new_err)?;
         Ok(outcomes

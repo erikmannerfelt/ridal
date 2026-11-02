@@ -90,7 +90,15 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             // have, from being printed once per output (#368).
             radargram_id,
             display_name,
-            options: params.options.clone(),
+            options: ProcessingOptions {
+                // Only where it applies: `with_channel` refuses it for a run
+                // of other formats alone.
+                channel: params
+                    .options
+                    .channel
+                    .filter(|_| group.iter().any(|p| is_gssi(p))),
+                ..params.options.clone()
+            },
         };
 
         // process-mode semantics: one group -> one output, in the order we pass here.
@@ -165,6 +173,12 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     }
     for path in &expanded_filepaths {
         refuse_multiline(path)?;
+        check_channel(path, params.options.channel)?;
+    }
+    if params.options.channel.is_some() && !expanded_filepaths.iter().any(|p| is_gssi(p)) {
+        return Err(
+            "--channel (channel= in Python) applies to GSSI files only; none was given".to_string(),
+        );
     }
     let threshold = params
         .merge
@@ -224,6 +238,11 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
             .file_stem()
             .and_then(|s| s.to_str())
             .ok_or_else(|| format!("Could not derive output stem from {}", first.display()))?;
+        // As `ridal process` names a channel's output.
+        let file_stem = match params.options.channel {
+            Some(channel) if is_gssi(first) => format!("{file_stem}_ch_{channel}"),
+            _ => file_stem.to_string(),
+        };
         let (radargram_id, display_name, stem) = match &names {
             Some((ids, display_names)) => (
                 ids[index].to_string(),
@@ -234,9 +253,9 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
                 ids[index].to_string(),
             ),
             None => (
-                crate::identity::RadargramId::from_fallback(file_stem)?.to_string(),
+                crate::identity::RadargramId::from_fallback(&file_stem)?.to_string(),
                 None,
-                file_stem.to_string(),
+                file_stem,
             ),
         };
         let output = params.output_dir.join(format!("{stem}.nc"));
@@ -289,10 +308,34 @@ fn refuse_multiline(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `path` is a GSSI recording, which `--channel` applies to.
+fn is_gssi(path: &Path) -> bool {
+    formats::resolve_input(path).is_ok_and(|r| r.kind == formats::FormatKind::Gssi)
+}
+
+/// Refuse a file of several GSSI channels without `--channel`, or one
+/// without the channel given, before anything is processed. Every file's
+/// output is that channel of it.
+fn check_channel(path: &Path, channel: Option<u32>) -> Result<(), String> {
+    let Ok(resolved) = formats::resolve_input(path) else {
+        // Reported, with its context, when the input is read.
+        return Ok(());
+    };
+    if resolved.kind != formats::FormatKind::Gssi {
+        return Ok(());
+    }
+    formats::with_channel(vec![resolved], channel).map(|_| ())
+}
+
 /// One input's header and positions, as planning a batch reads them.
 fn read_for_grouping(path: &Path, params: &BatchRunParams) -> Result<GroupingRecording, String> {
-    let mut resolved = formats::resolve_input(path)
+    let resolved = formats::resolve_input(path)
         .map_err(|e| format!("Failed to resolve input '{}': {e}", path.display()))?;
+    let channel = params
+        .options
+        .channel
+        .filter(|_| resolved.kind == formats::FormatKind::Gssi);
+    let mut resolved = formats::with_channel(vec![resolved], channel)?.remove(0);
     formats::with_coordinates(
         std::slice::from_mut(&mut resolved),
         params.options.cor_path.as_deref(),
@@ -607,5 +650,39 @@ mod tests {
         assert!(super::run_batch(params)
             .unwrap_err()
             .contains("needs --id-pattern"));
+    }
+
+    #[test]
+    fn a_batch_reads_one_channel_of_each_multi_channel_file() {
+        use crate::io::test_dzt;
+        let input = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let first = test_dzt::write_two_channel_recording(input.path(), "first");
+        let second = test_dzt::write_two_channel_recording(input.path(), "second");
+        let params = |channel| super::BatchRunParams {
+            filepaths: vec![first.clone(), second.clone()],
+            output_dir: output.path().to_path_buf(),
+            track_dir: None,
+            render_dir: None,
+            merge: None,
+            id_pattern: None,
+            display_name_pattern: None,
+            options: super::ProcessingOptions {
+                quiet: true,
+                channel,
+                ..Default::default()
+            },
+        };
+
+        let error = super::plan_batch(&params(None)).unwrap_err();
+        assert!(error.contains("holds 2 channels"), "{error}");
+        let plan = super::plan_batch(&params(Some(1))).unwrap();
+        let names = plan
+            .outputs
+            .iter()
+            .map(|o| o.output.file_name().unwrap().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["first_ch_1.nc", "second_ch_1.nc"]);
+        assert_eq!(plan.outputs[0].radargram_id, "first_ch_1");
     }
 }

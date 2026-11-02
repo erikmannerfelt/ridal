@@ -30,6 +30,9 @@ ridal override survey/*.rad --antenna-separation-m 4
 # One line of an IceRadar file, whose own value then takes precedence.
 ridal override stor.h5 --lines 3 --antenna-separation-m 6
 
+# One channel of a GSSI file of several, likewise.
+ridal override track.DZT --channel 2 --antenna-separation-m 0.5
+
 # Remove a value again.
 ridal override survey/DAT_0012_A1.rad --unset antenna_separation_m
 
@@ -65,7 +68,8 @@ For each value, the first of these that gives it is used:
 1. the option given for the run (`--override-antenna-separation`,
    `override_antenna_separation=` in Python), which then applies to every
    recording, with a warning where it differs from a sidecar's value;
-2. the line's table of the sidecar (`[lines.<N>]`, IceRadar only);
+2. the line's or channel's table of the sidecar (`[lines.<N>]`, IceRadar
+   only, or `[channels.<N>]`, GSSI only);
 3. the sidecar's `[overrides]`;
 4. the header.
 
@@ -96,6 +100,13 @@ While processing, Ridal prints what each sidecar decided.
   (`[lines.3.overrides]`, `[lines.3.native.iceradar]`). A line's value takes
   precedence over the file's. A line the file does not have, and any
   `[lines]` table for a format without lines, is an error.
+
+`[channels.<N>]`
+: For a GSSI file of several channels: tables for channel `N` alone,
+  numbered from 1 as `--channel` takes them, with the same layout as the
+  top level (`[channels.2.overrides]`). A channel's value takes precedence
+  over the file's. A channel the file does not have, and any `[channels]`
+  table for a format without channels, is an error.
 
 ```toml
 schema = 1

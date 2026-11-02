@@ -120,6 +120,7 @@ pub(crate) fn load_meta(
         )?,
         FormatKind::Gssi => io::load_gssi_dzt(
             &resolved.header,
+            gssi_channel(resolved)?,
             medium_velocity,
             override_antenna_mhz,
             override_antenna_separation,
@@ -147,6 +148,18 @@ pub(crate) fn iceradar_line(resolved: &ResolvedInput) -> Result<u32, Box<dyn Err
     Ok(io::iceradar_lines(&resolved.header)?[0].0)
 }
 
+/// The channel of a GSSI recording to read: the one [`formats::with_channel`]
+/// chose, or the only one. A file of several channels that was not given
+/// one fails with the list of them.
+pub(crate) fn gssi_channel(resolved: &ResolvedInput) -> Result<u32, Box<dyn Error>> {
+    if let Some(channel) = resolved.part.channel {
+        return Ok(channel);
+    }
+    // Refuses a file of several channels, listing them.
+    formats::with_channel(vec![resolved.clone()], None)?;
+    Ok(1)
+}
+
 /// A whole radargram: the header, the positions and the data, of one
 /// recording or of one line of it.
 pub(crate) fn load_gpr(
@@ -159,6 +172,14 @@ pub(crate) fn load_gpr(
         FormatKind::IceRadar => {
             let data =
                 io::load_iceradar_data(&resolved.header, iceradar_line(resolved)?, override_date)?;
+            crate::gpr::GPR::from_meta_loc_and_data(location, meta, data)
+        }
+        FormatKind::Gssi => {
+            let data = io::load_dzt(
+                &resolved.data,
+                meta.samples as usize,
+                gssi_channel(resolved)?,
+            )?;
             crate::gpr::GPR::from_meta_loc_and_data(location, meta, data)
         }
         _ => crate::gpr::GPR::from_meta_and_loc(location, meta),

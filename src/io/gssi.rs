@@ -100,55 +100,149 @@ pub fn gssi_gps_rollover(dzt: &Path, dzg: &Path) -> Result<Option<GpsRollover>, 
     })
 }
 
-type GssiHeader = (u16, u16, u16, f32, f32, f32, f32, u16, String);
+/// The size of one channel's header. A DZT starts with one per channel,
+/// one after another.
+const HEADER_SIZE: usize = 1024;
 
-fn read_gssi_header(bytes: &[u8]) -> Result<GssiHeader, Box<dyn Error>> {
+/// How much of a DZT is read to find its headers: room for 16 channels.
+const HEADERS_READ: usize = 16 * HEADER_SIZE;
+
+/// The fields of one channel's header that Ridal reads.
+#[derive(Debug, Clone)]
+struct ChannelHeader {
+    /// `rh_data`: where the data start, in units of [`HEADER_SIZE`] when
+    /// below it.
+    data: u16,
+    samples: u16,
+    bits: u16,
+    /// Scans per second.
+    sps: f32,
+    /// The recorded window, in ns.
+    range: f32,
+    channels: u16,
+    antenna: String,
+}
+
+fn read_channel_header(bytes: &[u8]) -> Result<ChannelHeader, Box<dyn Error>> {
     if bytes.len() < 128 {
         return Err("GSSI header is too short".into());
     }
-
     let u16_at = |offset: usize| u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
-    let i16_at = |offset: usize| i16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap());
     let f32_at = |offset: usize| f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-
-    let data = u16_at(2);
-    let nsamp = u16_at(4);
-    let bits = u16_at(6);
-    let _zero = i16_at(8);
-    let sps = f32_at(10);
-    let spm = f32_at(14);
-    let _mpm = f32_at(18);
-    let position = f32_at(22);
-    let range = f32_at(26);
-    let _npass = u16_at(30);
-    let _create = &bytes[32..36];
-    let _modify = &bytes[36..40];
-    let _rgain = u16_at(40);
-    let _nrgain = u16_at(42);
-    let _text = u16_at(44);
-    let _ntext = u16_at(46);
-    let _proc = u16_at(48);
-    let _nproc = u16_at(50);
-    let nchan = u16_at(52);
-    let antname = String::from_utf8_lossy(&bytes[98..112])
-        .trim_matches('\0')
-        .trim()
-        .to_string();
-
-    Ok((data, nsamp, bits, sps, spm, position, range, nchan, antname))
+    Ok(ChannelHeader {
+        data: u16_at(2),
+        samples: u16_at(4),
+        bits: u16_at(6),
+        sps: f32_at(10),
+        range: f32_at(26),
+        channels: u16_at(52),
+        antenna: String::from_utf8_lossy(&bytes[98..112])
+            .trim_matches('\0')
+            .trim()
+            .to_string(),
+    })
 }
 
-fn gssi_data_offset(bytes: &[u8], bits: u16, data: u16, nchan: u16) -> usize {
-    let bytes_per_sample = (bits as usize / 8).max(1);
-    let offset = if data < 1024 {
-        1024 * data as usize
-    } else {
-        1024 * nchan as usize
-    };
-    if offset < bytes.len() {
-        offset
-    } else {
-        32768 * bytes_per_sample
+/// Where a DZT's channels are: one header each, and the scans after them,
+/// each scan one trace of every channel in turn.
+#[derive(Debug)]
+struct DztLayout {
+    channels: Vec<ChannelHeader>,
+    data_offset: usize,
+    /// Whole scans in the file. A recording cut short (a full disk, a power
+    /// loss) can end inside one, which is dropped rather than refusing the
+    /// file.
+    scans: usize,
+}
+
+impl DztLayout {
+    /// `head` is the start of a file of `file_len` bytes, at least its
+    /// headers when the file has them.
+    fn read(head: &[u8], file_len: usize) -> Result<DztLayout, Box<dyn Error>> {
+        let first = read_channel_header(head)?;
+        let n_channels = first.channels.max(1) as usize;
+        let bytes_per_sample = (first.bits as usize / 8).max(1);
+        let data_offset = if first.data < HEADER_SIZE as u16 {
+            HEADER_SIZE * first.data as usize
+        } else {
+            HEADER_SIZE * n_channels
+        };
+        let data_offset = match data_offset < file_len {
+            true => data_offset,
+            false => 32768 * bytes_per_sample,
+        };
+        if data_offset >= file_len {
+            return Err("File too short: no data found".into());
+        }
+        let mut channels = vec![first];
+        for index in 1..n_channels {
+            let start = index * HEADER_SIZE;
+            if start + HEADER_SIZE > data_offset {
+                return Err(format!(
+                    "Invalid GSSI header: {n_channels} channels do not fit before the data at \
+                     byte {data_offset}"
+                )
+                .into());
+            }
+            let header = head
+                .get(start..)
+                .ok_or_else(|| format!("GSSI files of {n_channels} channels are not supported"))?;
+            channels.push(read_channel_header(header)?);
+        }
+        let first = &channels[0];
+        if let Some(other) = channels
+            .iter()
+            .position(|c| c.samples != first.samples || c.bits != first.bits)
+        {
+            return Err(format!(
+                "Channel {} has {} samples of {} bits, but channel 1 has {} of {}; channels \
+                 of different sizes are not supported",
+                other + 1,
+                channels[other].samples,
+                channels[other].bits,
+                first.samples,
+                first.bits
+            )
+            .into());
+        }
+        let scan_bytes = n_channels * first.samples as usize * bytes_per_sample;
+        if scan_bytes == 0 {
+            return Err("Invalid GSSI header: zero sample size".into());
+        }
+        let scans = (file_len - data_offset) / scan_bytes;
+        Ok(DztLayout {
+            channels,
+            data_offset,
+            scans,
+        })
+    }
+
+    /// The layout of the DZT at `path`, from its headers alone.
+    fn of(path: &Path) -> Result<DztLayout, Box<dyn Error>> {
+        let mut file = std::fs::File::open(path)?;
+        let file_len = file.metadata()?.len() as usize;
+        let mut head = Vec::with_capacity(HEADERS_READ);
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(&mut file, HEADERS_READ as u64),
+            &mut head,
+        )?;
+        DztLayout::read(&head, file_len).map_err(|e| format!("{}: {e}", path.display()).into())
+    }
+
+    /// The header of channel `channel`, numbered from 1 as GSSI numbers
+    /// them.
+    fn channel(&self, channel: u32, path: &Path) -> Result<&ChannelHeader, Box<dyn Error>> {
+        (channel as usize)
+            .checked_sub(1)
+            .and_then(|index| self.channels.get(index))
+            .ok_or_else(|| {
+                format!(
+                    "{} has no channel {channel}; its channels are 1 to {}",
+                    path.display(),
+                    self.channels.len()
+                )
+                .into()
+            })
     }
 }
 
@@ -158,7 +252,18 @@ fn gssi_bits_to_millivolt(bits: u16) -> f32 {
     100000.0 / 2f32.powi(bits as i32)
 }
 
-fn gssi_antenna_mhz(antname: &str) -> Option<f32> {
+/// The frequency of the antenna named `antname` in the header of channel
+/// `channel` (from 1).
+fn gssi_antenna_mhz(antname: &str, channel: u32) -> Option<f32> {
+    // A dual-frequency antenna names both frequencies, and records the
+    // higher one on the first channel: checked on a SIR 4000 recording by
+    // the spectra of the two channels.
+    match (antname.trim(), channel) {
+        ("300/800D", 1) => return Some(800.),
+        ("300/800D", 2) => return Some(300.),
+        ("300/800D", _) => return None,
+        _ => {}
+    }
     // RGPR readDZT.R antenna map.
     match antname.trim() {
         "3200" | "3200MLF" => None,
@@ -182,36 +287,53 @@ fn gssi_antenna_mhz(antname: &str) -> Option<f32> {
     }
 }
 
-/// Channels are interleaved trace by trace, so reading a multi-channel file
-/// as one would make every other trace come from a different antenna.
-fn refuse_multichannel(nchan: u16) -> Result<(), Box<dyn Error>> {
-    if nchan > 1 {
-        return Err(format!(
-            "Multi-channel DZT files are not supported yet (this one has {nchan} channels)"
-        )
-        .into());
-    }
-    Ok(())
+/// A channel of a DZT, as listings name it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GssiChannel {
+    /// From 1, as GSSI numbers them.
+    pub number: u32,
+    pub antenna_mhz: Option<f32>,
+    /// The recorded window, in ns.
+    pub time_window: f32,
+    pub traces: u32,
 }
 
+/// The channels of the DZT at `dzt`: one for most files, and one per
+/// antenna or frequency for a file recorded with several, side by side.
+pub fn gssi_channels(dzt: &Path) -> Result<Vec<GssiChannel>, Box<dyn Error>> {
+    let layout = DztLayout::of(dzt)?;
+    Ok(layout
+        .channels
+        .iter()
+        .zip(1..)
+        .map(|(header, number)| GssiChannel {
+            number,
+            antenna_mhz: gssi_antenna_mhz(&header.antenna, number),
+            time_window: header.range,
+            traces: layout.scans as u32,
+        })
+        .collect())
+}
+
+/// The header of channel `channel` (from 1) of the DZT at `filepath`.
 pub fn load_gssi_dzt(
     filepath: &Path,
+    channel: u32,
     medium_velocity: f32,
     override_antenna_mhz: Option<f32>,
     override_antenna_separation: Option<f32>,
 ) -> Result<gpr::GPRMeta, Box<dyn Error>> {
-    let bytes = std::fs::read(filepath)?;
-    let (data, nsamp, bits, sps, _spm, _position, range, nchan, antenna) =
-        read_gssi_header(&bytes)?;
-    refuse_multichannel(nchan)?;
+    let layout = DztLayout::of(filepath)?;
+    let header = layout.channel(channel, filepath)?;
     // `range` is the whole recorded window in ns. `position` only says where
     // time zero sits inside it, which the zero_corr step finds from the
     // data, so it must not shorten the window (#506).
-    let time_window = range;
-    let frequency = 1000. * (nsamp as f32) / time_window;
+    let time_window = header.range;
+    let frequency = 1000. * (header.samples as f32) / time_window;
+    let antenna = header.antenna.clone();
     let antenna_mhz = match override_antenna_mhz {
         Some(v) => v,
-        None => gssi_antenna_mhz(&antenna).ok_or_else(|| {
+        None => gssi_antenna_mhz(&antenna, channel).ok_or_else(|| {
             super::UnknownAntennaFrequency::new(
                 antenna.as_str(),
                 format!(
@@ -221,35 +343,28 @@ pub fn load_gssi_dzt(
         })?,
     };
 
-    let data_offset = gssi_data_offset(&bytes, bits, data, nchan);
-    if data_offset >= bytes.len() {
-        return Err(format!("File too short: no data found in {:?}", filepath).into());
-    }
-    let bytes_per_sample = (bits as usize / 8).max(1);
-    let samples_per_trace = nsamp as usize;
-    let bytes_per_trace = samples_per_trace * bytes_per_sample;
-    if bytes_per_trace == 0 {
-        return Err("Invalid GSSI header: zero sample size".into());
-    }
-    let trace_bytes = bytes.len() - data_offset;
-    let last_trace = (trace_bytes / bytes_per_trace) as u32;
-
     Ok(gpr::GPRMeta {
-        samples: nsamp as u32,
+        samples: header.samples as u32,
         frequency,
         frequency_steps: 0,
-        time_interval: 1.0 / sps,
+        time_interval: 1.0 / header.sps,
         antenna_mhz,
         antenna,
         antenna_separation: override_antenna_separation.unwrap_or(0.0),
         time_window,
-        last_trace,
+        last_trace: layout.scans as u32,
         data_filepath: filepath.to_path_buf(),
         medium_velocity,
     })
 }
 
-pub fn load_dzt(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn Error>> {
+/// The traces of channel `channel` (from 1) of the DZT at `filepath`, as
+/// `height` samples by trace.
+pub fn load_dzt(
+    filepath: &Path,
+    height: usize,
+    channel: u32,
+) -> Result<Array2<f32>, Box<dyn Error>> {
     // Attacker-controlled for an uploaded file; zero would divide by zero
     // when the width is computed below.
     if height == 0 {
@@ -257,38 +372,46 @@ pub fn load_dzt(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn E
     }
 
     let bytes = std::fs::read(filepath)?;
-    let (data, nsamp, bits, _sps, _spm, _position, _range, nchan, _antenna) =
-        read_gssi_header(&bytes)?;
-    refuse_multichannel(nchan)?;
-    let data_offset = gssi_data_offset(&bytes, bits, data, nchan);
-    if data_offset >= bytes.len() {
-        return Err(format!("File too short: no data found in {:?}", filepath).into());
+    let layout =
+        DztLayout::read(&bytes, bytes.len()).map_err(|e| format!("{}: {e}", filepath.display()))?;
+    let header = layout.channel(channel, filepath)?;
+    if height != header.samples as usize {
+        return Err(format!(
+            "{} has {} samples per trace, not {height}",
+            filepath.display(),
+            header.samples
+        )
+        .into());
     }
-
-    let bytes_per_sample = (bits as usize / 8).max(1);
-    let samples_per_trace = height.max(nsamp as usize);
-    let bytes_per_trace = samples_per_trace * bytes_per_sample;
-    let payload = &bytes[data_offset..];
-    if payload.len() < bytes_per_trace {
+    if layout.scans == 0 {
         return Err(format!("File too short: {:?}", filepath).into());
     }
 
-    let mut data: Vec<f32> = Vec::with_capacity(payload.len() / bytes_per_sample);
+    let bits = header.bits;
+    let trace_bytes = height * (bits as usize / 8).max(1);
+    let scan_bytes = trace_bytes * layout.channels.len();
+    let first = layout.data_offset + (channel as usize - 1) * trace_bytes;
+    let traces = (0..layout.scans).map(|scan| {
+        let start = first + scan * scan_bytes;
+        &bytes[start..start + trace_bytes]
+    });
+
+    let mut data: Vec<f32> = Vec::with_capacity(layout.scans * height);
     let scale = gssi_bits_to_millivolt(bits);
     match bits {
         8 => {
-            for byte in payload.iter() {
+            for byte in traces.flatten() {
                 data.push((*byte as i16 - 128) as f32 * scale);
             }
         }
         16 => {
-            for chunk in payload.as_chunks::<2>().0 {
+            for chunk in traces.flat_map(|trace| trace.as_chunks::<2>().0) {
                 let value = u16::from_le_bytes(*chunk) as i32 - 32768;
                 data.push(value as f32 * scale);
             }
         }
         32 => {
-            for chunk in payload.as_chunks::<4>().0 {
+            for chunk in traces.flat_map(|trace| trace.as_chunks::<4>().0) {
                 let value = i32::from_le_bytes(*chunk);
                 data.push(value as f32 * scale);
             }
@@ -296,11 +419,7 @@ pub fn load_dzt(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn E
         other => return Err(format!("Unsupported GSSI sample width: {other} bits").into()),
     }
 
-    // A recording cut short (a full disk, a power loss) can end inside a
-    // trace. Drop that partial trace rather than refusing the whole file.
-    let width = data.len() / height;
-    data.truncate(width * height);
-    Ok(Array2::from_shape_vec((width, height), data)?.reversed_axes())
+    Ok(Array2::from_shape_vec((layout.scans, height), data)?.reversed_axes())
 }
 
 /// The positions in a DZG. `recorded` is the date of the DZT it belongs to
@@ -368,11 +487,74 @@ pub fn load_gssi_dzg(
     })
 }
 
+/// Synthetic multi-channel recordings for tests across the crate.
+#[cfg(test)]
+pub(crate) mod test_dzt {
+    use std::path::{Path, PathBuf};
+
+    pub const SAMPLES: usize = 8;
+    pub const SCANS: usize = 5;
+    /// Each channel's window, in ns: the 800 MHz channel's is shorter.
+    pub const WINDOWS: [f32; 2] = [40., 100.];
+
+    /// The sample at `sample` of the trace of `channel` (from 1) in scan
+    /// `scan`, as stored: every value tells where it came from.
+    pub fn stored(scan: usize, channel: usize, sample: usize) -> i16 {
+        (scan * 100 + channel * 10 + sample) as i16
+    }
+
+    /// A 16-bit DZT of two channels from a `300/800D` antenna, interleaved
+    /// scan by scan, with its data after 2 KiB of headers.
+    pub fn two_channel_dzt() -> Vec<u8> {
+        let data_offset = 2 * 1024;
+        let mut bytes = vec![0u8; data_offset];
+        for (index, window) in WINDOWS.iter().enumerate() {
+            let header = &mut bytes[index * 1024..];
+            // rh_data in units of 1 KiB, as a SIR 4000 writes it.
+            header[2..4].copy_from_slice(&2u16.to_le_bytes());
+            header[4..6].copy_from_slice(&(SAMPLES as u16).to_le_bytes());
+            header[6..8].copy_from_slice(&16u16.to_le_bytes());
+            header[10..14].copy_from_slice(&100f32.to_le_bytes());
+            header[26..30].copy_from_slice(&window.to_le_bytes());
+            header[52..54].copy_from_slice(&2u16.to_le_bytes());
+            header[98..106].copy_from_slice(b"300/800D");
+        }
+        for scan in 0..SCANS {
+            for channel in 1..=2 {
+                for sample in 0..SAMPLES {
+                    let value = (stored(scan, channel, sample) as i32 + 32768) as u16;
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        bytes
+    }
+
+    /// `<dir>/<stem>.DZT` from [`two_channel_dzt`], with a `.DZG` of two
+    /// fixes, returning the DZT's path.
+    pub fn write_two_channel_recording(dir: &Path, stem: &str) -> PathBuf {
+        let dzt = dir.join(format!("{stem}.DZT"));
+        std::fs::write(&dzt, two_channel_dzt()).unwrap();
+        let dzg = [
+            "$GSSIS,0,-1",
+            "$GPRMC,140541,A,7901.4763,N,01332.0122,E,0.0,357.5,140424,8.8,E,A*16",
+            "$GPGGA,140541,7901.4763,N,01332.0122,E,1,12,0.7,753.0,M,35.3,M,,*4C",
+            "$GSSIS,4,-1",
+            "$GPRMC,140545,A,7901.4790,N,01332.0123,E,0.0,357.5,140424,8.8,E,A*15",
+            "$GPGGA,140545,7901.4790,N,01332.0123,E,1,12,0.7,752.9,M,35.3,M,,*4F",
+        ]
+        .join("\n");
+        std::fs::write(dir.join(format!("{stem}.DZG")), dzg).unwrap();
+        dzt
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_dzt::{self, SAMPLES, SCANS, WINDOWS};
     use super::{
-        gps_rollover_days, gssi_antenna_mhz, gssi_create_date, gssi_gps_rollover, load_dzt,
-        load_gssi_dzg, load_gssi_dzt, GpsRollover,
+        gps_rollover_days, gssi_antenna_mhz, gssi_channels, gssi_create_date, gssi_gps_rollover,
+        load_dzt, load_gssi_dzg, load_gssi_dzt, GpsRollover, GssiChannel,
     };
     use chrono::NaiveDate;
 
@@ -382,7 +564,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.dzt");
         std::fs::write(&path, [0u8; 256]).unwrap();
-        let err = load_dzt(&path, 0).unwrap_err().to_string();
+        let err = load_dzt(&path, 0, 1).unwrap_err().to_string();
         assert!(err.contains("greater than zero"), "{err}");
     }
 
@@ -417,9 +599,14 @@ mod tests {
 
     #[test]
     fn test_gssi_antenna_map() {
-        assert_eq!(gssi_antenna_mhz("5106"), Some(200.));
-        assert_eq!(gssi_antenna_mhz("3101A"), Some(900.));
-        assert_eq!(gssi_antenna_mhz("50300"), Some(300.));
+        assert_eq!(gssi_antenna_mhz("5106", 1), Some(200.));
+        assert_eq!(gssi_antenna_mhz("3101A", 1), Some(900.));
+        assert_eq!(gssi_antenna_mhz("50300", 1), Some(300.));
+        // A dual-frequency antenna: the higher frequency on the first
+        // channel.
+        assert_eq!(gssi_antenna_mhz("300/800D", 1), Some(800.));
+        assert_eq!(gssi_antenna_mhz("300/800D", 2), Some(300.));
+        assert_eq!(gssi_antenna_mhz("300/800D", 3), None);
     }
 
     #[test]
@@ -428,7 +615,7 @@ mod tests {
         let dzt_path = temp_dir.path().join("track.DZT");
         std::fs::write(&dzt_path, make_gssi_dzt(4)).unwrap();
 
-        let meta = load_gssi_dzt(&dzt_path, 0.1, Some(200.), Some(1.5)).unwrap();
+        let meta = load_gssi_dzt(&dzt_path, 1, 0.1, Some(200.), Some(1.5)).unwrap();
         assert_eq!(meta.samples, 4);
         assert_eq!(meta.last_trace, 2);
         assert_eq!(meta.time_interval, 1.0 / 12.0);
@@ -440,7 +627,7 @@ mod tests {
         assert_eq!(meta.time_window, 600.);
         assert_eq!(meta.frequency, 1000. * 4. / 600.);
 
-        let data = load_dzt(&dzt_path, 4).unwrap();
+        let data = load_dzt(&dzt_path, 4, 1).unwrap();
         assert_eq!(data.shape(), &[4, 2]);
         assert!(data[[0, 0]] > 0.0);
         assert!(data[[0, 1]] > 0.0);
@@ -456,24 +643,96 @@ mod tests {
         bytes.extend_from_slice(&[0u8; 2 * 3]);
         std::fs::write(&dzt_path, bytes).unwrap();
 
-        let data = load_dzt(&dzt_path, 4).unwrap();
+        let data = load_dzt(&dzt_path, 4, 1).unwrap();
         assert_eq!(data.shape(), &[4, 2]);
     }
 
     #[test]
-    fn multichannel_dzt_is_refused() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let dzt_path = temp_dir.path().join("track.DZT");
-        let mut bytes = make_gssi_dzt(2);
-        bytes[52..54].copy_from_slice(&2u16.to_le_bytes());
-        std::fs::write(&dzt_path, bytes).unwrap();
+    fn the_channels_of_a_file_are_listed_with_their_own_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = test_dzt::write_two_channel_recording(dir.path(), "track");
+        assert_eq!(
+            gssi_channels(&dzt).unwrap(),
+            [
+                GssiChannel {
+                    number: 1,
+                    antenna_mhz: Some(800.),
+                    time_window: WINDOWS[0],
+                    traces: SCANS as u32,
+                },
+                GssiChannel {
+                    number: 2,
+                    antenna_mhz: Some(300.),
+                    time_window: WINDOWS[1],
+                    traces: SCANS as u32,
+                },
+            ]
+        );
+    }
 
-        for err in [
-            load_gssi_dzt(&dzt_path, 0.1, Some(200.), None).unwrap_err(),
-            load_dzt(&dzt_path, 4).unwrap_err(),
-        ] {
-            assert!(err.to_string().contains("Multi-channel"), "{err}");
+    #[test]
+    fn each_channel_is_read_with_its_header_and_its_own_traces() {
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = test_dzt::write_two_channel_recording(dir.path(), "track");
+        for channel in [1, 2] {
+            let meta = load_gssi_dzt(&dzt, channel, 0.168, None, None).unwrap();
+            assert_eq!(meta.samples, SAMPLES as u32);
+            assert_eq!(meta.last_trace, SCANS as u32);
+            assert_eq!(meta.time_window, WINDOWS[channel as usize - 1]);
+            assert_eq!(meta.antenna_mhz, [800., 300.][channel as usize - 1]);
+
+            let data = load_dzt(&dzt, SAMPLES, channel).unwrap();
+            assert_eq!(data.shape(), &[SAMPLES, SCANS]);
+            let scale = 100000.0 / 2f32.powi(16);
+            for scan in 0..SCANS {
+                for sample in 0..SAMPLES {
+                    let stored = test_dzt::stored(scan, channel as usize, sample);
+                    assert_eq!(data[[sample, scan]], stored as f32 * scale);
+                }
+            }
         }
+    }
+
+    #[test]
+    fn a_channel_the_file_does_not_have_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = test_dzt::write_two_channel_recording(dir.path(), "track");
+        for channel in [0, 3] {
+            for err in [
+                load_gssi_dzt(&dzt, channel, 0.168, None, None).unwrap_err(),
+                load_dzt(&dzt, SAMPLES, channel).unwrap_err(),
+            ] {
+                assert!(err.to_string().contains("its channels are 1 to 2"), "{err}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_partial_trailing_scan_is_dropped_from_every_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = dir.path().join("track.DZT");
+        let mut bytes = test_dzt::two_channel_dzt();
+        // A whole trace of channel 1 and half of channel 2's.
+        bytes.extend_from_slice(&[0u8; 2 * (SAMPLES + SAMPLES / 2)]);
+        std::fs::write(&dzt, bytes).unwrap();
+        for channel in [1, 2] {
+            assert_eq!(
+                load_dzt(&dzt, SAMPLES, channel).unwrap().shape(),
+                &[SAMPLES, SCANS]
+            );
+        }
+    }
+
+    #[test]
+    fn channels_that_do_not_fit_before_the_data_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = dir.path().join("track.DZT");
+        let mut bytes = test_dzt::two_channel_dzt();
+        // Three channels' headers, with the data after two.
+        bytes[52..54].copy_from_slice(&3u16.to_le_bytes());
+        std::fs::write(&dzt, bytes).unwrap();
+        let err = gssi_channels(&dzt).unwrap_err().to_string();
+        assert!(err.contains("3 channels do not fit"), "{err}");
     }
 
     #[test]

@@ -1220,7 +1220,10 @@ pub(crate) mod tests {
         assert_eq!(gpr.width(), 2);
         assert_eq!(
             gpr.inputs.as_ref().unwrap().bundles[0].part,
-            Some(crate::formats::Part { line: Some(1) })
+            Some(crate::formats::Part {
+                line: Some(1),
+                ..Default::default()
+            })
         );
         let dated =
             chrono::DateTime::from_timestamp(gpr.location.cor_points[0].time_seconds as i64, 0)

@@ -10,10 +10,11 @@
 //!   to put, kept for that format's writer (#99). Read here only to check
 //!   the format's name; their contents are the writer's business.
 //!
-//! A file holding several recordings (an IceRadar file of several lines)
-//! may give a line its own tables under `[lines.<N>]`, with the same shape
-//! as the top level. A line's value takes precedence over the file's:
-//! line > file > header. A value given as an argument (`--override-*`,
+//! A file holding several recordings may give each its own tables, with
+//! the same shape as the top level: a line of an IceRadar file under
+//! `[lines.<N>]`, and a channel of a GSSI file under `[channels.<N>]`. A
+//! line's or channel's value takes precedence over the file's: line or
+//! channel > file > header. A value given as an argument (`--override-*`,
 //! `override_*=` in Python) takes precedence over both.
 
 use std::collections::BTreeMap;
@@ -156,6 +157,9 @@ struct Sidecar {
     /// By line number. TOML keys are strings, so `[lines.3]` is `"3"`.
     #[serde(default)]
     lines: BTreeMap<String, Tables>,
+    /// By channel number, from 1, as `--channel` takes it.
+    #[serde(default)]
+    channels: BTreeMap<String, Tables>,
 }
 
 /// Read and check a sidecar, without regard to the recording it is for.
@@ -195,6 +199,19 @@ fn parse(text: &str, path: &Path) -> Result<Sidecar, String> {
         })?;
         tables.push((format!("[lines.{line}] "), table));
     }
+    for (channel, table) in &sidecar.channels {
+        channel
+            .parse::<u32>()
+            .ok()
+            .filter(|&c| c >= 1)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "[channels.{channel}] is not a channel number; channels are numbered from 1, \
+                 as --channel takes them"
+                ))
+            })?;
+        tables.push((format!("[channels.{channel}] "), table));
+    }
     for (place, table) in tables {
         table
             .overrides
@@ -214,31 +231,77 @@ fn parse(text: &str, path: &Path) -> Result<Sidecar, String> {
     Ok(sidecar)
 }
 
-/// What the sidecar of `resolved` sets for it, line > file, or nothing
-/// without one.
+/// What the sidecar of `resolved` sets for it, line or channel > file, or
+/// nothing without one.
 ///
 /// # Errors
-/// A sidecar that cannot be read, is invalid, or has `[lines]` tables
-/// that do not fit the recording's file: any at all for a format without
-/// lines, and a line the file does not have.
+/// A sidecar that cannot be read, is invalid, or has `[lines]` or
+/// `[channels]` tables that do not fit the recording's file: any at all
+/// for a format without lines or channels, and a line or channel the file
+/// does not have.
 pub fn overrides_of(resolved: &ResolvedInput) -> Result<Overrides, String> {
     let Some(path) = &resolved.sidecar else {
         return Ok(Overrides::default());
     };
     let sidecar = read(path)?;
-    if sidecar.lines.is_empty() {
-        return Ok(sidecar.overrides);
+    let mut overrides = sidecar.overrides;
+    if !sidecar.lines.is_empty() {
+        check_lines(&sidecar, path, resolved)?;
+        // A file of one line is read without `part.line` set (`with_lines`).
+        let line = match resolved.part.line {
+            Some(line) => line,
+            None => crate::processing::input::iceradar_line(resolved).map_err(|e| e.to_string())?,
+        };
+        if let Some(table) = sidecar.lines.get(&line.to_string()) {
+            overrides = overrides.under(table.overrides);
+        }
     }
-    check_lines(&sidecar, path, resolved)?;
-    // A file of one line is read without `part.line` set (`with_lines`).
-    let line = match resolved.part.line {
-        Some(line) => line,
-        None => crate::processing::input::iceradar_line(resolved).map_err(|e| e.to_string())?,
-    };
-    Ok(match sidecar.lines.get(&line.to_string()) {
-        Some(table) => sidecar.overrides.under(table.overrides),
-        None => sidecar.overrides,
-    })
+    if !sidecar.channels.is_empty() {
+        check_channels(&sidecar, path, resolved)?;
+        let channel =
+            crate::processing::input::gssi_channel(resolved).map_err(|e| e.to_string())?;
+        if let Some(table) = sidecar.channels.get(&channel.to_string()) {
+            overrides = overrides.under(table.overrides);
+        }
+    }
+    Ok(overrides)
+}
+
+/// Refuse `[channels]` tables that do not fit the file of `resolved`: any
+/// at all for a format without channels, and a channel the file does not
+/// have.
+fn check_channels(sidecar: &Sidecar, path: &Path, resolved: &ResolvedInput) -> Result<(), String> {
+    if resolved.kind != FormatKind::Gssi {
+        return Err(format!(
+            "{} has [channels] tables, but {} is a {} file, which holds no channels",
+            path.display(),
+            resolved.header.display(),
+            formats::display_name(resolved.kind),
+        ));
+    }
+    let available = crate::io::gssi_channels(&resolved.header)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|c| c.number)
+        .collect::<Vec<_>>();
+    for channel in sidecar.channels.keys() {
+        // Checked by `read`.
+        let channel = channel.parse::<u32>().expect("a channel number");
+        if !available.contains(&channel) {
+            return Err(format!(
+                "{} has [channels.{channel}], but {} has no channel {channel}; its channels \
+                 are {}",
+                path.display(),
+                resolved.header.display(),
+                available
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Refuse `[lines]` tables that do not fit the file of `resolved`: any at
@@ -663,5 +726,50 @@ mod tests {
         let mut entries = all.entries().map(|(key, _)| key).to_vec();
         entries.sort();
         assert_eq!(entries, listed);
+    }
+
+    #[test]
+    fn a_channel_takes_its_own_values_over_the_file_s() {
+        use crate::io::test_dzt;
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = test_dzt::write_two_channel_recording(dir.path(), "track");
+        let sidecar = dir.path().join("track.ridal.toml");
+        let channel = |n| {
+            let resolved = crate::formats::resolve_input(&dzt).unwrap();
+            crate::formats::with_channel(vec![resolved], Some(n))
+                .unwrap()
+                .remove(0)
+        };
+
+        std::fs::write(
+            &sidecar,
+            "[overrides]\nantenna_separation_m = 1\n\n\
+             [channels.2.overrides]\nantenna_separation_m = 2.5\n",
+        )
+        .unwrap();
+        assert_eq!(
+            overrides_of(&channel(1)).unwrap().antenna_separation_m,
+            Some(1.)
+        );
+        assert_eq!(
+            overrides_of(&channel(2)).unwrap().antenna_separation_m,
+            Some(2.5)
+        );
+
+        std::fs::write(&sidecar, "[channels.3.overrides]\nantenna_mhz = 500\n").unwrap();
+        let error = overrides_of(&channel(1)).unwrap_err();
+        assert!(
+            error.contains("has no channel 3; its channels are 1, 2"),
+            "{error}"
+        );
+
+        std::fs::write(&sidecar, "[channels.0.overrides]\nantenna_mhz = 500\n").unwrap();
+        let error = overrides_of(&channel(1)).unwrap_err();
+        assert!(error.contains("numbered from 1"), "{error}");
+
+        let rad_sidecar = dir.path().join("x.ridal.toml");
+        std::fs::write(&rad_sidecar, "[channels.1.overrides]\nantenna_mhz = 500\n").unwrap();
+        let error = overrides_of(&ramac(dir.path(), Some(rad_sidecar))).unwrap_err();
+        assert!(error.contains("which holds no channels"), "{error}");
     }
 }

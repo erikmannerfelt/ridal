@@ -60,6 +60,10 @@ Override the antenna separation (in m) from file metadata
 The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
 ```
 
+```{option} --channel <N>
+Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them. Required for a file of more than one channel; the same channel is read from every file given. Channels are recorded side by side and are never merged
+```
+
 ```{option} --sidecar <PATH>
 A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it
 ```
@@ -185,6 +189,10 @@ Override the antenna separation (in m) from file metadata
 
 ```{option} --override-date <YYYY-MM-DD>
 The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
+```
+
+```{option} --channel <N>
+Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them. Required for a file of more than one channel; the same channel is read from every file given. Channels are recorded side by side and are never merged
 ```
 
 ```{option} --sidecar <PATH>
@@ -322,6 +330,10 @@ Override the antenna separation (in m) from file metadata
 The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
 ```
 
+```{option} --channel <N>
+Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them. Required for a file of more than one channel; the same channel is read from every file given. Channels are recorded side by side and are never merged
+```
+
 ```{option} --sidecar <PATH>
 A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it
 ```
@@ -434,6 +446,10 @@ Remove a value, by its key in the sidecar (antenna_mhz, antenna_separation_m). R
 
 ```{option} --lines <LINES>
 For an IceRadar file: change these lines' own values (line 3, 0,2-4 or all), which take precedence over the file's, instead of the file's
+```
+
+```{option} --channel <N>
+For a GSSI file of several channels: change this channel's own values (from 1), which take precedence over the file's, instead of the file's
 ```
 
 ```{option} --template

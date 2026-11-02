@@ -747,6 +747,10 @@ pub struct RecordingArgs {
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub override_date: Option<chrono::NaiveDate>,
 
+    /// Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them. Required for a file of more than one channel; the same channel is read from every file given. Channels are recorded side by side and are never merged.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    pub channel: Option<u32>,
+
     /// A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it.
     #[arg(long, value_name = "PATH", conflicts_with = "no_sidecar")]
     pub sidecar: Option<PathBuf>,
@@ -854,6 +858,7 @@ impl RunArgs {
             override_antenna_separation: recording.override_antenna_separation,
             override_date: recording.override_date,
             lines: None,
+            channel: recording.channel,
             sidecar: recording.sidecar_choice(),
             user_metadata: user_metadata::parse_cli_metadata(&self.metadata)?,
             group,
@@ -1029,11 +1034,15 @@ pub struct OverrideArgs {
     pub unset: Vec<String>,
 
     /// For an IceRadar file: change these lines' own values (line 3, 0,2-4 or all), which take precedence over the file's, instead of the file's.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "channel")]
     pub lines: Option<formats::LineSelection>,
 
+    /// For a GSSI file of several channels: change this channel's own values (from 1), which take precedence over the file's, instead of the file's.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
+    pub channel: Option<u32>,
+
     /// Write a sidecar that sets nothing, with every key commented out beside what the header says of it, for each recording that has none.
-    #[arg(long, conflicts_with_all = ["antenna_mhz", "antenna_separation_m", "unset", "lines"])]
+    #[arg(long, conflicts_with_all = ["antenna_mhz", "antenna_separation_m", "unset", "lines", "channel"])]
     pub template: bool,
 }
 
@@ -1463,6 +1472,7 @@ fn override_command(args: &OverrideArgs) -> Result<(), String> {
                 },
                 unset: args.unset.clone(),
                 lines: args.lines.clone(),
+                channel: args.channel,
             },
         )?
     };
@@ -1536,6 +1546,7 @@ fn info_command(args: InfoArgs) -> Result<(), String> {
         override_antenna_mhz: args.recording.override_antenna_mhz,
         override_antenna_separation: args.recording.override_antenna_separation,
         override_date: args.recording.override_date,
+        channel: args.recording.channel,
         sidecar,
     };
     let records = crate::inspect::inspect(params).map_err(|e| format!("{e:?}"))?;

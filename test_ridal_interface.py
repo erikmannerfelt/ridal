@@ -1,4 +1,5 @@
 import datetime
+import struct
 import shutil
 from pathlib import Path
 
@@ -382,3 +383,58 @@ def test_override_date_is_refused_where_the_positions_carry_dates(date):
 def test_bad_override_dates_are_refused(date, error, match):
     with pytest.raises(error, match=match):
         ridal.read(str(FIXTURE), override_date=date)
+
+
+def write_two_channel_gssi(directory: Path) -> Path:
+    """A 16-bit DZT of two channels of a 300/800D antenna, with a DZG.
+
+    Sample ``s`` of channel ``c`` in scan ``n`` stores ``100 n + 10 c + s``.
+    """
+    samples, scans = 8, 5
+    headers = bytearray(2 * 1024)
+    for index, window in enumerate([40.0, 100.0]):
+        start = index * 1024
+        struct.pack_into("<HHH", headers, start + 2, 2, samples, 16)
+        struct.pack_into("<f", headers, start + 10, 100.0)
+        struct.pack_into("<f", headers, start + 26, window)
+        struct.pack_into("<H", headers, start + 52, 2)
+        headers[start + 98 : start + 106] = b"300/800D"
+    data = bytearray()
+    for scan in range(scans):
+        for channel in (1, 2):
+            for sample in range(samples):
+                data += struct.pack("<H", 100 * scan + 10 * channel + sample + 32768)
+    dzt = directory / "track.DZT"
+    dzt.write_bytes(bytes(headers + data))
+    (directory / "track.DZG").write_text(
+        "$GSSIS,0,-1\n"
+        "$GPRMC,140541,A,7901.4763,N,01332.0122,E,0.0,357.5,140424,8.8,E,A*16\n"
+        "$GPGGA,140541,7901.4763,N,01332.0122,E,1,12,0.7,753.0,M,35.3,M,,*4C\n"
+        "$GSSIS,4,-1\n"
+        "$GPRMC,140545,A,7901.4790,N,01332.0123,E,0.0,357.5,140424,8.8,E,A*15\n"
+        "$GPGGA,140545,7901.4790,N,01332.0123,E,1,12,0.7,752.9,M,35.3,M,,*4F\n"
+    )
+    return dzt
+
+
+@pytest.mark.skipif(
+    not (shutil.which("cs2cs") and shutil.which("projinfo")),
+    reason="projecting the positions needs PROJ",
+)
+def test_a_channel_of_a_gssi_file_is_read_alone(tmp_path):
+    dzt = write_two_channel_gssi(tmp_path)
+    with pytest.raises(RuntimeError, match="holds 2 channels"):
+        ridal.read(str(dzt))
+    with pytest.raises(RuntimeError, match="has no channel 3"):
+        ridal.read(str(dzt), channel=3)
+
+    [record] = ridal.info(str(dzt), channel=2)
+    assert record["metadata"]["antenna_mhz"] == 300.0
+    assert record["metadata"]["time_window_ns"] == 100.0
+    output = ridal.process(str(dzt), tmp_path, channel=1, quiet=True)
+    assert Path(output).name == "track_ch_1.nc"
+
+
+def test_channel_zero_is_refused_before_reading():
+    with pytest.raises(ValueError, match="numbered from 1"):
+        ridal.read(str(FIXTURE), channel=0)

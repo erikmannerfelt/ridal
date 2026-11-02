@@ -41,6 +41,7 @@ def info(
     override_antenna_separation: float | None = ...,
     override_date: datetime.date | str | None = ...,
     sidecar: _Path | bool | None = ...,
+    channel: int | None = ...,
 ) -> list[dict[str, Any]]: ...
 def override(
     inputs: _Path | Sequence[_Path],
@@ -49,6 +50,7 @@ def override(
     antenna_separation_m: float | None = ...,
     unset: str | Sequence[str] | None = ...,
     lines: int | Sequence[int] | str | None = ...,
+    channel: int | None = ...,
     template: bool = ...,
 ) -> list[str]: ...
 def _preflight_body(path: _Path) -> dict[str, Any]: ...
