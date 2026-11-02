@@ -30,13 +30,13 @@ jobs:
     if: github.event_name == 'pull_request'
     uses: ./.github/workflows/python-build.yml
     with:
-      os: ubuntu-latest
+      os: ubuntu-24.04
       python-version: '3.12'
 
   dry-run-publish:
     name: Dry-run publish
     needs: build-pr
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
@@ -57,7 +57,7 @@ jobs:
   docs-pr:
     name: Build the documentation
     needs: build-pr
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
@@ -74,7 +74,7 @@ jobs:
     - name: Download wheel
       uses: actions/download-artifact@v4
       with:
-        name: wheels-ubuntu-latest-py3.12
+        name: wheels-ubuntu-24.04-py3.12
         path: wheels
 
     - name: Build with warnings as errors
@@ -90,7 +90,7 @@ jobs:
   client-integration:
     name: Python client against a real server
     needs: build-pr
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
@@ -119,7 +119,7 @@ jobs:
     - name: Download wheel
       uses: actions/download-artifact@v4
       with:
-        name: wheels-ubuntu-latest-py3.12
+        name: wheels-ubuntu-24.04-py3.12
         path: wheels
 
     - name: Install the wheel with the client
@@ -145,13 +145,13 @@ jobs:
       # half-built release rather than only a lost test result.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]
+        os: [ubuntu-24.04, windows-latest, macos-14]
         python-version: ['3.11', '3.12', '3.13', '3.14']
 
   publish:
     name: Publish to PyPI
     needs: build-all
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
@@ -176,7 +176,7 @@ jobs:
   docs-wheel:
     name: Publish the wheel the documentation uses
     needs: [build-pr, build-all]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A fork's pull request gets no token that can write to the release, and
     # its documentation falls back to main's wheel.
     if: >-
@@ -196,7 +196,7 @@ jobs:
     - name: Download wheel
       uses: actions/download-artifact@v4
       with:
-        name: wheels-ubuntu-latest-py3.12
+        name: wheels-ubuntu-24.04-py3.12
         path: wheels
 
     - name: Upload the wheel to the docs-wheels release
