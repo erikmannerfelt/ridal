@@ -22,6 +22,7 @@ def test_known_format_names_exist():
     assert "pulseekko" in ridal.all_format_descriptions
     assert "iceradar" in ridal.all_formats
     assert ridal.all_format_descriptions["iceradar"]["files"]["header"] == ".h5"
+    assert ridal.all_format_descriptions["virl"]["files"]["header"] == ".DSR"
 
 
 def test_run_cli_raises_migration_error():
@@ -362,9 +363,9 @@ def test_bad_lines_are_refused_before_reading(lines, error, match):
 def test_override_date_is_refused_where_the_positions_carry_dates(date):
     # A .cor dates every position itself, so a date given for it would be
     # ignored; it is refused instead.
-    with pytest.raises(RuntimeError, match="IceRadar and pulseEKKO"):
+    with pytest.raises(RuntimeError, match="gives its own dates"):
         ridal.read(str(FIXTURE), override_date=date)
-    with pytest.raises(RuntimeError, match="IceRadar and pulseEKKO"):
+    with pytest.raises(RuntimeError, match="gives its own dates"):
         ridal.info(str(FIXTURE), override_date=date)
 
 

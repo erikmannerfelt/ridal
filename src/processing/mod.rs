@@ -34,7 +34,7 @@ pub struct ProcessingOptions {
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
     /// The UTC date of recordings whose files give only a time of day, or a
-    /// date that is wrong: IceRadar and pulseEKKO.
+    /// date that is wrong: IceRadar, pulseEKKO and VIRL.
     pub override_date: Option<chrono::NaiveDate>,
     /// Which lines of a multi-line file (IceRadar) to merge, in order.
     pub lines: Option<formats::LineSelection>,
@@ -212,6 +212,24 @@ pub(crate) fn assumptions(
                 "Warning: the GPS in {:?} dates it {}, a whole number of 1024-week GPS week \
                  rollovers before the DZT was created; its dates are read as from {}.",
                 r.coordinates, rollover.reported, rollover.corrected
+            ));
+        }
+    }
+    for r in resolved
+        .iter()
+        .filter(|r| r.kind == formats::FormatKind::Virl && !formats::is_coords_csv(&r.coordinates))
+    {
+        let (fixes, traces) = crate::io::virl_fix_count(&r.header)?;
+        if fixes < 2 && traces > 1 {
+            warnings.push(format!(
+                "Warning: the GPS in {} gave {} for its {traces} traces, so they are all at \
+                 one position and one time. Give positions in a coordinate CSV with --cor \
+                 (cor= in Python) if they are known.",
+                describe_input(r),
+                match fixes {
+                    0 => "no fix with a correct checksum",
+                    _ => "one fix",
+                }
             ));
         }
     }

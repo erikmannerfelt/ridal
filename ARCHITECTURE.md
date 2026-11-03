@@ -1061,6 +1061,31 @@ input resolution treats it as one file would be treated.
   was checked on a SIR 4000 recording by the two channels' spectra, and is
   the only dual-frequency name mapped.
 
+## A format that records too little (VIRL)
+
+A VIRL `.DSR` file (`src/io/virl.rs`) is header, data and positions at
+once, like an IceRadar file of one line, but records neither the sampling
+frequency, nor the date, nor the antenna frequency, nor the separation.
+The format was worked out from one campaign's files (2014), and the
+sampling frequency from fitting them to that campaign's published
+thicknesses, so the reader is strict where a guess would scale every
+depth.
+
+- **What is missing comes from the sidecar.** `load_meta` passes the
+  sidecar's `sampling_mhz` to `load_virl_meta`, which refuses without it,
+  and the date reaches `load_virl_positions` as `--override-date` and a
+  sidecar `date` reach every format that `formats::takes_date`. Nothing is
+  defaulted but the separation, which is 0 m with the usual warning, as for
+  GSSI and IceRadar.
+- **The record size is found, not assumed.** A file has no header of its
+  own: its record size is where `#00002,` starts, at an even sample count
+  that divides the file. Only the 112-byte text header is fixed.
+- **A fix is a sentence, checked.** Each trace carries the GPS's last GGA
+  sentence, so a position is kept at the first trace of each new one, and a
+  sentence whose NMEA checksum is wrong is skipped (one 2014 file has a
+  dropped comma). The counter before it wraps and overwrites a comma, so
+  the sentence is found by `$GPGGA`.
+
 ## Sidecars (#527)
 
 A recording's `<stem>.ridal.toml` (`src/sidecar.rs`) holds values that take

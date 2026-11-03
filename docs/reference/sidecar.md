@@ -136,10 +136,10 @@ UPDATE_SIDECAR_MD=1 cargo test --no-default-features -F cli sidecar_md -->
 
 | Key | Unit | Option that takes precedence | Description |
 |---|---|---|---|
-| `antenna_mhz` | MHz | `--override-antenna-mhz` | The antenna's center frequency. Needed for an IceRadar file, which does not record it. |
-| `antenna_separation_m` | m | `--override-antenna-separation` | The horizontal distance between the transmitter and the receiver. GSSI and IceRadar files do not record it, and it is taken as 0 m without one. |
-| `sampling_mhz` | MHz | none | The digitizer's sampling frequency, not the antenna's: the time between samples is 1000 / sampling_mhz ns. Needed for a format that does not record it. A wrong value scales every time and depth. |
-| `date` | YYYY-MM-DD | `--override-date` | The UTC date of the recording, for an IceRadar or pulseEKKO file, whose positions record only a time of day or a date that may be wrong. Written as a TOML date (date = 2014-04-05) or a string. |
+| `antenna_mhz` | MHz | `--override-antenna-mhz` | The antenna's center frequency. Needed for an IceRadar or VIRL file, which does not record it. |
+| `antenna_separation_m` | m | `--override-antenna-separation` | The horizontal distance between the transmitter and the receiver. GSSI, IceRadar and VIRL files do not record it, and it is taken as 0 m without one. |
+| `sampling_mhz` | MHz | none | The digitizer's sampling frequency, not the antenna's: the time between samples is 1000 / sampling_mhz ns. Needed for a VIRL file, which does not record it. A wrong value scales every time and depth. |
+| `date` | YYYY-MM-DD | `--override-date` | The UTC date of the recording, for an IceRadar, pulseEKKO or VIRL file, whose positions record only a time of day or a date that may be wrong. Written as a TOML date (date = 2014-04-05) or a string. |
 
 <!-- end of generated keys -->
 

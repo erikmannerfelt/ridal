@@ -2,11 +2,12 @@
 
 ## Input formats
 
-Ridal reads four families of impulse GPR data. A recording of the first
+Ridal reads five families of impulse GPR data. A recording of the first
 three consists of several files that share a name but have different
 extensions, and any one of them can be given as the input, since Ridal finds
 the others beside it regardless of the case of their extensions. An IceRadar
-recording is a single file (see [below](#iceradar)).
+or VIRL recording is a single file (see [IceRadar](#iceradar) and
+[VIRL](#virl) below).
 
 | Format | Header | Data | Positions |
 |---|---|---|---|
@@ -14,6 +15,7 @@ recording is a single file (see [below](#iceradar)).
 | Sensors & Software pulseEKKO (`pulseekko`) | `.hd` | `.dt1` | `.gp2` |
 | GSSI (`gssi`) | `.DZT` | `.DZT` | `.DZG` |
 | Blue System Integration IceRadar (`iceradar`) | `.h5`/`.hdf5` | the same file | the same file |
+| VIRL, as the VIRL-7 (`virl`) | `.DSR` | the same file | the same file |
 
 `ridal formats` prints the same table, and `ridal.all_format_descriptions`
 holds it in Python. A path without an extension also works, as long as only
@@ -22,8 +24,8 @@ one format's header sits beside it.
 Positions are required, because a radargram without positions cannot be
 placed on a map, and Ridal refuses to read a recording without them. GSSI and
 pulseEKKO positions are read from the NMEA sentences (`$GPGGA`) in their
-sidecar files, and IceRadar positions from the GPS fields stored with each
-trace. Positions from anywhere else, for any format, can be given as
+sidecar files, IceRadar positions from the GPS fields stored with each
+trace, and VIRL positions from the `$GPGGA` sentence in each trace's header. Positions from anywhere else, for any format, can be given as
 a coordinate CSV, either beside the recording as `<stem>.coords.csv` or with
 `--cor` (see {ref}`coordinate-csv`).
 
@@ -51,8 +53,8 @@ Antenna frequency
 
 Antenna separation
 : The distance between the transmitter and the receiver (in meters), read
-  from the RAMAC and pulseEKKO headers. GSSI and IceRadar files do not record
-  it, so it is 0 for them, with a warning, unless
+  from the RAMAC and pulseEKKO headers. GSSI, IceRadar and VIRL files do not
+  record it, so it is 0 for them, with a warning, unless
   `--override-antenna-separation` or a sidecar's `antenna_separation_m`
   gives it. A sidecar is the way to give recordings of one survey different
   separations. The separation matters for
@@ -176,6 +178,54 @@ Traces
 Autosaves
 : The software keeps a copy of the first part of a recording as
   `<name>.hdf5.x1`. Ridal refuses it and names the file it belongs to.
+
+(virl)=
+### VIRL
+
+The VIRL radars were built by Evgeny Vasilenko and used by the Universidad
+Politécnica de Madrid on glaciers in Svalbard, the Antarctic and elsewhere.
+Ridal reads the `.DSR` files of the VIRL-7. A file is one recording, a
+sequence of records of one size, one per trace: a 112-byte text header,
+then the trace as 16-bit samples. There is no public description of the
+format, so what follows is what Ridal assumes, from the files of one
+campaign (2014).
+
+What must be given
+: The files record neither the sampling frequency, nor the date, nor the
+  antenna frequency, nor the antenna separation. A recording is refused
+  until the first three are given in its sidecar (see
+  {doc}`../reference/sidecar`), as `sampling_mhz`, `date` and
+  `antenna_mhz`. The date and the antenna frequency can instead be given
+  for a whole run, with `--override-date` and `--override-antenna-mhz`;
+  the sampling frequency cannot. The separation is 0 m with a warning
+  unless given. For a survey whose settings did not
+  change, one command writes them all, a day at a time since the date
+  differs:
+
+  ```bash
+  ridal override day1/*.DSR --sampling-mhz 200 --date 2014-04-05 \
+      --antenna-mhz 25 --antenna-separation-m 11.8
+  ```
+
+  The sampling frequency scales every time and depth, so take it from the
+  survey's notes, not from a guess. For the 2014 campaign it is 200 MHz
+  (5 ns), which reproduces the published ice thicknesses.
+
+Positions
+: Each trace's header holds the GPS's last `$GPGGA` sentence, so several
+  traces share one fix. A position is kept at the first trace of each fix
+  and the traces between are interpolated. A sentence whose checksum is
+  wrong, as a dropped character makes it, is skipped. A recording whose GPS
+  gave only one fix is placed at it, every trace at one time, with a
+  warning. A recording that runs past midnight UTC continues into the next
+  day.
+
+Traces
+: Samples are a 14-bit converter's, stored as offset binary, and are read
+  as their difference from its middle value (8192). The time window starts
+  at the start of the record, so time zero is found by `zero_corr` as for
+  the other formats. The window is long (20 µs in 2014), so most of it can
+  be noise below the bed, and `auto_gain` may then apply none.
 
 ### From positions to traces
 

@@ -6,6 +6,7 @@ pub enum FormatKind {
     PulseEkko,
     Gssi,
     IceRadar,
+    Virl,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -128,6 +129,19 @@ pub fn all_formats() -> Vec<FormatInfo> {
                 coordinates: ".h5",
             },
         },
+        FormatInfo {
+            name: "virl",
+            description: "VIRL radar DSR format (VIRL-7)",
+            capabilities: FormatCapabilities {
+                read: true,
+                write: false,
+            },
+            files: FormatFiles {
+                header: ".DSR",
+                data: ".DSR",
+                coordinates: ".DSR",
+            },
+        },
     ]
 }
 
@@ -149,6 +163,10 @@ pub fn format_info(kind: FormatKind) -> FormatInfo {
             .into_iter()
             .find(|fmt| fmt.name == "iceradar")
             .unwrap(),
+        FormatKind::Virl => all_formats()
+            .into_iter()
+            .find(|fmt| fmt.name == "virl")
+            .unwrap(),
     }
 }
 
@@ -159,6 +177,7 @@ pub fn display_name(kind: FormatKind) -> &'static str {
         FormatKind::PulseEkko => "pulseEKKO",
         FormatKind::Gssi => "GSSI",
         FormatKind::IceRadar => "IceRadar",
+        FormatKind::Virl => "VIRL",
     }
 }
 
@@ -168,7 +187,7 @@ pub fn display_name(kind: FormatKind) -> &'static str {
 pub fn records_antenna_separation(kind: FormatKind) -> bool {
     match kind {
         FormatKind::Ramac | FormatKind::PulseEkko => true,
-        FormatKind::Gssi | FormatKind::IceRadar => false,
+        FormatKind::Gssi | FormatKind::IceRadar | FormatKind::Virl => false,
     }
 }
 
@@ -177,7 +196,7 @@ pub fn records_antenna_separation(kind: FormatKind) -> bool {
 /// trustworthy date.
 pub fn takes_date(kind: FormatKind) -> bool {
     match kind {
-        FormatKind::IceRadar | FormatKind::PulseEkko => true,
+        FormatKind::IceRadar | FormatKind::PulseEkko | FormatKind::Virl => true,
         FormatKind::Ramac | FormatKind::Gssi => false,
     }
 }
@@ -286,7 +305,8 @@ pub fn resolve_input(input: &Path) -> Result<ResolvedInput, String> {
 /// whether or not it exists, and whatever [`resolve_input`] or `--cor`
 /// chose instead.
 pub fn own_positions(resolved: &ResolvedInput) -> PathBuf {
-    if resolved.kind == FormatKind::IceRadar {
+    // One file is header, data and positions at once.
+    if matches!(resolved.kind, FormatKind::IceRadar | FormatKind::Virl) {
         return resolved.header.clone();
     }
     let native = format_info(resolved.kind).files.coordinates;
@@ -618,13 +638,23 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             part: Part::default(),
             sidecar: None,
         }),
+        // One file is header, data and positions at once.
+        Some("dsr") => Ok(ResolvedInput {
+            input: input.to_path_buf(),
+            kind: FormatKind::Virl,
+            header: input.to_path_buf(),
+            data: input.to_path_buf(),
+            coordinates: input.to_path_buf(),
+            part: Part::default(),
+            sidecar: None,
+        }),
         Some(autosave) if is_iceradar_autosave(autosave) => Err(format!(
             "{:?} looks like an IceRadar autosave, a copy of the first part of the file it is named after. Give that file ({:?}) instead.",
             input,
             input.with_extension("")
         )),
         Some(other) => Err(format!(
-            "Unsupported input extension '.{other}' for {:?}. Supported formats are RAMAC (.rad/.rd3/.cor), pulseEKKO (.hd/.dt1/.gp2), GSSI (.dzt/.dzg/.dzx) and IceRadar (.h5/.hdf5), and a recording's <stem>{COORDS_CSV_SUFFIX}.",
+            "Unsupported input extension '.{other}' for {:?}. Supported formats are RAMAC (.rad/.rd3/.cor), pulseEKKO (.hd/.dt1/.gp2), GSSI (.dzt/.dzg/.dzx), IceRadar (.h5/.hdf5) and VIRL (.dsr), and a recording's <stem>{COORDS_CSV_SUFFIX}.",
             input
         )),
         None => {
@@ -703,7 +733,8 @@ mod tests {
                 "ramac".to_string(),
                 "pulseekko".to_string(),
                 "gssi".to_string(),
-                "iceradar".to_string()
+                "iceradar".to_string(),
+                "virl".to_string()
             ]
         );
     }
@@ -727,6 +758,19 @@ mod tests {
         let all = Some(LineSelection::All);
         assert!(with_lines(rad.clone(), all.as_ref()).is_err());
         assert_eq!(with_lines(rad, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_virl_file_is_its_own_header_data_and_positions() {
+        for name in ["030_0004.DSR", "030_0004.dsr"] {
+            let resolved = resolve_input(Path::new(name)).unwrap();
+            assert_eq!(resolved.kind, FormatKind::Virl);
+            assert_eq!(resolved.header, PathBuf::from(name));
+            assert_eq!(resolved.data, PathBuf::from(name));
+            assert_eq!(own_positions(&resolved), PathBuf::from(name));
+        }
+        assert!(takes_date(FormatKind::Virl));
+        assert!(!records_antenna_separation(FormatKind::Virl));
     }
 
     #[test]
