@@ -45,6 +45,10 @@
   const antennaField = document.getElementById('process-antenna-field');
   const mhzBox = document.getElementById('process-antenna-mhz');
   const separationBox = document.getElementById('process-antenna-separation');
+  const samplingBox = document.getElementById('process-sampling-mhz');
+  const dateBox = document.getElementById('process-date');
+  // Every box of what the recordings are, saved together (#409, #537).
+  const overrideBoxes = [mhzBox, separationBox, samplingBox, dateBox];
   const antennaSlot = document.getElementById('process-antenna-slot');
   const upload = document.getElementById('process-upload');
   const cancelUpload = document.getElementById('process-cancel-upload');
@@ -134,26 +138,64 @@
     }
     return value;
   }
+  /** What the source is to say of its recordings, from the boxes: the
+   * antenna overrides, and the sampling frequency and date that VIRL files
+   * do not record (#537). The date box gives `YYYY-MM-DD`, or nothing. */
   const antennaOverrides = () => ({
     antenna_mhz: antennaValue(mhzBox, 'antenna frequency'),
     antenna_separation: antennaValue(separationBox, 'antenna separation'),
+    sampling_mhz: antennaValue(samplingBox, 'sampling frequency'),
+    date: dateBox.value || null,
   });
   /** What the source has, as the boxes show it. */
-  let savedAntenna = { antenna_mhz: null, antenna_separation: null };
+  let savedAntenna = { antenna_mhz: null, antenna_separation: null, sampling_mhz: null, date: null };
   function showAntenna(source) {
     savedAntenna = {
       antenna_mhz: source?.antenna_mhz ?? null,
       antenna_separation: source?.antenna_separation ?? null,
+      sampling_mhz: source?.sampling_mhz ?? null,
+      date: source?.date ?? null,
     };
     mhzBox.value = savedAntenna.antenna_mhz ?? '';
     separationBox.value = savedAntenna.antenna_separation ?? '';
+    samplingBox.value = savedAntenna.sampling_mhz ?? '';
+    dateBox.value = savedAntenna.date ?? '';
   }
-  /** A header whose antenna string is not a frequency (mala.rs) is read
-   * once the source gives one: say where. */
-  const antennaHint = (message) =>
-    /antenna field/.test(message)
-      ? `${message}\n\nGive the antenna frequency (MHz) below, and try again.`
-      : message;
+  /** What the files did not say is read once the source gives it: say
+   * where, and put the cursor there. Known by the refusal's code: a header
+   * whose antenna string is not a frequency (mala.rs), and a VIRL file,
+   * which records neither its frequencies nor a date. */
+  const MISSING = {
+    antenna_frequency_unknown: [mhzBox, 'The files do not say the antenna frequency.', 'the antenna frequency (MHz)'],
+    sampling_frequency_unknown: [samplingBox, 'The files do not record the sampling frequency.', 'the sampling frequency (MHz)'],
+    date_unknown: [dateBox, 'The positions record only the time of day, and the files give no date.', 'the date'],
+  };
+  function antennaHint(error) {
+    const [box, why, what] = MISSING[error.code] || [null, null, null];
+    if (!box) return error.message;
+    box.focus();
+    return `${why} Give ${what} above, and try again.`;
+  }
+
+  /** A VIRL file records neither frequency nor a date (#537): said before
+   * anything is uploaded, rather than one refusal at a time. Null when
+   * every box it needs is filled, or no file is VIRL. */
+  function virlProblem() {
+    if (!files.some((f) => /\.dsr$/i.test(f.name))) return null;
+    const empty = [
+      [mhzBox, 'the antenna frequency (MHz)'],
+      [samplingBox, 'the sampling frequency (MHz)'],
+      [dateBox, 'the date'],
+    ].filter(([box]) => box.value.trim() === '');
+    if (empty.length === 0) return null;
+    empty[0][0].focus();
+    const names = empty.map(([, what]) => what);
+    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+    return (
+      'VIRL files record neither the antenna frequency, the sampling frequency nor the ' +
+      `date of the recording. Give ${list} above.`
+    );
+  }
 
   /** In the viewer, the button says what it will do: process, when the
    * project has this radargram's raw data, or attach some when it has
@@ -284,7 +326,7 @@
         body: JSON.stringify({ dem: dem === '' ? null : dem }),
       });
       linkedDem = answer.source.dem?.id || '';
-      if (answer.recordings.length) describe(answer.recordings);
+      if (answer.recordings.length) describe(answer.recordings, answer.source.bundles);
       const name = demBox.selectedOptions[0]?.textContent;
       status.textContent =
         (linkedDem ? `${radargramId} takes its elevations from ${name} now.` :
@@ -314,15 +356,9 @@
       fail(error.message);
       return;
     }
-    if (
-      wanted.antenna_mhz === savedAntenna.antenna_mhz &&
-      wanted.antenna_separation === savedAntenna.antenna_separation
-    ) {
-      return;
-    }
-    mhzBox.disabled = true;
-    separationBox.disabled = true;
-    progress.textContent = 'Reading the recordings with the antenna settings…';
+    if (Object.keys(wanted).every((key) => wanted[key] === savedAntenna[key])) return;
+    for (const box of overrideBoxes) box.disabled = true;
+    progress.textContent = 'Reading the recordings with these settings…';
     try {
       // The whole source goes back with only these changed: the route
       // sets what a radargram is made from, and keeps the names unless told.
@@ -334,31 +370,109 @@
           recordings: source.bundles.map((b) =>
             b.files.map((f) => ({ name: f.name, blake3: f.blake3 })),
           ),
+          parts: source.bundles.map((b) => b.part ?? WHOLE),
           crs: source.crs,
           dem: source.dem?.id ?? null,
           ...wanted,
         }),
       });
       showAntenna(answer.source);
-      if (answer.recordings.length) describe(answer.recordings);
+      if (answer.recordings.length) describe(answer.recordings, answer.source.bundles);
       status.textContent =
-        `The antenna settings of ${radargramId} are saved.` +
+        `The recording settings of ${radargramId} are saved.` +
         (served ? ' What is served was made otherwise, so it needs processing again.' : '');
       await showStanding();
     } catch (error) {
       showAntenna(savedAntenna);
-      fail(`Could not change the antenna settings (${antennaHint(error.message)}).`);
+      fail(`Could not change the recording settings. ${antennaHint(error)}`);
     } finally {
-      mhzBox.disabled = false;
-      separationBox.disabled = false;
+      for (const box of overrideBoxes) box.disabled = false;
       progress.textContent = '';
       updateRun();
     }
   }
-  mhzBox.addEventListener('change', saveAntenna);
-  separationBox.addEventListener('change', saveAntenna);
+  for (const box of overrideBoxes) box.addEventListener('change', saveAntenna);
 
   const stemOf = (file) => RIDAL.recordingStem(file.name);
+
+  /* --- Lines and channels (#537) ---------------------------------------
+   * An IceRadar file of several lines and a GSSI file of several channels
+   * hold a recording each, and a radargram is made from one of them. What
+   * a file holds is only known once it is uploaded: the ingest plan reads
+   * it, and lists one recording per line or channel. */
+  const partsBox = document.getElementById('process-parts');
+  // The part chosen of each recording that has several, by its stem.
+  const chosenParts = new Map();
+  const WHOLE = { line: null, channel: null };
+  /** Only these formats' files can hold several recordings. */
+  const mayHoldParts = (recording) => recording.files.some((f) => /\.(dzt|h5|hdf5)$/i.test(f.name));
+
+  function clearParts() {
+    chosenParts.clear();
+    partsBox.querySelectorAll('label').forEach((label) => label.remove());
+    partsBox.hidden = true;
+  }
+
+  /** What each of `named` (each recording's stored files) holds, from the
+   * ingest plan: one entry per line or channel, or one for the whole file. */
+  async function partsOf(named) {
+    const plan = await RIDAL.fetchJson(RIDAL.apiPath('ingest', 'plan'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recordings: named.map((files) => ({ files })),
+        include_tracks: false,
+      }),
+    });
+    const signature = (names) => [...names].sort().join('\u0000');
+    return named.map((files) => {
+      const wanted = signature(files.map((f) => f.name));
+      return plan.recordings.filter((r) => signature(r.files) === wanted);
+    });
+  }
+
+  /** `Channel 2: 300 MHz, 1200 traces`, for a choice. */
+  function partText(recording) {
+    const { line, channel } = recording.part;
+    const which = line !== null ? `Line ${line}` : `Channel ${channel}`;
+    if (recording.unreadable) return `${which}: cannot be read (${recording.unreadable})`;
+    const facts = [];
+    if (recording.antenna_mhz !== null) facts.push(`${recording.antenna_mhz} MHz`);
+    if (recording.traces !== null) facts.push(`${recording.traces.toLocaleString('en')} traces`);
+    return facts.length ? `${which}: ${facts.join(', ')}` : which;
+  }
+
+  /** A choice for each recording of `groups` whose file holds several,
+   * starting at its first line or channel, or the one chosen before. */
+  function showParts(groups, held) {
+    partsBox.querySelectorAll('label').forEach((label) => label.remove());
+    groups.forEach((group, index) => {
+      const options = held[index];
+      if (options.length < 2) return;
+      const word = options[0].part.line !== null ? 'Line' : 'Channel';
+      const label = document.createElement('label');
+      label.append(`${word} of ${group.stem} `);
+      const select = document.createElement('select');
+      select.autocomplete = 'off';
+      options.forEach((recording, i) => select.append(new Option(partText(recording), String(i))));
+      const before = chosenParts.get(group.stem);
+      const at = options.findIndex(
+        (r) => before && r.part.line === before.line && r.part.channel === before.channel,
+      );
+      select.value = String(Math.max(at, 0));
+      chosenParts.set(group.stem, options[Math.max(at, 0)].part);
+      select.addEventListener('change', () => {
+        chosenParts.set(group.stem, options[Number(select.value)].part);
+      });
+      label.append(select);
+      partsBox.append(label);
+    });
+    partsBox.hidden = partsBox.querySelector('label') === null;
+  }
+
+  /** `, line 2` or `, channel 1` for a part of a file, or nothing. */
+  const partSuffix = (part) =>
+    part?.line != null ? `, line ${part.line}` : part?.channel != null ? `, channel ${part.channel}` : '';
 
   /** The chosen files as recordings: grouped by name without extension,
    * in name order. */
@@ -391,6 +505,7 @@
       remove.setAttribute('aria-label', `Leave out ${recording.stem}`);
       remove.addEventListener('click', () => {
         files = files.filter((f) => stemOf(f) !== recording.stem);
+        clearParts();
         listFiles();
       });
       item.append(text, remove);
@@ -409,6 +524,8 @@
     }
     // Reset, so choosing the same files again still fires `change`.
     picker.value = '';
+    // What the files hold is read again with the new ones.
+    clearParts();
     listFiles();
     // On the catalog, the first recording's name is the likeliest id, as
     // an id is written: `DAT_0066_A1` is `dat_0066_a1`.
@@ -420,16 +537,17 @@
   /** One line per recording, from what the server read in its header.
    * Kept above the steps for as long as the dialog is open. */
   const recordingList = document.getElementById('process-recordings');
-  function describe(records) {
+  function describe(records, bundles) {
     recordingList.replaceChildren();
-    for (const record of records) {
+    for (const [index, record] of records.entries()) {
       const m = record.metadata;
       const l = record.location;
       const item = document.createElement('li');
       // RFC 3339 to the minute: `2025-03-27 12:10 UTC`.
       const start = `${l.start_time.slice(0, 16).replace('T', ' ')} UTC`;
       item.textContent =
-        `${record.input.split(/[\\/]/).pop()}: ${m.antenna_name || `${m.antenna_mhz} MHz`}, ` +
+        `${record.input.split(/[\\/]/).pop()}${partSuffix(bundles?.[index]?.part)}: ` +
+        `${m.antenna_name || `${m.antenna_mhz} MHz`}, ` +
         `${m.last_trace + 1} traces × ${m.samples} samples, ${start}, ` +
         `${Math.round(l.track_length_m)} m (${l.crs})`;
       recordingList.appendChild(item);
@@ -467,6 +585,11 @@
       overrides = antennaOverrides();
     } catch (error) {
       fail(error.message);
+      return;
+    }
+    const virl = virlProblem();
+    if (virl) {
+      fail(virl);
       return;
     }
     const id = served ? radargramId : idBox.value.trim();
@@ -522,6 +645,24 @@
       cancelUpload.hidden = true;
       uploading = null;
 
+      // A file of several lines or channels is read as one of them: the
+      // first time, show what each holds and let one be chosen.
+      if (groups.some(mayHoldParts)) {
+        progress.textContent = 'Reading what the files hold…';
+        const held = await partsOf(named);
+        const unchosen = groups.filter((g, i) => held[i].length > 1 && !chosenParts.has(g.stem));
+        showParts(groups, held);
+        if (unchosen.length) {
+          progress.textContent = '';
+          const names = unchosen.map((g) => g.stem).join(', ');
+          status.textContent =
+            `${names} ${unchosen.length === 1 ? 'holds' : 'hold'} several lines or channels. ` +
+            'Choose the one to process, then upload again; the files are not sent twice.';
+          return;
+        }
+      }
+      const parts = groups.map((g) => chosenParts.get(g.stem) ?? WHOLE);
+
       progress.textContent = 'Reading the recordings…';
       const crs = crsBox.value.trim();
       const source = await RIDAL.fetchJson(RIDAL.apiPath('sources', id), {
@@ -529,6 +670,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           recordings: named,
+          parts,
           crs: crs === '' ? null : crs,
           dem: demBox.value === '' ? null : demBox.value,
           ...overrides,
@@ -555,7 +697,7 @@
       if (viewerOpen) viewerOpen.textContent = 'Process…';
       title.textContent = `Process ${id}`;
       stage(false);
-      describe(source.recordings);
+      describe(source.recordings, source.source.bundles);
       progress.textContent = '';
       await showStanding();
       status.textContent =
@@ -566,7 +708,7 @@
       progress.textContent = '';
       // A refusal from the server is a sentence of its own: shown as it is.
       if (error.message === 'upload cancelled') fail('Upload cancelled.');
-      else if (error.status) fail(antennaHint(error.message));
+      else if (error.status) fail(antennaHint(error));
       else fail(`Could not store the raw data (${error.message}).`);
     } finally {
       upload.disabled = files.length === 0;

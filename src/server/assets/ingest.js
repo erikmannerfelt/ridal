@@ -8,8 +8,9 @@
  * lands on its output: `PUT /sources/{id}` with `If-None-Match: *`, then
  * the profile assignment, then one batch.
  *
- * Recordings and outputs are named by key, the blake3 of the header file,
- * which is what the plan's `excluded`, `joins`, `splits`, `ids` and
+ * Recordings and outputs are named by key, a hash of the recording's
+ * files and, for one line or channel of a file of several, which one
+ * (#537). That is what the plan's `excluded`, `joins`, `splits`, `ids` and
  * `display_names` take, so an edit sticks to its recording however the
  * plan around it changes.
  */
@@ -38,6 +39,7 @@
   const newProfile = $('ingest-new-profile');
   const demBox = $('ingest-dem');
   const crsBox = $('ingest-crs');
+  const dateBox = $('ingest-date');
   const createButton = $('ingest-create-button');
   const blockers = $('ingest-blockers');
   const progressList = $('ingest-progress');
@@ -271,6 +273,7 @@
       crs: text(crsBox),
       dem: demBox.value || null,
       antennas: antennaOverrides(),
+      date: dateBox.value || null,
       include_tracks: wantTracks,
     };
   }
@@ -285,7 +288,10 @@
     for (const [antenna, typed] of Object.entries(edits.antennas)) {
       const mhz = overrideValue(typed.mhz || '');
       const separation = overrideValue(typed.separation || '');
-      if (mhz !== null || separation !== null) out[antenna] = { mhz, separation };
+      const sampling = overrideValue(typed.sampling_mhz || '');
+      if (mhz !== null || separation !== null || sampling !== null) {
+        out[antenna] = { mhz, separation, sampling_mhz: sampling };
+      }
     }
     return out;
   }
@@ -396,7 +402,7 @@
           : el('td', { textContent: `${a.antenna_mhz} MHz${separation}` });
         const box = (field, label) => {
           const typed = edits.antennas[a.antenna]?.[field];
-          const given = field === 'mhz' ? a.mhz_override : a.separation_override;
+          const given = { mhz: a.mhz_override, separation: a.separation_override, sampling_mhz: a.sampling_override }[field];
           const input = el('input', {
             type: 'number',
             min: '0',
@@ -426,6 +432,11 @@
           readAs,
           box('mhz', 'Frequency override (MHz)'),
           box('separation', 'Separation override (m)'),
+          // Only where the files do not record it (VIRL): any other
+          // recording keeps its own.
+          a.sampling_needed
+            ? box('sampling_mhz', 'Sampling frequency (MHz)')
+            : el('td', { className: 'hint', textContent: 'From the files' }),
           el('td', { textContent: String(a.recordings) }),
         );
       }),
@@ -684,10 +695,15 @@
       .map((r) => {
         const action = el('button', { type: 'button', textContent: r.excluded ? 'Use it' : "Don't use" });
         action.addEventListener('click', () => exclude(r.key, !r.excluded));
-        // An antenna that gives no frequency is read once one is given
-        // for it in the table above.
-        const why = r.unreadable && r.antenna !== null
-          ? `needs a frequency for its antenna, '${r.antenna}', above`
+        // What the files do not say is read once it is given above: by
+        // antenna in the table, or the date of the recordings.
+        const needs = {
+          antenna_frequency: `needs a frequency for its antenna, '${r.antenna}', above`,
+          sampling_frequency: `needs a sampling frequency for its antenna, '${r.antenna}', above`,
+          date: 'needs the date of the recordings, above',
+        };
+        const why = r.missing
+          ? needs[r.missing]
           : r.unreadable ? `cannot be read: ${r.unreadable}` : 'not used';
         return el('li', { className: r.unreadable && !r.excluded ? 'ingest-problem' : '' },
           el('code', { textContent: r.name }), ` ${why}${r.unreadable && r.excluded ? ' (not used)' : ''}. `, action);
@@ -852,6 +868,11 @@
     wantTracks = true;
     schedulePlan();
   });
+  // A date reads the recordings' positions again.
+  dateBox.addEventListener('change', () => {
+    wantTracks = true;
+    schedulePlan();
+  });
 
   // --- Processing -------------------------------------------------------------
 
@@ -963,10 +984,13 @@
     drop.classList.add('ingest-drop-off');
     blockers.replaceChildren();
     const mode = choice();
-    // Each recording's files, by its key, from the upload's answers.
+    // Each recording's files, by its key, from the upload's answers, and
+    // the line or channel of its file it is: one file of several is
+    // several recordings (#537).
     const byName = new Map();
-    for (const entry of byStem.values()) for (const f of entry.stored || []) byName.set(f.name, entry.stored);
-    const filesOf = new Map(plan.recordings.map((r) => [r.key, byName.get(r.name)]));
+    for (const entry of byStem.values()) for (const f of entry.stored || []) byName.set(f.name, f);
+    const filesOf = new Map(plan.recordings.map((r) => [r.key, r.files.map((name) => byName.get(name))]));
+    const partOf = new Map(plan.recordings.map((r) => [r.key, r.part]));
     const into = group();
     const crs = crsBox.value.trim() || null;
     const dem = demBox.value || null;
@@ -1006,10 +1030,13 @@
             'PUT',
             {
               recordings: output.recordings.map((key) => filesOf.get(key)),
+              parts: output.recordings.map((key) => partOf.get(key)),
               crs,
               dem,
               antenna_mhz: output.antenna_mhz_override,
               antenna_separation: output.antenna_separation_override,
+              sampling_mhz: output.sampling_mhz_override,
+              date: output.date,
               names: {
                 display_name: output.display_name,
                 group_name: into?.name ?? null,

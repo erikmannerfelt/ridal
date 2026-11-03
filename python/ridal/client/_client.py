@@ -941,10 +941,13 @@ class Client:
         radargram_id: str,
         recordings: Iterable[Iterable[models.StoredFile | models.HashedFile]],
         *,
+        parts: Iterable[models.Part] | None = None,
         crs: str | None = None,
         dem: str | None = None,
         antenna_mhz: float | None = None,
         antenna_separation: float | None = None,
+        sampling_mhz: float | None = None,
+        date: str | None = None,
         names: models.SourceNames | None | Literal["keep"] = "keep",
         etag: str | None = None,
         only_new: bool = False,
@@ -960,6 +963,12 @@ class Client:
             The recordings in the order they are merged, each the files it
             is made of, as :meth:`upload_raw` answered. Which file is the
             header, the data and the positions is read from their names.
+        parts : iterable of Part, optional
+            Which part of its file each recording is, one per recording: a
+            line of an IceRadar file or a channel of a GSSI file that holds
+            several, as :attr:`PlannedRecording.part` gives it. Without
+            it, each recording is its whole file, which a file of several
+            lines or channels cannot be.
         crs : str, optional
             An EPSG code such as ``"EPSG:32633"``. Without one, the project's
             (``[processing] crs``), else the UTM zone that suits the track.
@@ -971,6 +980,14 @@ class Client:
             draft and batch made from the source uses it.
         antenna_separation : float, optional
             The distance between the antennas in m, likewise.
+        sampling_mhz : float, optional
+            The sampling frequency in MHz, likewise. VIRL files do not
+            record it, so they need it.
+        date : str, optional
+            The UTC date, ``"YYYY-MM-DD"``, of recordings whose positions
+            record only a time of day (IceRadar, pulseEKKO and VIRL), in
+            place of the date their files give. VIRL files give none, so
+            they need it; refused for other recordings.
         names : SourceNames or None, optional
             What to call the radargram until it is served. ``"keep"`` (the
             default) keeps what the source had, and ``None`` removes it.
@@ -991,10 +1008,13 @@ class Client:
                 [{"name": f.name, "blake3": f.blake3} for f in files]
                 for files in recordings
             ],
+            "parts": [dataclasses.asdict(part) for part in parts or ()],
             "crs": crs,
             "dem": dem,
             "antenna_mhz": antenna_mhz,
             "antenna_separation": antenna_separation,
+            "sampling_mhz": sampling_mhz,
+            "date": date,
         }
         if names != "keep":
             body["names"] = None if names is None else dataclasses.asdict(names)
@@ -1029,13 +1049,17 @@ class Client:
         crs: str | None = None,
         dem: str | None = None,
         antennas: Mapping[str, models.AntennaOverride] | None = None,
+        date: str | None = None,
         include_tracks: bool = True,
     ) -> models.IngestPlan:
         """Group uploaded recordings into the radargrams they would make, and
         name them. Needs ``operator``. Nothing is created: once
         :attr:`~ridal.client.IngestPlan.ok`, each output is a
-        :meth:`set_source` with ``only_new=True``, and with the output's
-        ``antenna_mhz_override`` and ``antenna_separation_override``.
+        :meth:`set_source` with ``only_new=True``, with the ``part`` of each
+        of its recordings in ``parts``, and with the output's
+        ``antenna_mhz_override`` and ``antenna_separation_override``. Each
+        line of an IceRadar file and each channel of a GSSI file that holds
+        several is a recording of its own.
 
         Parameters
         ----------
@@ -1065,7 +1089,13 @@ class Client:
             (:attr:`IngestPlan.antennas`): applied to every recording with
             that antenna before grouping and naming. An antenna whose name
             gives no frequency needs one here before its recordings can be
-            planned.
+            planned, and so does one whose files do not record the sampling
+            frequency (VIRL).
+        date : str, optional
+            The UTC date, ``"YYYY-MM-DD"``, of every recording whose
+            positions record only a time of day (IceRadar, pulseEKKO and
+            VIRL), in place of the date its files give. VIRL recordings need
+            it. Outputs carry it as ``date``, for :meth:`set_source`.
         include_tracks : bool
             Whether to send each recording's simplified track.
 
@@ -1093,6 +1123,7 @@ class Client:
                 name: dataclasses.asdict(given)
                 for name, given in (antennas or {}).items()
             },
+            "date": date,
             "include_tracks": include_tracks,
         }
         return models.IngestPlan.from_json(
@@ -1302,6 +1333,8 @@ class Client:
         dem: str | None = None,
         antenna_mhz: float | None = None,
         antenna_separation: float | None = None,
+        sampling_mhz: float | None = None,
+        date: str | None = None,
         medium_velocity: float | None = None,
         allow: Collection[models.Severity] = planning.DEFAULT_ALLOW,
         progress: Progress | None = None,
@@ -1323,7 +1356,9 @@ class Client:
             As ``ridal steps`` lists them.
         crs, dem : str, optional
             As for :meth:`set_source`.
-        antenna_mhz, antenna_separation : float, optional
+        antenna_mhz, antenna_separation, sampling_mhz : float, optional
+            As for :meth:`set_source`.
+        date : str, optional
             As for :meth:`set_source`.
         medium_velocity : float, optional
             m/ns. The server's default is that of ice.
@@ -1353,6 +1388,8 @@ class Client:
             dem=dem,
             antenna_mhz=antenna_mhz,
             antenna_separation=antenna_separation,
+            sampling_mhz=sampling_mhz,
+            date=date,
         )
         draft = self.create_draft(radargram_id, steps, medium_velocity=medium_velocity)
         draft = self.wait_for_draft(draft.job, on_update=on_update)

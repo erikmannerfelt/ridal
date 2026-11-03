@@ -28,10 +28,11 @@ use super::auth::Caller;
 use super::needs::{Needs, Who};
 use super::raw_routes::project_for;
 use super::routes::{ApiError, OrInternal};
+use crate::formats::Part;
 use crate::id_pattern::{BatchFacts, OutputFacts, Pattern, PatternKind};
 use crate::identity::{DisplayName, RadargramId};
 use crate::processing::batch::Split;
-use crate::processing::grouping::{GroupingEdits, GroupingRecording};
+use crate::processing::grouping::{GroupingEdits, GroupingRecording, HeaderOverrides};
 use crate::project::raw::{self, NamedFile};
 use crate::project::roles::Role;
 
@@ -100,6 +101,12 @@ pub struct PlanRequest {
     /// `per=freq` and merging see them, and carried to the sources made.
     #[serde(default)]
     pub antennas: BTreeMap<String, AntennaOverride>,
+    /// The UTC date, `YYYY-MM-DD`, of every recording whose positions are
+    /// read with one (IceRadar, pulseEKKO and VIRL; not one with a
+    /// `.coords.csv`), in place of the date its files give, if any. One for
+    /// the whole plan, and carried to the sources made.
+    #[serde(default)]
+    pub date: Option<String>,
     /// Whether to send each recording's track. A page that has them
     /// already may leave them out of a re-plan.
     #[serde(default = "yes")]
@@ -120,6 +127,10 @@ pub struct AntennaOverride {
     /// m.
     #[serde(default)]
     pub separation: Option<f32>,
+    /// The sampling frequency in MHz, for recordings whose files do not
+    /// record it (VIRL); others keep their own.
+    #[serde(default)]
+    pub sampling_mhz: Option<f32>,
 }
 
 /// `POST /api/v1/ingest/plan`.
@@ -144,7 +155,9 @@ pub struct IngestPlan {
 /// the request overrides.
 #[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
 pub struct PlannedAntenna {
-    /// As the headers name it, which `antennas` in the request is keyed by.
+    /// As the headers name it, which `antennas` in the request is keyed by;
+    /// for a channel of a GSSI file of several, with the channel
+    /// (`300/800D, channel 2`), since each channel is an antenna of its own.
     pub antenna: String,
     /// The frequency the name gives, in MHz; `null` when it gives none,
     /// and an override must.
@@ -161,17 +174,29 @@ pub struct PlannedAntenna {
     pub mhz_override: Option<f32>,
     #[schema(required = true)]
     pub separation_override: Option<f32>,
+    /// Whether its recordings' files do not record their sampling
+    /// frequency (VIRL), which `sampling_mhz` in `antennas` then gives.
+    pub sampling_needed: bool,
+    #[schema(required = true)]
+    pub sampling_override: Option<f32>,
     /// How many recordings have it.
     pub recordings: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
 pub struct PlannedRecording {
-    /// A hash of its files' contents ([`recording_key`]).
+    /// A hash of its files' contents ([`recording_key`]), and which line or
+    /// channel it is when its file holds several (`<hash>-line2`,
+    /// `<hash>-ch1`).
     pub key: String,
-    /// Its header file's name.
+    /// Its header file's name, and its line or channel when the file holds
+    /// several: `DAT_0001.h5, line 2`.
     pub name: String,
     pub files: Vec<String>,
+    /// The part of its file it is, which its source is to be given in
+    /// `parts`: a line of an IceRadar file or a channel of a GSSI file that
+    /// holds several (each its own recording here), or the whole file.
+    pub part: Part,
     /// RFC 3339; `null` when it cannot be read.
     #[schema(required = true)]
     pub start_time: Option<String>,
@@ -196,6 +221,12 @@ pub struct PlannedRecording {
     /// Why it cannot be read, when it cannot.
     #[schema(required = true)]
     pub unreadable: Option<String>,
+    /// What it cannot be read without, which the request can give:
+    /// `antenna_frequency` and `sampling_frequency` (in `antennas`, for its
+    /// `antenna`) or `date`. `null` when it is read, or cannot be for
+    /// another reason.
+    #[schema(required = true)]
+    pub missing: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
@@ -225,6 +256,14 @@ pub struct PlannedOutput {
     pub antenna_mhz_override: Option<f32>,
     #[schema(required = true)]
     pub antenna_separation_override: Option<f32>,
+    /// What its source is to say of the sampling frequency: the override of
+    /// an antenna of its recordings that do not record it.
+    #[schema(required = true)]
+    pub sampling_mhz_override: Option<f32>,
+    /// What its source is to say of the date: the request's, when any of
+    /// its recordings is read with one.
+    #[schema(required = true)]
+    pub date: Option<String>,
     /// Why it is not part of the output before it; `null` for the first.
     #[schema(required = true)]
     pub split: Option<Split>,
@@ -234,9 +273,11 @@ pub struct PlannedOutput {
 #[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
 pub struct PlanProblem {
     /// `invalid_pattern`, `invalid_group`, `invalid_id`, `id_collision`,
-    /// `id_taken`, `join_refused`, `unreadable`, or
-    /// `antenna_frequency_unknown`: a recording whose antenna gives no
-    /// frequency, kept out of the plan until `antennas` gives one.
+    /// `id_taken`, `join_refused`, `unreadable`, or one of three for a
+    /// recording kept out of the plan until the request gives what its
+    /// files do not say: `antenna_frequency_unknown` and
+    /// `sampling_frequency_unknown` (in `antennas`), and `date_unknown`
+    /// (`date`).
     pub kind: String,
     pub message: String,
     /// The output it is about, by index.
@@ -278,8 +319,28 @@ impl PlanProblem {
 /// What a recording's header and positions say, kept between plans.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Read {
+    /// [`recording_key`], with the part for one of several in a file
+    /// ([`part_key`]).
     pub key: String,
+    /// What the plan calls it: its header file's name, and its line or
+    /// channel when the file holds several.
     pub name: String,
+    /// Its header file's name.
+    pub header: String,
+    /// Its files' names, as the request gives them.
+    pub files: Vec<String>,
+    /// The part of the file it is: a line of an IceRadar file or a channel
+    /// of a GSSI file that holds several, or the whole file (#537).
+    pub part: Part,
+    /// The IceRadar line it is, for `{line}`: the part's, or the only line
+    /// of a file of one.
+    pub line: Option<u32>,
+    /// Whether its positions are read with a date, which the request's
+    /// `date` then gives ([`crate::formats::takes_date`]).
+    pub takes_date: bool,
+    /// Whether its files do not record the sampling frequency, which it
+    /// was read with from its antenna's override.
+    pub sampling_given: bool,
     pub outcome: Result<ReadRecording, Unread>,
 }
 
@@ -307,18 +368,59 @@ pub enum Unread {
         antenna: String,
         reason: String,
     },
+    /// Read but for its sampling frequency, which its files do not record
+    /// (VIRL) and no override for its antenna gives yet.
+    SamplingUnknown {
+        antenna: String,
+        reason: String,
+    },
+    /// Its positions record only a time of day, and no date is given;
+    /// with its antenna, which its header gives, so an override for that
+    /// stays where it is asked for.
+    DateUnknown {
+        antenna: Option<String>,
+        reason: String,
+    },
 }
 
 impl Unread {
     fn reason(&self) -> &str {
         match self {
-            Unread::Unreadable(reason) | Unread::FrequencyUnknown { reason, .. } => reason,
+            Unread::Unreadable(reason)
+            | Unread::DateUnknown { reason, .. }
+            | Unread::FrequencyUnknown { reason, .. }
+            | Unread::SamplingUnknown { reason, .. } => reason,
         }
     }
 
     fn reason_mut(&mut self) -> &mut String {
         match self {
-            Unread::Unreadable(reason) | Unread::FrequencyUnknown { reason, .. } => reason,
+            Unread::Unreadable(reason)
+            | Unread::DateUnknown { reason, .. }
+            | Unread::FrequencyUnknown { reason, .. }
+            | Unread::SamplingUnknown { reason, .. } => reason,
+        }
+    }
+
+    /// The antenna an override for it is keyed by, when one can make it
+    /// readable.
+    fn antenna(&self) -> Option<&str> {
+        match self {
+            Unread::FrequencyUnknown { antenna, .. } | Unread::SamplingUnknown { antenna, .. } => {
+                Some(antenna)
+            }
+            Unread::DateUnknown { antenna, .. } => antenna.as_deref(),
+            Unread::Unreadable(_) => None,
+        }
+    }
+
+    /// What `PlannedRecording::missing` says of it.
+    fn missing(&self) -> Option<&'static str> {
+        match self {
+            Unread::FrequencyUnknown { .. } => Some("antenna_frequency"),
+            Unread::SamplingUnknown { .. } => Some("sampling_frequency"),
+            Unread::DateUnknown { .. } => Some("date"),
+            Unread::Unreadable(_) => None,
         }
     }
 }
@@ -326,14 +428,14 @@ impl Unread {
 /// Reads by everything that decides them: the files, the CRS and the DEM.
 /// Re-planning after a pattern edit reads nothing.
 #[derive(Debug, Default)]
-pub struct ReadCache(Mutex<HashMap<String, Read>>);
+pub struct ReadCache(Mutex<HashMap<String, Vec<Read>>>);
 
 impl ReadCache {
-    fn get(&self, key: &str) -> Option<Read> {
+    fn get(&self, key: &str) -> Option<Vec<Read>> {
         self.0.lock().expect("not poisoned").get(key).cloned()
     }
 
-    fn put(&self, key: String, read: Read) {
+    fn put(&self, key: String, read: Vec<Read>) {
         let mut cache = self.0.lock().expect("not poisoned");
         if cache.len() >= CACHE_ENTRIES {
             cache.clear();
@@ -346,7 +448,7 @@ fn cache_key(
     files: &[NamedFile],
     crs: Option<&str>,
     dem: Option<&str>,
-    antenna_mhz: Option<f32>,
+    given: &HeaderOverrides,
 ) -> String {
     let mut parts: Vec<String> = files
         .iter()
@@ -354,73 +456,169 @@ fn cache_key(
         .collect();
     parts.sort();
     format!(
-        "{}\u{1}{}\u{1}{}\u{1}{}",
+        "{}\u{1}{}\u{1}{}\u{1}{:?}",
         parts.join("\u{0}"),
         crs.unwrap_or_default(),
         dem.unwrap_or_default(),
-        antenna_mhz.map(|mhz| mhz.to_string()).unwrap_or_default()
+        given
     )
 }
 
-/// Read one recording: lay it out under `work`, which is removed after.
-/// `antenna_mhz` only for one whose antenna gives no frequency.
+/// Read the recordings of one file: lay it out under `work`, which is
+/// removed after. One for most files, and one per line or channel of a
+/// file that holds several (#537). `given` only for what its files do not
+/// say, and its date only where positions are read with one.
 fn read_recording(
     data_dir: &StdPath,
     files: &[NamedFile],
     work: &StdPath,
     crs: Option<&String>,
     dem: Option<&PathBuf>,
-    antenna_mhz: Option<f32>,
-) -> Result<Read, String> {
+    given: &HeaderOverrides,
+) -> Result<Vec<Read>, String> {
     let resolved = raw::materialize(data_dir, &[files.to_vec()], work)?
         .pop()
         .expect("one recording in, one out");
-    let header_name = resolved
+    let header = resolved
         .header
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
     let key = recording_key(files);
-    let outcome = (|| {
-        let (meta, location) = crate::processing::grouping::read_header_and_positions(
-            &resolved,
-            crs,
-            dem,
-            antenna_mhz,
-        )
-        .map_err(|e| match e {
-            crate::processing::grouping::HeaderReadError::UnknownFrequency(unknown) => {
-                Unread::FrequencyUnknown {
-                    reason: unknown.to_string(),
-                    antenna: unknown.antenna,
-                }
+    // As `input::load_positions` decides: a `.coords.csv` gives its own.
+    let takes_date = !crate::formats::is_coords_csv(&resolved.coordinates)
+        && crate::formats::takes_date(resolved.kind);
+    let given = HeaderOverrides {
+        date: given.date.filter(|_| takes_date),
+        ..*given
+    };
+    let whole = Read {
+        key: key.clone(),
+        name: header.clone(),
+        header: header.clone(),
+        files: files.iter().map(|f| f.name.clone()).collect(),
+        part: Part::default(),
+        line: None,
+        takes_date,
+        sampling_given: given.sampling_mhz.is_some(),
+        outcome: Err(Unread::Unreadable(String::new())),
+    };
+    let recordings = match crate::formats::recordings_of(&resolved) {
+        Ok(recordings) => recordings,
+        Err(reason) => {
+            return Ok(vec![Read {
+                outcome: Err(Unread::Unreadable(reason)),
+                ..whole
+            }])
+        }
+    };
+    Ok(recordings
+        .into_iter()
+        .map(|recording| {
+            let resolved = crate::formats::ResolvedInput {
+                part: recording.part,
+                ..resolved.clone()
+            };
+            let mut outcome = read_header(&resolved, crs, dem, &given);
+            // The channels of one GSSI file share the antenna's name but
+            // not its frequency (`300/800D`): each is an antenna of its
+            // own, so an override for one is not given to the other.
+            if let (
+                Some(channel),
+                Ok(ReadRecording { antenna, .. })
+                | Err(Unread::FrequencyUnknown { antenna, .. })
+                | Err(Unread::SamplingUnknown { antenna, .. })
+                | Err(Unread::DateUnknown {
+                    antenna: Some(antenna),
+                    ..
+                }),
+            ) = (recording.part.channel, &mut outcome)
+            {
+                *antenna = format!("{antenna}, channel {channel}");
             }
-            crate::processing::grouping::HeaderReadError::Other(reason) => {
-                Unread::Unreadable(reason)
+            Read {
+                key: part_key(&key, &recording.part),
+                name: format!("{header}{}", part_label(&recording.part)),
+                part: recording.part,
+                line: recording.line,
+                outcome,
+                ..whole.clone()
             }
-        })?;
-        let grouping = GroupingRecording::of(&meta, &location)
-            .ok_or_else(|| Unread::Unreadable("it has no positions".to_string()))?;
-        let track = crate::server::track::Track::from_location(&location)
-            .map_err(Unread::Unreadable)?
-            .segments
-            .into_iter()
-            .flat_map(|segment| segment.vertices)
-            .map(|v| [v.lon, v.lat])
-            .collect::<Vec<_>>();
-        Ok(ReadRecording {
-            grouping,
-            antenna: meta.antenna.clone(),
-            antenna_mhz_parsed: antenna_mhz.is_none().then_some(meta.antenna_mhz),
-            traces: meta.last_trace,
-            track: thin(track, TRACK_VERTICES),
         })
-    })();
-    Ok(Read {
-        key,
-        name: header_name,
-        outcome,
+        .collect())
+}
+
+/// What one recording's header and positions say.
+fn read_header(
+    resolved: &crate::formats::ResolvedInput,
+    crs: Option<&String>,
+    dem: Option<&PathBuf>,
+    given: &HeaderOverrides,
+) -> Result<ReadRecording, Unread> {
+    use crate::processing::grouping::HeaderReadError;
+    let (meta, location) = crate::processing::grouping::read_header_and_positions(
+        resolved, crs, dem, given,
+    )
+    .map_err(|e| match e {
+        HeaderReadError::UnknownFrequency(unknown) => Unread::FrequencyUnknown {
+            reason: unknown.to_string(),
+            antenna: unknown.antenna,
+        },
+        HeaderReadError::UnknownSampling(unknown) => Unread::SamplingUnknown {
+            reason: unknown.to_string(),
+            antenna: unknown.antenna,
+        },
+        HeaderReadError::UnknownDate(reason) => Unread::DateUnknown {
+            // The header alone, which reads without a date.
+            antenna: crate::processing::input::load_meta(
+                resolved,
+                0.168,
+                given.antenna_mhz,
+                None,
+                None,
+                given.sampling_mhz,
+            )
+            .ok()
+            .map(|meta| meta.antenna),
+            reason,
+        },
+        HeaderReadError::Other(reason) => Unread::Unreadable(reason),
+    })?;
+    let grouping = GroupingRecording::of(&meta, &location)
+        .ok_or_else(|| Unread::Unreadable("it has no positions".to_string()))?;
+    let track = crate::server::track::Track::from_location(&location)
+        .map_err(Unread::Unreadable)?
+        .segments
+        .into_iter()
+        .flat_map(|segment| segment.vertices)
+        .map(|v| [v.lon, v.lat])
+        .collect::<Vec<_>>();
+    Ok(ReadRecording {
+        grouping,
+        antenna: meta.antenna.clone(),
+        antenna_mhz_parsed: given.antenna_mhz.is_none().then_some(meta.antenna_mhz),
+        traces: meta.last_trace,
+        track: thin(track, TRACK_VERTICES),
     })
+}
+
+/// The key of one recording of a file: the file's [`recording_key`], and
+/// for a line or a channel of a file of several, which one.
+pub fn part_key(key: &str, part: &Part) -> String {
+    match (part.line, part.channel) {
+        (Some(line), _) => format!("{key}-line{line}"),
+        (None, Some(channel)) => format!("{key}-ch{channel}"),
+        (None, None) => key.to_string(),
+    }
+}
+
+/// What a part adds to its file's name where the plan names it.
+fn part_label(part: &Part) -> String {
+    match (part.line, part.channel) {
+        (Some(line), _) => format!(", line {line}"),
+        (None, Some(channel)) => format!(", channel {channel}"),
+        (None, None) => String::new(),
+    }
 }
 
 /// `text` with every path under `dir` given as its file name alone.
@@ -519,6 +717,11 @@ pub async fn plan_ingest(
         .as_deref()
         .map(|id| super::dem_routes::link_to(project, &super::dem_routes::parse_dem(id)?))
         .transpose()?;
+    let date = request
+        .date
+        .as_deref()
+        .map(super::raw_routes::source_date)
+        .transpose()?;
     for (antenna, given) in &request.antennas {
         super::raw_routes::antenna_override(
             given.mhz,
@@ -529,6 +732,11 @@ pub async fn plan_ingest(
             given.separation,
             "invalid_antenna_separation",
             &format!("antenna separation (m) for '{antenna}'"),
+        )?;
+        super::raw_routes::antenna_override(
+            given.sampling_mhz,
+            "invalid_sampling_mhz",
+            &format!("sampling frequency (MHz) for '{antenna}'"),
         )?;
     }
 
@@ -557,6 +765,7 @@ pub async fn plan_ingest(
             plan_crs.as_ref(),
             dem.as_ref(),
             &antennas,
+            date,
             &cache,
         )
     })
@@ -590,18 +799,14 @@ pub fn read_all(
     crs: Option<&String>,
     dem: Option<&raw::SourceDem>,
     antennas: &BTreeMap<String, AntennaOverride>,
+    date: Option<chrono::NaiveDate>,
     cache: &ReadCache,
 ) -> Result<Vec<Read>, String> {
     let dem_path = dem.and_then(|d| raw::file_path(data_dir, &d.file.blake3));
     let dem_hash = dem.map(|d| d.file.blake3.as_str());
     let work = raw::incoming_path(data_dir)?.with_extension("plan");
-    let read_with = |index: usize, recording: &RecordingFiles, antenna_mhz: Option<f32>| {
-        let key = cache_key(
-            &recording.files,
-            crs.map(String::as_str),
-            dem_hash,
-            antenna_mhz,
-        );
+    let read_with = |index: usize, recording: &RecordingFiles, given: HeaderOverrides| {
+        let key = cache_key(&recording.files, crs.map(String::as_str), dem_hash, &given);
         if let Some(read) = cache.get(&key) {
             return read;
         }
@@ -612,16 +817,18 @@ pub fn read_all(
             &laid,
             crs,
             dem_path.as_ref(),
-            antenna_mhz,
+            &given,
         )
-        .map(|mut read| {
+        .map(|mut reads| {
             // Where it was laid out is the server's business: the
             // reason names the files as they were uploaded.
-            if let Err(unread) = &mut read.outcome {
-                let reason = unread.reason_mut();
-                *reason = without_dir(reason, &laid);
+            for read in &mut reads {
+                if let Err(unread) = &mut read.outcome {
+                    let reason = unread.reason_mut();
+                    *reason = without_dir(reason, &laid);
+                }
             }
-            read
+            reads
         });
         let _ = std::fs::remove_dir_all(&laid);
         match read {
@@ -631,37 +838,73 @@ pub fn read_all(
             }
             // Not laid out: a file not uploaded yet, say. Not kept,
             // since uploading it changes the answer.
-            Err(reason) => Read {
-                key: recording_key(&recording.files),
-                name: recording
+            Err(reason) => {
+                let name = recording
                     .files
                     .first()
                     .map(|f| f.name.clone())
-                    .unwrap_or_default(),
-                outcome: Err(Unread::Unreadable(reason)),
-            },
+                    .unwrap_or_default();
+                vec![Read {
+                    key: recording_key(&recording.files),
+                    name: name.clone(),
+                    header: name,
+                    files: recording.files.iter().map(|f| f.name.clone()).collect(),
+                    part: Part::default(),
+                    line: None,
+                    takes_date: false,
+                    sampling_given: false,
+                    outcome: Err(Unread::Unreadable(reason)),
+                }]
+            }
         }
     };
     let reads = recordings
         .iter()
         .enumerate()
-        .map(|(index, recording)| {
+        .flat_map(|(index, recording)| {
             for file in &recording.files {
                 if let Some(path) = raw::file_path(data_dir, &file.blake3) {
                     let _ = raw::refresh(&path);
                 }
             }
-            let read = read_with(index, recording, None);
-            let given = match &read.outcome {
-                Err(Unread::FrequencyUnknown { antenna, .. }) => {
-                    antennas.get(antenna).and_then(|o| o.mhz)
-                }
-                _ => None,
+            let dated = HeaderOverrides {
+                date,
+                ..Default::default()
             };
-            match given {
-                Some(mhz) => read_with(index, recording, Some(mhz)),
-                None => read,
-            }
+            read_with(index, recording, dated)
+                .into_iter()
+                .map(|read| {
+                    let given = read
+                        .outcome
+                        .as_ref()
+                        .err()
+                        .and_then(Unread::antenna)
+                        .and_then(|antenna| antennas.get(antenna))
+                        .filter(|o| o.mhz.is_some() || o.sampling_mhz.is_some());
+                    // Read again with what its antenna's override gives,
+                    // and this part of it kept: the file's other parts
+                    // may have antennas of their own.
+                    match given {
+                        Some(o) => read_with(
+                            index,
+                            recording,
+                            HeaderOverrides {
+                                antenna_mhz: o.mhz,
+                                // Only for files that do not record it:
+                                // others keep their own.
+                                sampling_mhz: o.sampling_mhz.filter(|_| {
+                                    matches!(read.outcome, Err(Unread::SamplingUnknown { .. }))
+                                }),
+                                date,
+                            },
+                        )
+                        .into_iter()
+                        .find(|again| again.key == read.key)
+                        .unwrap_or(read),
+                        None => read,
+                    }
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
     let _ = std::fs::remove_dir_all(&work);
@@ -677,6 +920,11 @@ pub fn plan(
     taken: &Taken,
 ) -> IngestPlan {
     let antennas = planned_antennas(reads, &request.antennas);
+    // Checked when the request came in.
+    let date = request
+        .date
+        .as_deref()
+        .and_then(|text| chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d").ok());
     // The overrides go in before anything is grouped or named, so a
     // recording is planned as what it will be processed as.
     let overridden: Vec<Read> = reads
@@ -709,8 +957,12 @@ pub fn plan(
         .iter()
         .map(|i| read_ok(&reads[*i]).grouping.clone())
         .collect();
-    let grouping = crate::processing::grouping::group_chronologically(
+    // The channels of a GSSI file are recorded side by side: each is
+    // grouped on its own, and never merged with another (#537).
+    let channels: Vec<Option<u32>> = grouped.iter().map(|i| reads[*i].part.channel).collect();
+    let grouping = crate::processing::grouping::group_each_stream(
         &recordings,
+        &channels,
         request.merge_threshold_seconds,
         &edits,
     );
@@ -739,16 +991,15 @@ pub fn plan(
             let first = reads[0];
             OutputFacts {
                 label: first.name.clone(),
-                stem: StdPath::new(&first.name)
+                stem: StdPath::new(&first.header)
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default(),
                 start_seconds: read_ok(first).grouping.start_seconds,
                 antenna_mhz: read_ok(first).grouping.key.antenna_mhz,
                 n_files: reads.len(),
-                // A server source holds no file of several channels yet.
-                channel: 1,
-                line: None,
+                channel: first.part.channel.unwrap_or(1),
+                line: first.line,
             }
         })
         .collect();
@@ -791,9 +1042,17 @@ pub fn plan(
         None => None,
     };
     let rendered: Vec<Result<RadargramId, String>> = match (&request.id_pattern, &id_pattern) {
+        // As `batch-process` names a line's or a channel's output.
         (None, _) => facts
             .iter()
-            .map(|f| RadargramId::from_fallback(&f.stem))
+            .zip(&members)
+            .map(|(f, reads)| {
+                RadargramId::from_fallback(&format!(
+                    "{}{}",
+                    f.stem,
+                    crate::processing::part_suffix(&reads[0].part)
+                ))
+            })
             .collect(),
         (Some(_), None) => vec![Err(String::new()); facts.len()],
         (Some(text), Some(pattern)) => {
@@ -958,6 +1217,14 @@ pub fn plan(
                     .iter()
                     .any(|o| o.separation.is_some())
                     .then_some(first.key.antenna_separation),
+                sampling_mhz_override: reads
+                    .iter()
+                    .filter(|r| r.sampling_given)
+                    .find_map(|r| request.antennas.get(&read_ok(r).antenna))
+                    .and_then(|o| o.sampling_mhz),
+                date: date
+                    .filter(|_| reads.iter().any(|r| r.takes_date))
+                    .map(|d| d.format("%Y-%m-%d").to_string()),
                 split: group.split.clone(),
             }
         })
@@ -967,13 +1234,13 @@ pub fn plan(
         .iter()
         .enumerate()
         .map(|(index, read)| {
-            let request_files = &request.recordings[index].files;
             let is_excluded = excluded.contains(read.key.as_str());
             let recording = match &read.outcome {
                 Ok(ok) => PlannedRecording {
                     key: read.key.clone(),
                     name: read.name.clone(),
-                    files: request_files.iter().map(|f| f.name.clone()).collect(),
+                    files: read.files.clone(),
+                    part: read.part,
                     start_time: Some(crate::tools::seconds_to_rfc3339(ok.grouping.start_seconds)),
                     stop_time: Some(crate::tools::seconds_to_rfc3339(ok.grouping.stop_seconds)),
                     antenna: Some(ok.antenna.clone()),
@@ -983,6 +1250,7 @@ pub fn plan(
                     output: output_of.get(read.key.as_str()).copied(),
                     excluded: is_excluded,
                     unreadable: None,
+                    missing: None,
                 },
                 Err(unread) => {
                     if !is_excluded {
@@ -999,6 +1267,22 @@ pub fn plan(
                                     read.name
                                 ),
                             ),
+                            Unread::SamplingUnknown { antenna, .. } => PlanProblem::new(
+                                "sampling_frequency_unknown",
+                                format!(
+                                    "{}: its files do not record the sampling frequency. \
+                                     Give one for its antenna, '{antenna}'.",
+                                    read.name
+                                ),
+                            ),
+                            Unread::DateUnknown { .. } => PlanProblem::new(
+                                "date_unknown",
+                                format!(
+                                    "{}: its positions record only the time of day, and its \
+                                     files give no date. Give the date of the recordings.",
+                                    read.name
+                                ),
+                            ),
                         };
                         problems.push(PlanProblem {
                             recording: Some(read.key.clone()),
@@ -1008,19 +1292,18 @@ pub fn plan(
                     PlannedRecording {
                         key: read.key.clone(),
                         name: read.name.clone(),
-                        files: request_files.iter().map(|f| f.name.clone()).collect(),
+                        files: read.files.clone(),
+                        part: read.part,
                         start_time: None,
                         stop_time: None,
-                        antenna: match unread {
-                            Unread::FrequencyUnknown { antenna, .. } => Some(antenna.clone()),
-                            Unread::Unreadable(_) => None,
-                        },
+                        antenna: unread.antenna().map(str::to_string),
                         antenna_mhz: None,
                         traces: None,
                         track: None,
                         output: None,
                         excluded: is_excluded,
                         unreadable: Some(unread.reason().to_string()),
+                        missing: unread.missing().map(str::to_string),
                     }
                 }
             };
@@ -1078,9 +1361,13 @@ fn planned_antennas(
                 ok.antenna_mhz_parsed,
                 Some(ok.grouping.key.antenna_separation),
             ),
-            Err(Unread::FrequencyUnknown { antenna, .. }) => (antenna.as_str(), None, None),
-            Err(Unread::Unreadable(_)) => continue,
+            Err(unread) => match unread.antenna() {
+                Some(antenna) => (antenna, None, None),
+                None => continue,
+            },
         };
+        let sampling_needed =
+            read.sampling_given || matches!(read.outcome, Err(Unread::SamplingUnknown { .. }));
         let given = antennas.get(antenna).copied().unwrap_or_default();
         let entry = by_name.entry(antenna).or_insert_with(|| PlannedAntenna {
             antenna: antenna.to_string(),
@@ -1089,9 +1376,12 @@ fn planned_antennas(
             separation_max: None,
             mhz_override: given.mhz,
             separation_override: given.separation,
+            sampling_needed: false,
+            sampling_override: given.sampling_mhz,
             recordings: 0,
         });
         entry.recordings += 1;
+        entry.sampling_needed |= sampling_needed;
         entry.antenna_mhz = entry.antenna_mhz.or(mhz);
         if let Some(separation) = separation {
             entry.separation_min = Some(
@@ -1141,6 +1431,12 @@ mod tests {
         Read {
             key: format!("k{n}"),
             name: format!("DAT_{n:04}_A1.rad"),
+            header: format!("DAT_{n:04}_A1.rad"),
+            files: vec![format!("DAT_{n:04}_A1.rad")],
+            part: Part::default(),
+            line: None,
+            takes_date: false,
+            sampling_given: false,
             outcome: Ok(ReadRecording {
                 grouping: GroupingRecording {
                     start_seconds: start,
@@ -1369,6 +1665,7 @@ mod tests {
                 key: "bad".into(),
                 name: "DAT_0099_A1.rad".into(),
                 outcome: Err(Unread::Unreadable("no .cor".into())),
+                ..read(99, 0., 0., 100.)
             },
         );
         let mut request = request(&reads);
@@ -1384,6 +1681,57 @@ mod tests {
         let plan = super::plan(&reads, &request, None, &Taken::default());
         assert!(plan.problems.is_empty());
         assert!(plan.recordings.last().unwrap().excluded);
+    }
+
+    /// The two channels of a GSSI file `n`, each its own recording.
+    fn channels(n: u32, start: f64) -> [Read; 2] {
+        [(1, 800.), (2, 300.)].map(|(channel, mhz)| {
+            let whole = read(n, start, start + 100., mhz);
+            let part = Part {
+                channel: Some(channel),
+                ..Default::default()
+            };
+            Read {
+                key: part_key(&whole.key, &part),
+                name: format!("FILE_{n:03}.DZT{}", part_label(&part)),
+                header: format!("FILE_{n:03}.DZT"),
+                part,
+                ..whole
+            }
+        })
+    }
+
+    #[test]
+    fn a_files_channels_are_its_recordings_and_never_merged() {
+        // #537: two files of two channels each, a minute apart. Each
+        // channel merges with itself in the next file, never with the other.
+        let reads = [channels(1, 1_700_000_000.), channels(2, 1_700_000_160.)].concat();
+        let mut request = request(&reads);
+        let plan = super::plan(&reads, &request, None, &Taken::default());
+        assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+        assert_eq!(outputs(&plan), [["k1-ch1", "k2-ch1"], ["k1-ch2", "k2-ch2"]]);
+        // Named as `batch-process` names a channel's output.
+        assert_eq!(ids(&plan), [Some("file_001_ch_1"), Some("file_001_ch_2")]);
+        assert_eq!(plan.recordings[1].name, "FILE_001.DZT, channel 2");
+        assert_eq!(plan.recordings[1].part.channel, Some(2));
+        assert_eq!(plan.recordings[1].files, ["DAT_0001_A1.rad"]);
+
+        // Even when their headers would allow it, and asked to.
+        request.joins = vec!["k1-ch2".into()];
+        request.id_pattern = Some("{stem}-{channel}".into());
+        let plan = super::plan(&reads, &request, None, &Taken::default());
+        assert_eq!(outputs(&plan).len(), 2);
+        assert_eq!(ids(&plan), [Some("file_001-1"), Some("file_001-2")]);
+
+        // Recordings of one file each never merge, either.
+        request.merge_threshold_seconds = None;
+        request.joins = vec![];
+        assert_eq!(
+            super::plan(&reads, &request, None, &Taken::default())
+                .outputs
+                .len(),
+            4
+        );
     }
 
     #[test]
@@ -1410,7 +1758,7 @@ mod tests {
             "800 MHz".to_string(),
             AntennaOverride {
                 mhz: Some(100.),
-                separation: None,
+                ..Default::default()
             },
         )]
         .into();
@@ -1496,7 +1844,16 @@ mod tests {
             ],
         }];
         let cache = ReadCache::default();
-        let none = read_all(data_dir, &recordings, None, None, &BTreeMap::new(), &cache).unwrap();
+        let none = read_all(
+            data_dir,
+            &recordings,
+            None,
+            None,
+            &BTreeMap::new(),
+            None,
+            &cache,
+        )
+        .unwrap();
         match &none[0].outcome {
             Err(Unread::FrequencyUnknown { antenna, .. }) => assert_eq!(antenna, "RTA unshielded"),
             other => panic!("{other:?}"),
@@ -1505,11 +1862,11 @@ mod tests {
             "RTA unshielded".to_string(),
             AntennaOverride {
                 mhz: Some(25.),
-                separation: None,
+                ..Default::default()
             },
         )]
         .into();
-        let read = read_all(data_dir, &recordings, None, None, &given, &cache).unwrap();
+        let read = read_all(data_dir, &recordings, None, None, &given, None, &cache).unwrap();
         let read = read[0].outcome.as_ref().unwrap();
         assert_eq!(read.antenna, "RTA unshielded");
         assert_eq!(read.antenna_mhz_parsed, None);
@@ -1548,6 +1905,130 @@ mod tests {
     }
 
     #[test]
+    fn a_file_of_several_channels_is_read_as_each_of_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let scratch = tempfile::tempdir().unwrap();
+        let dzt = crate::io::test_dzt::write_two_channel_recording(scratch.path(), "two");
+        let files: Vec<NamedFile> = [dzt.clone(), dzt.with_extension("DZG")]
+            .iter()
+            .map(|path| upload(data_dir, path.to_str().unwrap()))
+            .collect();
+        let recordings = vec![RecordingFiles {
+            files: files.clone(),
+        }];
+        let reads = read_all(
+            data_dir,
+            &recordings,
+            None,
+            None,
+            &BTreeMap::new(),
+            None,
+            &ReadCache::default(),
+        )
+        .unwrap();
+        let key = recording_key(&files);
+        let keys: Vec<&str> = reads.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, [format!("{key}-ch1"), format!("{key}-ch2")]);
+        assert_eq!(reads[0].name, "two.DZT, channel 1");
+        assert_eq!(reads[0].header, "two.DZT");
+        // Each channel is an antenna of its own, with its own frequency.
+        let antennas: Vec<(String, Option<f32>)> = reads
+            .iter()
+            .map(|r| {
+                let ok = r.outcome.as_ref().unwrap();
+                (ok.antenna.clone(), ok.antenna_mhz_parsed)
+            })
+            .collect();
+        assert_eq!(
+            antennas,
+            [
+                ("300/800D, channel 1".to_string(), Some(800.)),
+                ("300/800D, channel 2".to_string(), Some(300.)),
+            ]
+        );
+        let windows: Vec<f32> = reads
+            .iter()
+            .map(|r| r.outcome.as_ref().unwrap().grouping.key.time_window)
+            .collect();
+        assert_eq!(windows, crate::io::test_dzt::WINDOWS);
+    }
+
+    /// A VIRL file records neither its sampling frequency nor a date: the
+    /// plan asks for each, and carries what it was given to the source.
+    #[test]
+    fn a_virl_file_is_planned_once_given_its_sampling_frequency_and_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().join("030_0001.DSR");
+        std::fs::write(&path, crate::io::test_dsr::simple()).unwrap();
+        let recordings = vec![RecordingFiles {
+            files: vec![upload(data_dir, path.to_str().unwrap())],
+        }];
+        let cache = ReadCache::default();
+        let mut request = PlanRequest {
+            recordings: recordings.clone(),
+            ..Default::default()
+        };
+        let plan_with = |request: &PlanRequest| {
+            let date = request
+                .date
+                .as_deref()
+                .map(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap());
+            let reads = read_all(
+                data_dir,
+                &recordings,
+                None,
+                None,
+                &request.antennas,
+                date,
+                &cache,
+            )
+            .unwrap();
+            super::plan(&reads, request, None, &Taken::default())
+        };
+
+        let plan = plan_with(&request);
+        assert_eq!(kinds(&plan), ["sampling_frequency_unknown"]);
+        assert_eq!(
+            plan.recordings[0].missing.as_deref(),
+            Some("sampling_frequency")
+        );
+        assert_eq!(plan.recordings[0].antenna.as_deref(), Some("VIRL"));
+        assert!(plan.antennas[0].sampling_needed);
+
+        request.antennas = [(
+            "VIRL".to_string(),
+            AntennaOverride {
+                mhz: Some(25.),
+                sampling_mhz: Some(200.),
+                ..Default::default()
+            },
+        )]
+        .into();
+        let plan = plan_with(&request);
+        assert_eq!(kinds(&plan), ["date_unknown"]);
+        assert_eq!(plan.recordings[0].missing.as_deref(), Some("date"));
+        // Still asked for, now that it is given.
+        assert!(plan.antennas[0].sampling_needed);
+        assert_eq!(plan.antennas[0].sampling_override, Some(200.));
+
+        request.date = Some("2014-04-05".to_string());
+        let plan = plan_with(&request);
+        assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+        let output = &plan.outputs[0];
+        assert_eq!(output.sampling_mhz_override, Some(200.));
+        assert_eq!(output.antenna_mhz_override, Some(25.));
+        assert_eq!(output.date.as_deref(), Some("2014-04-05"));
+        assert!(
+            output.start_time.starts_with("2014-04-05T12:00"),
+            "{}",
+            output.start_time
+        );
+    }
+
+    #[test]
     fn a_coords_csv_gives_a_recording_its_positions() {
         // #13: what Add data sends when a `.coords.csv` replaces the `.cor`,
         // the CSV first, as the browser may list it.
@@ -1577,6 +2058,7 @@ mod tests {
             None,
             None,
             &BTreeMap::new(),
+            None,
             &ReadCache::default(),
         )
         .unwrap();
@@ -1613,7 +2095,16 @@ mod tests {
         }
 
         let cache = ReadCache::default();
-        let reads = read_all(data_dir, &recordings, None, None, &BTreeMap::new(), &cache).unwrap();
+        let reads = read_all(
+            data_dir,
+            &recordings,
+            None,
+            None,
+            &BTreeMap::new(),
+            None,
+            &cache,
+        )
+        .unwrap();
         let read = reads[0].outcome.as_ref().unwrap();
         // Keyed by every file, in any order.
         let mut reversed = recordings[0].files.clone();
@@ -1649,6 +2140,7 @@ mod tests {
             None,
             None,
             &BTreeMap::new(),
+            None,
             &cache,
         )
         .unwrap();
@@ -1660,6 +2152,7 @@ mod tests {
             Some(&"EPSG:32634".to_string()),
             None,
             &BTreeMap::new(),
+            None,
             &cache,
         )
         .unwrap();

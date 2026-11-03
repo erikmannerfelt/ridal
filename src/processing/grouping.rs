@@ -15,14 +15,44 @@ pub fn read_header_and_positions(
     resolved: &ResolvedInput,
     crs: Option<&String>,
     dem: Option<&PathBuf>,
-    antenna_mhz: Option<f32>,
+    given: &HeaderOverrides,
 ) -> Result<(GPRMeta, GPRLocation), HeaderReadError> {
-    input::load_meta_and_location(resolved, 0.168, crs, dem, antenna_mhz, None, None).map_err(|e| {
-        match e.downcast::<crate::io::UnknownAntennaFrequency>() {
-            Ok(unknown) => HeaderReadError::UnknownFrequency(*unknown),
+    input::load_meta_and_location(
+        resolved,
+        0.168,
+        crs,
+        dem,
+        given.antenna_mhz,
+        None,
+        given.date,
+        given.sampling_mhz,
+    )
+    .map_err(|e| {
+        let e = match e.downcast::<crate::io::UnknownAntennaFrequency>() {
+            Ok(unknown) => return HeaderReadError::UnknownFrequency(*unknown),
+            Err(e) => e,
+        };
+        let e = match e.downcast::<crate::io::UnknownSamplingFrequency>() {
+            Ok(unknown) => return HeaderReadError::UnknownSampling(*unknown),
+            Err(e) => e,
+        };
+        match e.downcast::<crate::io::UnknownDate>() {
+            Ok(unknown) => HeaderReadError::UnknownDate(unknown.to_string()),
             Err(other) => HeaderReadError::Other(other.to_string()),
         }
     })
+}
+
+/// What the ingest planner gives a recording that its files do not say.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HeaderOverrides {
+    /// MHz; only for one whose antenna gives no frequency.
+    pub antenna_mhz: Option<f32>,
+    /// MHz; only for one whose files do not record it (VIRL).
+    pub sampling_mhz: Option<f32>,
+    /// The UTC date of positions that record only a time of day; only for
+    /// a format they are read from with a date ([`crate::formats::takes_date`]).
+    pub date: Option<chrono::NaiveDate>,
 }
 
 /// Why [`read_header_and_positions`] could not read a recording.
@@ -30,6 +60,10 @@ pub fn read_header_and_positions(
 pub enum HeaderReadError {
     /// Readable but for its antenna frequency, which an override gives.
     UnknownFrequency(crate::io::UnknownAntennaFrequency),
+    /// Readable but for its sampling frequency, which an override gives.
+    UnknownSampling(crate::io::UnknownSamplingFrequency),
+    /// Its positions need a date, which an override gives.
+    UnknownDate(String),
     Other(String),
 }
 
@@ -213,6 +247,71 @@ pub fn group_chronologically(
             current = Some((&recording.key, recording.stop_seconds));
         }
     }
+    Grouping {
+        groups,
+        refused_joins,
+    }
+}
+
+/// Group `recordings` as [`group_chronologically`] does, each stream on
+/// its own, so that recordings of different `streams` are never one output:
+/// the channels of a GSSI file, recorded side by side (#533, #537), while
+/// the same channel of consecutive files merges in time. `streams` has one
+/// entry per recording, and `edits` index `recordings`. The outputs are in
+/// the order their first recording started.
+pub fn group_each_stream<T: PartialEq + Copy>(
+    recordings: &[GroupingRecording],
+    streams: &[T],
+    threshold: Option<f64>,
+    edits: &GroupingEdits,
+) -> Grouping {
+    let mut distinct: Vec<T> = Vec::new();
+    for stream in streams {
+        if !distinct.contains(stream) {
+            distinct.push(*stream);
+        }
+    }
+    let mut groups = Vec::new();
+    let mut refused_joins = Vec::new();
+    for stream in distinct {
+        let indices: Vec<usize> = (0..recordings.len())
+            .filter(|&i| streams[i] == stream)
+            .collect();
+        let these: Vec<GroupingRecording> =
+            indices.iter().map(|&i| recordings[i].clone()).collect();
+        let local = |set: &HashSet<usize>| -> HashSet<usize> {
+            indices
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| set.contains(i))
+                .map(|(local, _)| local)
+                .collect()
+        };
+        let grouping = group_chronologically(
+            &these,
+            threshold,
+            &GroupingEdits {
+                joins: local(&edits.joins),
+                splits: local(&edits.splits),
+            },
+        );
+        refused_joins.extend(
+            grouping
+                .refused_joins
+                .into_iter()
+                .map(|(local, reason)| (indices[local], reason)),
+        );
+        groups.extend(grouping.groups.into_iter().map(|group| Grouped {
+            members: group.members.iter().map(|&m| indices[m]).collect(),
+            split: group.split,
+        }));
+    }
+    // Stable, so one stream keeps the order grouping gave it.
+    groups.sort_by(|a, b| {
+        recordings[a.members[0]]
+            .start_seconds
+            .total_cmp(&recordings[b.members[0]].start_seconds)
+    });
     Grouping {
         groups,
         refused_joins,

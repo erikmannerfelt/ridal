@@ -408,6 +408,7 @@ pub fn build_processed_gpr_with_progress(
         options.override_antenna_mhz,
         options.override_antenna_separation,
         options.override_date,
+        None,
     )?;
     let mut gpr = input::load_gpr(
         &first_resolved,
@@ -427,6 +428,7 @@ pub fn build_processed_gpr_with_progress(
             options.override_antenna_mhz,
             options.override_antenna_separation,
             options.override_date,
+            None,
         )?;
         let other = input::load_gpr(&resolved, meta, location, options.override_date)?;
         if !options.quiet {

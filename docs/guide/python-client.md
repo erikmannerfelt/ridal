@@ -264,18 +264,37 @@ for problem in plan.problems:
     print(problem.kind, problem.message)
 
 if plan.ok:
-    headers = {recording.key: recording.name for recording in plan.recordings}
-    by_name = {file.name: files for files in stored for file in files}
+    planned = {recording.key: recording for recording in plan.recordings}
+    by_name = {file.name: file for files in stored for file in files}
     for output in plan.outputs:
+        recordings = [planned[key] for key in output.recordings]
         client.set_source(
             output.radargram_id,
-            [by_name[headers[key]] for key in output.recordings],
+            [[by_name[name] for name in recording.files] for recording in recordings],
+            parts=[recording.part for recording in recordings],
+            antenna_mhz=output.antenna_mhz_override,
+            antenna_separation=output.antenna_separation_override,
+            sampling_mhz=output.sampling_mhz_override,
+            date=output.date,
             names=SourceNames(output.display_name, "Drønbreen"),
             only_new=True,
         )
 ```
 
-Recordings are named by `key`, a hash of their files' contents, in
+What the files do not say is given to the plan and carried by each output
+to its source: frequencies by antenna (`antennas`, with `sampling_mhz` for
+VIRL files, which do not record it), and one `date` for every IceRadar,
+pulseEKKO and VIRL recording. A recording that cannot be read without one
+says which in `missing`.
+
+Each line of an IceRadar file and each channel of a GSSI file that holds
+several is a recording of its own, with its `part` saying which; a source
+made from it is given that part in `parts`. The channels of one file are
+never merged with each other, and `{line}` and `{channel}` in the patterns
+say which each output is.
+
+Recordings are named by `key`, a hash of their files' contents (and, for a
+line or a channel, which one), in
 `excluded`, `joins` (keep with the one before, whatever the gap), `splits`,
 and in `ids` and `display_names`, which type over what the patterns give
 for the output that recording starts. `only_new` refuses an id that got raw

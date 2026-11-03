@@ -1573,6 +1573,7 @@ fn info_command(args: InfoArgs) -> Result<(), String> {
         override_antenna_separation: args.recording.override_antenna_separation,
         override_date: args.recording.override_date,
         channel: args.recording.channel,
+        parts: None,
         sidecar,
     };
     let records = crate::inspect::inspect(params).map_err(|e| format!("{e:?}"))?;

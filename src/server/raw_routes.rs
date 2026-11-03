@@ -270,7 +270,9 @@ fn source_zip_entries(
 ) -> Result<Vec<(String, ZipContent)>, ApiError> {
     let merged = source.bundles.len() > 1;
     let mut entries = Vec::new();
-    for (index, bundle) in source.bundles.iter().enumerate() {
+    // As the recordings are read: with the source's sampling frequency and
+    // date in each one's sidecar.
+    for (index, bundle) in source.bundles_to_read().iter().enumerate() {
         let in_zip = |name: &str| {
             if merged {
                 format!("{id}/{}/{name}", index + 1)
@@ -579,6 +581,13 @@ pub struct SourceBody {
     /// is not. A recording given without one keeps the overrides it had,
     /// when it is made of the same files; an empty sidecar removes them.
     pub recordings: Vec<Vec<NamedFile>>,
+    /// Which part of its file each recording is, in the order of
+    /// `recordings`: a line of an IceRadar file or a channel of a GSSI file
+    /// that holds several, as the ingest plan's recordings give it. Empty
+    /// (the default) reads every recording as its whole file, which a file
+    /// of several lines or channels cannot be.
+    #[serde(default)]
+    pub parts: Vec<crate::formats::Part>,
     /// An EPSG code, such as `EPSG:32633`. Without it, the positions go in
     /// the UTM zone that suits them best.
     #[serde(default)]
@@ -592,6 +601,15 @@ pub struct SourceBody {
     /// The antenna separation in m, overriding what the files say.
     #[serde(default)]
     pub antenna_separation: Option<f32>,
+    /// The sampling frequency in MHz, overriding what the files say: needed
+    /// for VIRL files, which do not record it.
+    #[serde(default)]
+    pub sampling_mhz: Option<f32>,
+    /// The UTC date, `YYYY-MM-DD`, of recordings whose positions record
+    /// only a time of day (IceRadar, pulseEKKO and VIRL), overriding the
+    /// date their files give: needed for VIRL files, which give none.
+    #[serde(default)]
+    pub date: Option<String>,
     /// What to call the radargram until it is served (#382 phase 7).
     /// Absent keeps what the source had; `null` removes it.
     #[serde(default, deserialize_with = "super::preference_routes::present")]
@@ -664,8 +682,9 @@ fn source_crs(text: &str) -> Result<String, ApiError> {
 /// before anything is saved, and what its header and positions say is in the
 /// answer. Recordings that cannot be merged into one radargram (different CRS,
 /// antenna frequency, time window or antenna separation) are refused. Every
-/// draft and batch made from the source uses its CRS, DEM and antenna
-/// overrides, and changing them makes what was processed without them `stale`.
+/// draft and batch made from the source uses its CRS, DEM, antenna overrides,
+/// sampling frequency and date, and changing them makes what was processed
+/// without them `stale`.
 /// Takes `If-Match`.
 #[utoipa::path(
     put,
@@ -674,7 +693,7 @@ fn source_crs(text: &str) -> Result<String, ApiError> {
     request_body = SourceBody,
     responses(
         (status = 200, description = "The source as saved, with its `ETag`.", body = SourceView),
-        (status = 400, description = "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, or an antenna frequency nothing gives), `invalid_antenna_mhz` or `invalid_antenna_separation`.", body = ErrorBody),
+        (status = 400, description = "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz` or `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates).", body = ErrorBody),
         (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
     ),
     extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
@@ -707,6 +726,12 @@ pub async fn put_source(
         "invalid_antenna_separation",
         "antenna separation (m)",
     )?;
+    let sampling_mhz = antenna_override(
+        body.sampling_mhz,
+        "invalid_sampling_mhz",
+        "sampling frequency (MHz)",
+    )?;
+    let date = body.date.as_deref().map(source_date).transpose()?;
     // Compared against `expected` with the rest when the new one is written.
     let previous = raw::read_source(project.documents(), &id)
         .or_internal("source_read_failed")?
@@ -728,36 +753,44 @@ pub async fn put_source(
     // Reading recordings parses headers and projects positions, which runs
     // PROJ: off the async executor.
     let result = tokio::task::spawn_blocking(move || {
-        let work = raw::incoming_path(&data_dir)?.with_extension("source");
-        let outcome = (|| -> Result<_, String> {
-            let bundles = raw::bundles_of(&data_dir, &body.recordings, &work, &kept)?;
-            let records = read_recordings(
-                &data_dir,
-                &bundles,
-                &work.join("read"),
-                crs.clone(),
-                dem.as_ref(),
+        let work = raw::incoming_path(&data_dir)
+            .map_err(Unreadable::other)?
+            .with_extension("source");
+        let outcome = (|| -> Result<_, Unreadable> {
+            let bundles = raw::bundles_of(&data_dir, &body.recordings, &body.parts, &work, &kept)
+                .map_err(Unreadable::other)?;
+            if let (Some(_), Some(bundle)) =
+                (date, bundles.iter().find(|b| !raw::bundle_takes_date(b)))
+            {
+                return Err(Unreadable {
+                    code: "invalid_date",
+                    message: format!(
+                        "A date is for recordings whose positions record only the time of \
+                         day (IceRadar, pulseEKKO and VIRL), but {} gives its own dates. \
+                         Leave the date empty.",
+                        bundle.files[0].file.name
+                    ),
+                });
+            }
+            let source = Source {
+                bundles,
+                crs: crs.clone(),
+                dem,
                 antenna_mhz,
                 antenna_separation,
-            )?;
-            Ok((
-                Source {
-                    bundles,
-                    crs: crs.clone(),
-                    dem,
-                    antenna_mhz,
-                    antenna_separation,
-                    names,
-                },
-                records,
-            ))
+                sampling_mhz,
+                date,
+                names,
+            };
+            let records = read_recordings(&data_dir, &source, &work.join("read"))?;
+            Ok((source, records))
         })();
         let _ = std::fs::remove_dir_all(&work);
         outcome
     })
     .await
     .or_internal("source_failed")?;
-    let (source, recordings) = result.map_err(|e| ApiError::bad_request("source_unreadable", e))?;
+    let (source, recordings) = result.map_err(ApiError::from)?;
     // Refused now rather than when the first draft fails to merge them.
     crate::inspect::check_mergeable(&recordings)
         .map_err(|e| ApiError::bad_request("recordings_not_mergeable", e))?;
@@ -776,45 +809,101 @@ pub async fn put_source(
         .into_response())
 }
 
-/// What each of `recordings` says, read as a draft would read them: with
-/// `crs`, `dem` and the antenna overrides, so a DEM that does not cover
-/// them is refused here, and a frequency the files cannot give is accepted
-/// when the source gives it. Lays them out under `work`, which the caller
-/// removes.
+/// Why a source's recordings cannot be read: `source_unreadable`, or what
+/// the source has to give for them to be, which a person can then be asked
+/// for where they give it.
+#[derive(Debug)]
+pub(super) struct Unreadable {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl Unreadable {
+    pub fn other(message: String) -> Self {
+        Self {
+            code: "source_unreadable",
+            message,
+        }
+    }
+}
+
+impl From<Unreadable> for ApiError {
+    fn from(unreadable: Unreadable) -> Self {
+        ApiError::bad_request(unreadable.code, unreadable.message)
+    }
+}
+
+/// What each of `source`'s recordings says, read as a draft would read
+/// them: with its CRS, DEM and overrides, so a DEM that does not cover them
+/// is refused here, and a value the files cannot give is accepted when the
+/// source gives it. Lays them out under `work`, which the caller removes.
 pub(super) fn read_recordings(
     data_dir: &std::path::Path,
-    recordings: &[crate::recipe::Bundle],
+    source: &Source,
     work: &std::path::Path,
-    crs: Option<String>,
-    dem: Option<&raw::SourceDem>,
-    antenna_mhz: Option<f32>,
-    antenna_separation: Option<f32>,
-) -> Result<Vec<crate::inspect::InfoRecord>, String> {
-    let headers: Vec<std::path::PathBuf> = raw::materialize_bundles(data_dir, recordings, work)?
-        .into_iter()
-        .map(|resolved| resolved.header)
-        .collect();
+) -> Result<Vec<crate::inspect::InfoRecord>, Unreadable> {
+    let (headers, parts): (Vec<std::path::PathBuf>, Vec<crate::formats::Part>) =
+        raw::materialize_bundles(data_dir, &source.bundles_to_read(), work)
+            .map_err(Unreadable::other)?
+            .into_iter()
+            .map(|resolved| (resolved.header, resolved.part))
+            .unzip();
+    let dem = source.dem.as_ref();
     let records = crate::inspect::inspect(crate::inspect::InfoParams {
         filepaths: headers,
         dem_path: dem.and_then(|d| raw::file_path(data_dir, &d.file.blake3)),
         cor_path: None,
         medium_velocity: 0.168,
-        crs,
-        override_antenna_mhz: antenna_mhz,
-        override_antenna_separation: antenna_separation,
+        crs: source.crs.clone(),
+        override_antenna_mhz: source.antenna_mhz,
+        override_antenna_separation: source.antenna_separation,
         override_date: None,
-        // A source does not record a part yet, so a file of several
-        // channels is refused here, listing them.
         channel: None,
-        // The one `materialize_bundles` wrote from the bundle's overrides.
+        // The line or channel each bundle is; a file of several read as
+        // a whole is refused here, listing them.
+        parts: Some(parts),
+        // The one `materialize_bundles` wrote from the bundle's overrides,
+        // with the source's sampling frequency and date.
         sidecar: crate::sidecar::Choice::Beside,
     })
-    .map_err(|e| match dem {
-        Some(dem) => format!(
-            "the recordings cannot be read with the DEM '{}': {e}",
-            dem.id
-        ),
-        None => format!("the recordings cannot be read: {e}"),
+    .map_err(|e| {
+        // What the files do not say: asked of the source by its field,
+        // not by the command-line option the reader's message names.
+        if let Some(unknown) = e.downcast_ref::<crate::io::UnknownAntennaFrequency>() {
+            return Unreadable {
+                code: "antenna_frequency_unknown",
+                message: format!(
+                    "The recordings' antenna, '{}', does not say its frequency. Give the \
+                     antenna frequency in MHz (antenna_mhz).",
+                    unknown.antenna
+                ),
+            };
+        }
+        if e.is::<crate::io::UnknownSamplingFrequency>() {
+            return Unreadable {
+                code: "sampling_frequency_unknown",
+                message: "The recordings' files do not record their sampling frequency, as \
+                          VIRL files do not. Give the sampling frequency in MHz \
+                          (sampling_mhz)."
+                    .to_string(),
+            };
+        }
+        if e.is::<crate::io::UnknownDate>() {
+            return Unreadable {
+                code: "date_unknown",
+                message: "The recordings' positions record only the time of day, and their \
+                          files give no date, as VIRL files do not. Give the UTC date of the \
+                          recordings (date, as YYYY-MM-DD)."
+                    .to_string(),
+            };
+        }
+        Unreadable::other(match dem {
+            Some(dem) => format!(
+                "the recordings cannot be read with the DEM '{}': {e}",
+                dem.id
+            ),
+            None => format!("the recordings cannot be read: {e}"),
+        })
     })?;
     Ok(records
         .into_iter()
@@ -823,6 +912,16 @@ pub(super) fn read_recordings(
             crate::inspect::Inspected::Processed(_) => None,
         })
         .collect())
+}
+
+/// A source's date, `YYYY-MM-DD`.
+pub(super) fn source_date(text: &str) -> Result<chrono::NaiveDate, ApiError> {
+    chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d").map_err(|_| {
+        ApiError::bad_request(
+            "invalid_date",
+            format!("'{text}' is not a date; write it as YYYY-MM-DD, such as 2014-04-05."),
+        )
+    })
 }
 
 /// Write `source`, checking first that the DEM it links to, if any, still

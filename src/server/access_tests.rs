@@ -7299,6 +7299,156 @@ fn unzip(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
+/// #537: a source names the channel of a GSSI file of several it is made
+/// from, and is read as that channel.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_source_is_made_of_one_channel_of_a_file_of_several() {
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    let scratch = tempfile::tempdir().unwrap();
+    let dzt = crate::io::test_dzt::write_two_channel_recording(scratch.path(), "two");
+    let mut files = Vec::new();
+    for path in [dzt.clone(), dzt.with_extension("DZG")] {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let stored = post_bytes(
+            &app,
+            &format!("/api/v1/raw?filename={name}"),
+            std::fs::read(&path).unwrap(),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(stored.status, StatusCode::CREATED, "{}", stored.text);
+        files.push(json!({"name": name, "blake3": stored.body["blake3"]}));
+    }
+    let set = |body: Value| {
+        let app = app.clone();
+        let erik = erik.clone();
+        async move { put(&app, "/api/v1/sources/ours", &body, Some(&erik)).await }
+    };
+
+    // As a whole file, it is refused, naming its channels.
+    let whole = set(json!({"recordings": [files]})).await;
+    assert_eq!(whole.status, StatusCode::BAD_REQUEST, "{}", whole.text);
+    assert!(whole.text.contains("holds 2 channels"), "{}", whole.text);
+    let missing =
+        set(json!({"recordings": [files], "parts": [{"line": null, "channel": 3}]})).await;
+    assert_eq!(missing.status, StatusCode::BAD_REQUEST, "{}", missing.text);
+    assert!(
+        missing.text.contains("has no channel 3"),
+        "{}",
+        missing.text
+    );
+
+    let second = set(json!({"recordings": [files], "parts": [{"line": null, "channel": 2}]})).await;
+    assert_eq!(second.status, StatusCode::OK, "{}", second.text);
+    assert_eq!(second.body["source"]["bundles"][0]["part"]["channel"], 2);
+    let window = &second.body["recordings"][0]["metadata"];
+    let first = set(json!({"recordings": [files], "parts": [{"channel": 1}]})).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text);
+    assert_ne!(&first.body["recordings"][0]["metadata"], window);
+
+    // Kept: what the source says is what a draft reads.
+    let read = get(&app, "/api/v1/sources/ours", Some(&erik)).await;
+    assert_eq!(read.body["source"]["bundles"][0]["part"]["channel"], 1);
+}
+
+/// A VIRL file records neither its sampling frequency nor a date: a source
+/// gives both, and is refused with a code naming each until it does.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_source_gives_the_sampling_frequency_and_date_its_files_do_not() {
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    let stored = post_bytes(
+        &app,
+        "/api/v1/raw?filename=030_0001.DSR",
+        crate::io::test_dsr::simple(),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(stored.status, StatusCode::CREATED, "{}", stored.text);
+    let files = json!([{"name": "030_0001.DSR", "blake3": stored.body["blake3"]}]);
+    let set = |extra: Value| {
+        let app = app.clone();
+        let erik = erik.clone();
+        let mut body = json!({"recordings": [files.clone()], "antenna_mhz": 25});
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        async move { put(&app, "/api/v1/sources/virl", &body, Some(&erik)).await }
+    };
+
+    let refused = set(json!({})).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "sampling_frequency_unknown");
+    assert!(refused.text.contains("sampling_mhz"), "{}", refused.text);
+    let undated = set(json!({"sampling_mhz": 200})).await;
+    assert_eq!(
+        undated.body["error"]["code"], "date_unknown",
+        "{}",
+        undated.text
+    );
+    let bad = set(json!({"sampling_mhz": 200, "date": "5.4.2014"})).await;
+    assert_eq!(bad.body["error"]["code"], "invalid_date", "{}", bad.text);
+    let zero = set(json!({"sampling_mhz": 0, "date": "2014-04-05"})).await;
+    assert_eq!(
+        zero.body["error"]["code"], "invalid_sampling_mhz",
+        "{}",
+        zero.text
+    );
+
+    let saved = set(json!({"sampling_mhz": 200, "date": "2014-04-05"})).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["source"]["sampling_mhz"], 200.);
+    assert_eq!(saved.body["source"]["date"], "2014-04-05");
+    let read = &saved.body["recordings"][0];
+    assert_eq!(read["metadata"]["sampling_frequency_mhz"], 200.);
+    assert!(
+        read["location"]["start_time"]
+            .as_str()
+            .unwrap()
+            .starts_with("2014-04-05T12:00"),
+        "{read}"
+    );
+    // Kept as the source's, not written into the recording's own values.
+    assert_eq!(saved.body["source"]["bundles"][0]["overrides"], Value::Null);
+    // And the zip holds the recording as it is read.
+    let (status, _, bytes) = download_bytes(&app, "/api/v1/sources/virl/raw.zip", &erik).await;
+    assert_eq!(status, StatusCode::OK);
+    let zipped = unzip(&bytes);
+    let sidecar = String::from_utf8(zipped["virl/030_0001.ridal.toml"].clone()).unwrap();
+    assert!(sidecar.contains("sampling_mhz = 200"), "{sidecar}");
+    assert!(sidecar.contains("2014-04-05"), "{sidecar}");
+
+    // A date is refused for recordings that give their own.
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    let ramac = put(
+        &app,
+        "/api/v1/sources/ramac",
+        &json!({"recordings": [recording], "date": "2025-03-27"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        ramac.body["error"]["code"], "invalid_date",
+        "{}",
+        ramac.text
+    );
+}
+
 /// #527: a sidecar uploaded with a recording is kept as its values, read
 /// with the recording, kept when the source is saved again without it, and
 /// written back beside the recording in the raw data's zip.
@@ -7987,6 +8137,7 @@ fn drafting_app_processing(
 fn prepare_draft(prepared: &StdPath, id: &str) {
     let spec = crate::job::JobSpec {
         inputs: vec!["assets/mala/dronbreen-20250327-DAT_0066_A1.rad".into()],
+        parts: None,
         output: prepared.join(format!("{id}.nc")),
         steps: vec!["subset(0 100 0 200)".to_string()],
         medium_velocity: 0.168,
@@ -8594,8 +8745,8 @@ async fn a_source_s_antenna_frequency_reads_a_recording_whose_header_cannot_say(
     )
     .await;
     assert_eq!(unread.status, StatusCode::BAD_REQUEST, "{}", unread.text);
-    assert_eq!(unread.body["error"]["code"], "source_unreadable");
-    assert!(unread.text.contains("antenna"), "{}", unread.text);
+    assert_eq!(unread.body["error"]["code"], "antenna_frequency_unknown");
+    assert!(unread.text.contains("antenna_mhz"), "{}", unread.text);
 
     for (body, code) in [
         (json!({"antenna_mhz": 0.0}), "invalid_antenna_mhz"),

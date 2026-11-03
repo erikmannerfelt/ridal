@@ -770,6 +770,7 @@ pub(crate) mod tests {
             priority,
             spec: JobSpec {
                 inputs: vec![],
+                parts: None,
                 output: PathBuf::from(format!("{key}.nc")),
                 steps: vec![],
                 medium_velocity: 0.168,

@@ -170,6 +170,20 @@ pub fn format_info(kind: FormatKind) -> FormatInfo {
     }
 }
 
+/// The format `ridal formats` lists as `name` (`ramac`, ...), as a recipe's
+/// bundle records it.
+pub fn kind_named(name: &str) -> Option<FormatKind> {
+    [
+        FormatKind::Ramac,
+        FormatKind::PulseEkko,
+        FormatKind::Gssi,
+        FormatKind::IceRadar,
+        FormatKind::Virl,
+    ]
+    .into_iter()
+    .find(|kind| format_info(*kind).name == name)
+}
+
 /// The format's name as its maker writes it, for messages.
 pub fn display_name(kind: FormatKind) -> &'static str {
     match kind {
@@ -574,6 +588,85 @@ fn describe_channels(recording: &ResolvedInput, channels: &[crate::io::GssiChann
     )
 }
 
+/// One recording a file holds, as [`recordings_of`] lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileRecording {
+    /// The whole file, or the line or channel read.
+    pub part: Part,
+    /// The IceRadar line it is, for `{line}`: the part's, or the only line
+    /// of a file of one, which is read as the whole file.
+    pub line: Option<u32>,
+}
+
+/// The recordings the file of `resolved` holds, in order: each line of an
+/// IceRadar file of several, each channel of a GSSI file of several, or
+/// else the whole file, as `batch-process` makes each its own output.
+///
+/// A file that cannot be listed is one whole recording, so the error is
+/// the reader's, with its context, when it is read.
+pub fn recordings_of(resolved: &ResolvedInput) -> Result<Vec<FileRecording>, String> {
+    let whole = FileRecording {
+        part: Part::default(),
+        line: None,
+    };
+    Ok(match resolved.kind {
+        FormatKind::IceRadar => {
+            let lines = crate::io::iceradar_lines(&resolved.header)
+                .map_err(|e| format!("{}: {e}", resolved.input.display()))?;
+            match &lines[..] {
+                // Read as the whole file, as `ridal process` reads it.
+                [(only, _)] => vec![FileRecording {
+                    line: Some(*only),
+                    ..whole
+                }],
+                _ => lines
+                    .iter()
+                    .map(|(line, _)| FileRecording {
+                        part: Part {
+                            line: Some(*line),
+                            ..Default::default()
+                        },
+                        line: Some(*line),
+                    })
+                    .collect(),
+            }
+        }
+        FormatKind::Gssi => {
+            let channels = crate::io::gssi_channels(&resolved.header)
+                .map_err(|e| format!("{}: {e}", resolved.input.display()))?;
+            match channels.len() {
+                1 => vec![whole],
+                _ => channels
+                    .iter()
+                    .map(|c| FileRecording {
+                        part: Part {
+                            channel: Some(c.number),
+                            ..Default::default()
+                        },
+                        line: None,
+                    })
+                    .collect(),
+            }
+        }
+        FormatKind::Ramac | FormatKind::PulseEkko | FormatKind::Virl => vec![whole],
+    })
+}
+
+/// `resolved` as `part` of it, refused when the file has no such part: a
+/// line of anything but an IceRadar file or a line it does not have, and
+/// likewise a channel. The whole file is not checked here; reading a file
+/// of several lines or channels as a whole is refused when it is read.
+pub fn with_part(resolved: ResolvedInput, part: Part) -> Result<ResolvedInput, String> {
+    let mut chosen = match (part.line, part.channel) {
+        (Some(_), Some(_)) => return Err("a part is a line or a channel, not both".to_string()),
+        (Some(line), None) => with_lines(vec![resolved], Some(&LineSelection::Some(vec![line])))?,
+        (None, Some(channel)) => with_channel(vec![resolved], Some(channel))?,
+        (None, None) => return Ok(resolved),
+    };
+    // One file and one part of it: one recording.
+    Ok(chosen.remove(0))
+}
+
 /// A recording's files from any one of them, with the format's own
 /// positions file.
 fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
@@ -898,5 +991,103 @@ mod tests {
         assert_eq!(resolved.input, sidecar);
         assert!(resolve_input(Path::new("L1.toml")).is_err());
         assert!(resolve_input(Path::new(".ridal.toml")).is_err());
+    }
+
+    fn channel(n: u32) -> Part {
+        Part {
+            channel: Some(n),
+            ..Default::default()
+        }
+    }
+
+    fn line(n: u32) -> Part {
+        Part {
+            line: Some(n),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_file_of_several_channels_holds_a_recording_per_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = crate::io::test_dzt::write_two_channel_recording(dir.path(), "two");
+        let resolved = resolve_input(&dzt).unwrap();
+        let parts: Vec<Part> = recordings_of(&resolved)
+            .unwrap()
+            .iter()
+            .map(|r| r.part)
+            .collect();
+        assert_eq!(parts, [channel(1), channel(2)]);
+
+        assert_eq!(
+            with_part(resolved.clone(), channel(2)).unwrap().part,
+            channel(2)
+        );
+        let missing = with_part(resolved.clone(), channel(3)).unwrap_err();
+        assert!(missing.contains("has no channel 3"), "{missing}");
+        assert!(with_part(resolved.clone(), line(0)).is_err());
+        let both = Part {
+            line: Some(0),
+            channel: Some(1),
+        };
+        assert!(with_part(resolved, both).is_err());
+
+        // Every other format's file is one recording.
+        let rad =
+            resolve_input(Path::new("assets/mala/dronbreen-20250327-DAT_0066_A1.rad")).unwrap();
+        let whole = recordings_of(&rad).unwrap();
+        assert_eq!(whole.len(), 1);
+        assert!(whole[0].part.is_whole());
+        assert!(with_part(rad.clone(), Part::default()).is_ok());
+        assert!(with_part(rad, channel(1)).is_err());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn a_file_of_several_lines_holds_a_recording_per_line() {
+        use crate::io::iceradar::tests::{trace, write_fixture};
+        use crate::io::iceradar::Layout;
+        let dir = tempfile::tempdir().unwrap();
+        let line_of = |time| vec![trace(40, 256, Some(time))];
+        let two = dir.path().join("two.h5");
+        write_fixture(
+            &two,
+            Layout::V1,
+            &[line_of("103045.6"), line_of("103050.0")],
+            "6/18/2024 1:30:00 PM",
+        );
+        let resolved = resolve_input(&two).unwrap();
+        let listed = recordings_of(&resolved).unwrap();
+        assert_eq!(
+            listed,
+            [
+                FileRecording {
+                    part: line(0),
+                    line: Some(0)
+                },
+                FileRecording {
+                    part: line(1),
+                    line: Some(1)
+                },
+            ]
+        );
+        assert_eq!(with_part(resolved.clone(), line(1)).unwrap().part, line(1));
+        assert!(with_part(resolved, line(2)).is_err());
+
+        // A file of one line is read whole, and still says which line it is.
+        let one = dir.path().join("one.h5");
+        write_fixture(
+            &one,
+            Layout::V1,
+            &[line_of("103045.6")],
+            "6/18/2024 1:30:00 PM",
+        );
+        assert_eq!(
+            recordings_of(&resolve_input(&one).unwrap()).unwrap(),
+            [FileRecording {
+                part: Part::default(),
+                line: Some(0)
+            }]
+        );
     }
 }

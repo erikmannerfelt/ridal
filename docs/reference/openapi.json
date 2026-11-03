@@ -9349,7 +9349,7 @@
         "tags": [
           "Raw data"
         ],
-        "summary": "Set or switch what the radargram is made from. Every recording is read\nbefore anything is saved, and what its header and positions say is in the\nanswer. Recordings that cannot be merged into one radargram (different CRS,\nantenna frequency, time window or antenna separation) are refused. Every\ndraft and batch made from the source uses its CRS, DEM and antenna\noverrides, and changing them makes what was processed without them `stale`.\nTakes `If-Match`.",
+        "summary": "Set or switch what the radargram is made from. Every recording is read\nbefore anything is saved, and what its header and positions say is in the\nanswer. Recordings that cannot be merged into one radargram (different CRS,\nantenna frequency, time window or antenna separation) are refused. Every\ndraft and batch made from the source uses its CRS, DEM, antenna overrides,\nsampling frequency and date, and changing them makes what was processed\nwithout them `stale`.\nTakes `If-Match`.",
         "operationId": "put_source",
         "requestBody": {
           "content": {
@@ -9373,7 +9373,7 @@
             }
           },
           "400": {
-            "description": "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, or an antenna frequency nothing gives), `invalid_antenna_mhz` or `invalid_antenna_separation`.",
+            "description": "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz` or `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11045,6 +11045,14 @@
             ],
             "format": "float",
             "description": "m."
+          },
+          "sampling_mhz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The sampling frequency in MHz, for recordings whose files do not\nrecord it (VIRL); others keep their own."
           }
         }
       },
@@ -16008,7 +16016,7 @@
         "properties": {
           "kind": {
             "type": "string",
-            "description": "`invalid_pattern`, `invalid_group`, `invalid_id`, `id_collision`,\n`id_taken`, `join_refused`, `unreadable`, or\n`antenna_frequency_unknown`: a recording whose antenna gives no\nfrequency, kept out of the plan until `antennas` gives one."
+            "description": "`invalid_pattern`, `invalid_group`, `invalid_id`, `id_collision`,\n`id_taken`, `join_refused`, `unreadable`, or one of three for a\nrecording kept out of the plan until the request gives what its\nfiles do not say: `antenna_frequency_unknown` and\n`sampling_frequency_unknown` (in `antennas`), and `date_unknown`\n(`date`)."
           },
           "message": {
             "type": "string"
@@ -16175,6 +16183,13 @@
               "type": "string"
             }
           },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The UTC date, `YYYY-MM-DD`, of every recording whose positions are\nread with one (IceRadar, pulseEKKO and VIRL; not one with a\n`.coords.csv`), in place of the date its files give, if any. One for\nthe whole plan, and carried to the sources made."
+          },
           "include_tracks": {
             "type": "boolean",
             "description": "Whether to send each recording's track. A page that has them\nalready may leave them out of a re-plan."
@@ -16191,12 +16206,14 @@
           "separation_max",
           "mhz_override",
           "separation_override",
+          "sampling_needed",
+          "sampling_override",
           "recordings"
         ],
         "properties": {
           "antenna": {
             "type": "string",
-            "description": "As the headers name it, which `antennas` in the request is keyed by."
+            "description": "As the headers name it, which `antennas` in the request is keyed by;\nfor a channel of a GSSI file of several, with the channel\n(`300/800D, channel 2`), since each channel is an antenna of its own."
           },
           "antenna_mhz": {
             "type": [
@@ -16236,6 +16253,17 @@
             ],
             "format": "float"
           },
+          "sampling_needed": {
+            "type": "boolean",
+            "description": "Whether its recordings' files do not record their sampling\nfrequency (VIRL), which `sampling_mhz` in `antennas` then gives."
+          },
+          "sampling_override": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
           "recordings": {
             "type": "integer",
             "description": "How many recordings have it.",
@@ -16257,6 +16285,8 @@
           "antenna_mhz",
           "antenna_mhz_override",
           "antenna_separation_override",
+          "sampling_mhz_override",
+          "date",
           "split"
         ],
         "properties": {
@@ -16317,6 +16347,21 @@
             ],
             "format": "float"
           },
+          "sampling_mhz_override": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "What its source is to say of the sampling frequency: the override of\nan antenna of its recordings that do not record it."
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What its source is to say of the date: the request's, when any of\nits recordings is read with one."
+          },
           "split": {
             "oneOf": [
               {
@@ -16336,6 +16381,7 @@
           "key",
           "name",
           "files",
+          "part",
           "start_time",
           "stop_time",
           "antenna",
@@ -16344,22 +16390,27 @@
           "track",
           "output",
           "excluded",
-          "unreadable"
+          "unreadable",
+          "missing"
         ],
         "properties": {
           "key": {
             "type": "string",
-            "description": "A hash of its files' contents ([`recording_key`])."
+            "description": "A hash of its files' contents ([`recording_key`]), and which line or\nchannel it is when its file holds several (`<hash>-line2`,\n`<hash>-ch1`)."
           },
           "name": {
             "type": "string",
-            "description": "Its header file's name."
+            "description": "Its header file's name, and its line or channel when the file holds\nseveral: `DAT_0001.h5, line 2`."
           },
           "files": {
             "type": "array",
             "items": {
               "type": "string"
             }
+          },
+          "part": {
+            "$ref": "#/components/schemas/Part",
+            "description": "The part of its file it is, which its source is to be given in\n`parts`: a line of an IceRadar file or a channel of a GSSI file that\nholds several (each its own recording here), or the whole file."
           },
           "start_time": {
             "type": [
@@ -16424,6 +16475,13 @@
               "null"
             ],
             "description": "Why it cannot be read, when it cannot."
+          },
+          "missing": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it cannot be read without, which the request can give:\n`antenna_frequency` and `sampling_frequency` (in `antennas`, for its\n`antenna`) or `date`. `null` when it is read, or cannot be for\nanother reason."
           }
         }
       },
@@ -17707,6 +17765,8 @@
           "dem",
           "antenna_mhz",
           "antenna_separation",
+          "sampling_mhz",
+          "date",
           "names"
         ],
         "properties": {
@@ -17750,6 +17810,22 @@
             ],
             "format": "float",
             "description": "The distance between the antennas in m, likewise; `None` reads it\nfrom the files."
+          },
+          "sampling_mhz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The digitizer's sampling frequency in MHz, where the files do not\nrecord it (VIRL) or record it wrongly; `None` reads it from the\nfiles, or a recording's sidecar."
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The UTC date of the recordings whose positions record only a time\nof day (IceRadar, pulseEKKO and VIRL, but not one with a\n`.coords.csv`), in place of the date their files give; `None` takes\nit from the files, or a recording's sidecar."
           },
           "names": {
             "oneOf": [
@@ -18991,6 +19067,13 @@
             },
             "description": "The recordings, in merge order, each the files it is made of by name\nand hash, as `POST /api/v1/raw` answered. Which file is the header,\nthe data and the positions is read from the names. A\n`<stem>.ridal.toml` among them is the recording's sidecar: its\noverrides are kept as the bundle's `overrides`, and the file itself\nis not. A recording given without one keeps the overrides it had,\nwhen it is made of the same files; an empty sidecar removes them."
           },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Part"
+            },
+            "description": "Which part of its file each recording is, in the order of\n`recordings`: a line of an IceRadar file or a channel of a GSSI file\nthat holds several, as the ingest plan's recordings give it. Empty\n(the default) reads every recording as its whole file, which a file\nof several lines or channels cannot be."
+          },
           "crs": {
             "type": [
               "string",
@@ -19020,6 +19103,21 @@
             ],
             "format": "float",
             "description": "The antenna separation in m, overriding what the files say."
+          },
+          "sampling_mhz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The sampling frequency in MHz, overriding what the files say: needed\nfor VIRL files, which do not record it."
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The UTC date, `YYYY-MM-DD`, of recordings whose positions record\nonly a time of day (IceRadar, pulseEKKO and VIRL), overriding the\ndate their files give: needed for VIRL files, which give none."
           },
           "names": {
             "oneOf": [

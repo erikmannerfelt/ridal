@@ -392,7 +392,9 @@ pub(super) async fn prepare(
     std::fs::create_dir_all(output_dir).or_internal("job_failed")?;
     let output = output_dir.join(format!("{name}.nc"));
 
-    let recordings = source.bundles.clone();
+    // With the source's sampling frequency and date in each recording's
+    // sidecar, as every read of it has them.
+    let recordings = source.bundles_to_read();
     let (laid_out, dem) = {
         let data_dir = data_dir.clone();
         let work = work.clone();
@@ -423,6 +425,8 @@ pub(super) async fn prepare(
         .saturating_mul(8);
 
     let spec = crate::job::JobSpec {
+        // The line or channel each recording is, as the source records it.
+        parts: Some(laid_out.iter().map(|resolved| resolved.part).collect()),
         inputs: laid_out
             .into_iter()
             .map(|resolved| resolved.header)

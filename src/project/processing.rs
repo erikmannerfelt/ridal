@@ -812,6 +812,8 @@ mod tests {
             dem: None,
             antenna_mhz: None,
             antenna_separation: None,
+            sampling_mhz: None,
+            date: None,
             names: None,
         }
     }

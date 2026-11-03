@@ -1019,11 +1019,19 @@ input resolution treats it as one file would be treated.
   frequency is required, the separation defaults to 0 m with a warning, the
   date is the PC clock's with a warning (or refused at its 2000-01-01 reset
   value), and positions are taken as north and east.
-- **Open: the server.** A server source does not record a part, so
-  reprocessing one of several lines fails asking for `--lines` rather than
-  reading the wrong one, and the ingest planner lists a GSSI file of
-  several channels as unreadable, naming them. `batch-process` treats each
-  part as a recording (below); the ingest planner could do the same.
+- **The server records the part (#537).** A source's `Bundle::part` is
+  the line or channel it is, set from `parts` beside `recordings` in
+  `PUT /sources/{id}` (checked by `formats::with_part`), restored by
+  `raw::materialize_bundles`, and passed to inspection (`InfoParams::parts`)
+  and jobs (`JobSpec::parts`), so every read of a source, reprocessing
+  included, is of the same part. Two bundles may name the same files as
+  different parts. A bundle's sidecar values are its part's (`[lines.N]`,
+  `[channels.N]` resolved by `sidecar::overrides_of`). The ingest planner
+  expands each file with `formats::recordings_of`, as `batch-process`
+  does, keys a part as `<hash>-line<N>`/`<hash>-ch<N>`, and groups with
+  `grouping::group_each_stream`. A channel's antenna is named with its
+  channel (`300/800D, channel 2`), so an antenna override applies to one
+  channel: a dual antenna's channels share a name but not a frequency.
 - **GSSI channels: one per run, never merged.** `formats::with_channel`
   sets `Part::channel` from `--channel` on every GSSI input, where
   `with_lines` expands one input into several: one run reads one channel,
@@ -1040,7 +1048,8 @@ input resolution treats it as one file would be treated.
   `lines` and `channel`: a merge can join line 3 of one file to line 0 of
   the next, which no single `--lines` could say, and the same file appears
   once per line it gives. `group_each_channel` groups each channel in
-  time on its own, and orders the outputs by start: channels of one file
+  time on its own (`grouping::group_each_stream`, shared with the ingest
+  planner), and orders the outputs by start: channels of one file
   share their times, so in one chronological stream they would alternate
   and nothing would merge. Without channels it is the one stream it always
   was. An id pattern gets `{channel}`; a pattern that neither uses it nor a
@@ -1077,6 +1086,28 @@ depth.
   sidecar `date` reach every format that `formats::takes_date`. Nothing is
   defaulted but the separation, which is 0 m with the usual warning, as for
   GSSI and IceRadar.
+- **The server gives them as the source's (#537).** `Source` has
+  `sampling_mhz` and `date` beside the antenna overrides, with the same
+  precedence over a recording's sidecar. They are not run options:
+  `Source::bundles_to_read` writes them into each bundle's sidecar values
+  (the date only where `raw::bundle_takes_date`), which is what
+  `materialize_bundles` lays out for a draft, a check and the raw-data zip,
+  so they reach the reader as a sidecar's would, and the recipe records
+  them in the bundle as it would. `expected_bundles` starts from the same,
+  so changing either makes what is served stale. A date for a source of
+  recordings that give their own is refused. The readers raise
+  `io::UnknownSamplingFrequency` and `io::UnknownDate` as they raise
+  `UnknownAntennaFrequency`, so `read_recordings` answers
+  `antenna_frequency_unknown`, `sampling_frequency_unknown` or
+  `date_unknown` in place of a message that names command-line options,
+  and the GUI points at its box. The ingest planner reads with one plan-wide
+  `date` (only where the format takes one) and re-reads a recording that
+  needs a frequency with its antenna's `mhz` and `sampling_mhz`; the
+  sampling override applies only to files that do not record it, so a
+  typed value cannot rescale a RAMAC recording. A date-less read keeps its
+  antenna (read again from the header alone), so its row and its boxes stay
+  on the page. `load_meta` takes the sampling frequency as an argument
+  for the planner only; the command line still has no option for it.
 - **The record size is found, not assumed.** A file has no header of its
   own: its record size is where `#00002,` starts, at an even sample count
   that divides the file. Only the 112-byte text header is fixed.

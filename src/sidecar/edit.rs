@@ -353,7 +353,7 @@ fn header_values(resolved: &ResolvedInput) -> Overrides {
         sidecar: None,
         ..resolved.clone()
     };
-    let read = |mhz| crate::processing::input::load_meta(&bare, 0.168, mhz, None, None);
+    let read = |mhz| crate::processing::input::load_meta(&bare, 0.168, mhz, None, None, None);
     let (antenna_mhz, meta) = match read(None) {
         Ok(meta) => (Some(meta.antenna_mhz), Some(meta)),
         // IceRadar: no frequency, so any stands in to read the rest.

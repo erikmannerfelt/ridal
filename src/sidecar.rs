@@ -65,7 +65,7 @@ pub struct Overrides {
 
 /// `date` as `YYYY-MM-DD`: a string in JSON, and in TOML either a string
 /// or a local date (`date = 2014-04-05`), which is what one would write.
-mod date_serde {
+pub(crate) mod date_serde {
     use serde::{Deserialize, Deserializer, Serializer};
 
     const FORMAT: &str = "%Y-%m-%d";

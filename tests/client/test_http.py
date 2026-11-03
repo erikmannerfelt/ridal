@@ -629,6 +629,7 @@ def test_an_ingest_plan_sends_every_choice_and_reads_where_each_problem_is() -> 
             id_pattern="line-{freq}MHz",
             ids={"k1": "line-01"},
             antennas={"RTA unshielded": ridal_client.AntennaOverride(mhz=100)},
+            date="2014-04-05",
         )
     (body,) = sent
     assert body["recordings"] == [
@@ -636,7 +637,10 @@ def test_an_ingest_plan_sends_every_choice_and_reads_where_each_problem_is() -> 
     ]
     assert body["joins"] == ["k2"] and body["ids"] == {"k1": "line-01"}
     assert body["include_tracks"] is True
-    assert body["antennas"] == {"RTA unshielded": {"mhz": 100, "separation": None}}
+    assert body["antennas"] == {
+        "RTA unshielded": {"mhz": 100, "separation": None, "sampling_mhz": None}
+    }
+    assert body["date"] == "2014-04-05"
     assert plan.antennas[0].antenna_mhz is None
     assert plan.antennas[0].mhz_override == 100.0
     assert plan.outputs[0].antenna_mhz_override == 100.0
