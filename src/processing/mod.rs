@@ -728,6 +728,27 @@ mod tests {
     }
 
     #[test]
+    fn parts_must_be_one_per_input() {
+        let error = super::build_processed_gpr(super::RunParams {
+            filepaths: vec!["assets/mala/dronbreen-20250327-DAT_0066_A1.rad".into()],
+            output_path: None,
+            track_path: None,
+            render_path: None,
+            radargram_id: None,
+            display_name: None,
+            options: super::ProcessingOptions {
+                quiet: true,
+                parts: Some(vec![Default::default(); 2]),
+                ..Default::default()
+            },
+        })
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(error.contains("2 parts were given for 1 inputs"), "{error}");
+    }
+
+    #[test]
     fn a_channel_is_refused_without_a_gssi_file() {
         let rad = crate::formats::resolve_input(std::path::Path::new("x.rad")).unwrap();
         let error = crate::formats::with_channel(vec![rad.clone()], Some(1)).unwrap_err();

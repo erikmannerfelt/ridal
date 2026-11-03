@@ -2607,6 +2607,34 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_names_each_input_s_line_or_channel() {
+        let part = |line, channel| crate::formats::Part { line, channel };
+        let plan = crate::processing::batch::BatchPlan {
+            merge_threshold_seconds: None,
+            warnings: vec!["Warning: something".to_string()],
+            outputs: vec![crate::processing::batch::PlannedOutput {
+                radargram_id: "x".to_string(),
+                display_name: None,
+                output: PathBuf::from("out/x.nc"),
+                inputs: ["a.h5", "b.h5", "c.DZT"].map(PathBuf::from).to_vec(),
+                parts: vec![
+                    part(Some(3), None),
+                    part(Some(0), None),
+                    part(None, Some(2)),
+                ],
+                split: None,
+            }],
+        };
+        let text = describe_batch_plan(&plan);
+        assert!(text.starts_with("1 output from 3 inputs"), "{text}");
+        assert!(
+            text.contains("  a.h5 (line 3)\n  b.h5 (line 0)\n  c.DZT (channel 2)\n"),
+            "{text}"
+        );
+        assert!(text.ends_with("\nWarning: something\n"), "{text}");
+    }
+
+    #[test]
     #[serial_test::serial(netcdf)]
     fn a_dry_run_processes_nothing() {
         let dir = tempfile::tempdir().unwrap();
