@@ -192,11 +192,14 @@ pub fn load_virl_meta(
     let layout = layout(&bytes, path)?;
     let antenna = "VIRL".to_string();
     let frequency = sampling_mhz.ok_or_else(|| {
-        format!(
-            "VIRL files do not record the sampling frequency. Give it as sampling_mhz in a \
-             <stem>.ridal.toml beside {}, with ridal override {} --sampling-mhz MHZ",
-            path.display(),
-            path.display()
+        super::UnknownSamplingFrequency::new(
+            antenna.as_str(),
+            format!(
+                "VIRL files do not record the sampling frequency. Give it as sampling_mhz in a \
+                 <stem>.ridal.toml beside {}, with ridal override {} --sampling-mhz MHZ",
+                path.display(),
+                path.display()
+            ),
         )
     })?;
     let antenna_mhz = override_antenna_mhz.ok_or_else(|| {
@@ -239,13 +242,13 @@ pub fn load_virl_positions(
     projected_crs: Option<&String>,
 ) -> Result<gpr::GPRLocation, Box<dyn Error>> {
     let date = date.ok_or_else(|| {
-        format!(
+        super::UnknownDate::new(format!(
             "{}'s positions record only the time of day. Give the UTC date as date in a \
              <stem>.ridal.toml beside it (ridal override {} --date YYYY-MM-DD), or with \
              --override-date YYYY-MM-DD (override_date= in Python)",
             path.display(),
             path.display()
-        )
+        ))
     })?;
     let bytes = std::fs::read(path)?;
     let layout = layout(&bytes, path)?;
@@ -320,6 +323,17 @@ pub(crate) mod test_dsr {
             header.extend_from_slice(&(8192 + (n * 10 + sample) as u16).to_le_bytes());
         }
         header
+    }
+
+    /// A file of four traces of 6 samples, a fix a second from 12:00:00
+    /// UTC, for tests outside this module.
+    pub fn simple() -> Vec<u8> {
+        (1..=4)
+            .flat_map(|n| {
+                let sentence = gga(&format!("12000{}", n - 1), 8.5 + 0.1 * n as f64);
+                record(n, &format!("{:05}", 2 * n), &sentence, 6)
+            })
+            .collect()
     }
 }
 

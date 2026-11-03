@@ -19,9 +19,20 @@
     <p>
       <button type="button" id="process-choose">Choose raw files&hellip;</button>
       <input type="file" id="process-files" multiple hidden
-             accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx,.csv,.toml">
+             accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx,.h5,.hdf5,.dsr,.csv,.toml">
     </p>
     <ul id="process-file-list" class="process-files"></ul>
+    {#- A file of several recordings, an IceRadar file of several lines or
+        a GSSI file of several channels, is read as one of them (#537).
+        process.js fills a choice per such file once the files are uploaded
+        and the server has said what each holds. -#}
+    <div id="process-parts" class="process-parts" hidden>
+      <p class="hint">
+        Each line or channel is a radargram of its own: choose the one this
+        radargram is made from. Add the others as radargrams of their own,
+        or all at once with Add raw data in bulk.
+      </p>
+    </div>
     {#- Left empty, the positions go in the project's CRS when it sets one
         (`[processing] crs`), else in the UTM zone that suits them best, as
         `ridal process` does without `--crs`. process.js says which. -#}
@@ -59,9 +70,21 @@
       <input type="number" id="process-antenna-separation" min="0" step="any"
              placeholder="From the files">
     </label>
+    {#- What a VIRL file never records (#537), and a date an IceRadar file
+        with its PC clock reset does not know either. -#}
+    <label>Sampling frequency (MHz)
+      <input type="number" id="process-sampling-mhz" min="0" step="any"
+             placeholder="From the files">
+    </label>
+    <label>Date (UTC)
+      <input type="date" id="process-date" autocomplete="off">
+    </label>
     <p class="hint">
       Only where the files do not say it, or say it wrongly. Empty reads it
-      from the files.
+      from the files. VIRL files record none of the antenna frequency, the
+      sampling frequency and the date, so they need all three. The date is
+      for IceRadar, pulseEKKO and VIRL recordings, whose positions record
+      only the time of day.
     </p>
   </div>
   {#- In both stages: a new radargram can start in a profile, and one being

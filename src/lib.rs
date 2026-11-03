@@ -1606,6 +1606,7 @@ pub mod ridal {
             override_antenna_separation,
             override_date: date_arg(py, "override_date", override_date)?,
             channel: channel_arg(channel)?,
+            parts: None,
             sidecar: sidecar_arg(py, sidecar)?,
         };
         let records = crate::inspect::inspect(params)

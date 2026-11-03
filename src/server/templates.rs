@@ -137,6 +137,44 @@ mod tests {
         }
     }
 
+    /// Every raw-file picker offers every file of every format Ridal reads:
+    /// "All supported types" once left out IceRadar and VIRL (#537).
+    #[test]
+    fn raw_file_pickers_accept_every_format() {
+        for (name, html) in [
+            (
+                "ingest.html.jinja",
+                include_str!("templates/ingest.html.jinja"),
+            ),
+            (
+                "process_dialog.html.jinja",
+                include_str!("templates/process_dialog.html.jinja"),
+            ),
+        ] {
+            let accept = html
+                .split("accept=\"")
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .unwrap_or_else(|| panic!("{name} has no accept list"))
+                .to_ascii_lowercase();
+            let accepted: Vec<&str> = accept.split(',').collect();
+            for format in crate::formats::all_formats() {
+                for extension in [
+                    format.files.header,
+                    format.files.data,
+                    format.files.coordinates,
+                ] {
+                    let extension = extension.to_ascii_lowercase();
+                    assert!(
+                        accepted.contains(&extension.as_str()),
+                        "{name} does not accept {extension} ({})",
+                        format.name
+                    );
+                }
+            }
+        }
+    }
+
     /// A `.warning` box that a script writes into must be a <div> (#248).
     ///
     /// `RIDAL.setMessage` renders a blank-line-separated message as one <p>

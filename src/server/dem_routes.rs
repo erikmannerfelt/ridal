@@ -474,20 +474,21 @@ pub async fn link_dem(
         None => Vec::new(),
         Some(link) => {
             let data_dir = project.data_dir().to_path_buf();
-            let named = source.bundles.clone();
-            let crs = source.crs.clone();
-            let (mhz, separation) = (source.antenna_mhz, source.antenna_separation);
-            let link = link.clone();
+            let linked = raw::Source {
+                dem: Some(link.clone()),
+                ..source.clone()
+            };
             tokio::task::spawn_blocking(move || {
-                let work = raw::incoming_path(&data_dir)?.with_extension("source");
-                let read =
-                    read_recordings(&data_dir, &named, &work, crs, Some(&link), mhz, separation);
+                let work = raw::incoming_path(&data_dir)
+                    .map_err(super::raw_routes::Unreadable::other)?
+                    .with_extension("source");
+                let read = read_recordings(&data_dir, &linked, &work);
                 let _ = std::fs::remove_dir_all(&work);
                 read
             })
             .await
             .or_internal("source_failed")?
-            .map_err(|e| ApiError::bad_request("source_unreadable", e))?
+            .map_err(ApiError::from)?
         }
     };
     let version = write_with_dem(&state, project, &radargram, &source, &expected)?;

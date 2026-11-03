@@ -642,21 +642,21 @@ fn read_line_meta(
                     .unwrap_or_default(),
             };
             let date = pc_date(&timestamp).ok_or_else(|| {
-                format!(
+                super::UnknownDate::new(format!(
                     "{line_name} of {} gives no date the PC clock recorded ({timestamp:?}). \
                      Give the UTC date with --override-date YYYY-MM-DD (override_date= in Python)",
                     path.display()
-                )
+                ))
             })?;
             // 2000-01-01 is what a PC with a flat clock battery starts at,
             // which no IceRadar line was recorded on.
             if date == chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap() {
-                return Err(format!(
+                return Err(super::UnknownDate::new(format!(
                     "{line_name} of {} was recorded with the PC clock at {timestamp:?}, its reset \
                      value, so the file does not know its date, and the GPS records only the \
                      time of day. Give the UTC date with --override-date YYYY-MM-DD (override_date= in Python)",
                     path.display()
-                )
+                ))
                 .into());
             }
             IceRadarDate::PcClock(date)

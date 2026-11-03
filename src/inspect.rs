@@ -23,6 +23,9 @@ pub struct InfoParams {
     pub override_date: Option<chrono::NaiveDate>,
     /// The channel of multi-channel files (GSSI) to describe, from 1.
     pub channel: Option<u32>,
+    /// The part of each raw input to describe, in order, as a server
+    /// source records them (#537). Takes the place of `channel`.
+    pub parts: Option<Vec<formats::Part>>,
     pub sidecar: crate::sidecar::Choice,
 }
 
@@ -344,7 +347,16 @@ fn sidecar_summary(
         sidecar: None,
         ..resolved.clone()
     };
-    let read = |mhz| input::load_meta(&bare, meta.medium_velocity, mhz, None, params.override_date);
+    let read = |mhz| {
+        input::load_meta(
+            &bare,
+            meta.medium_velocity,
+            mhz,
+            None,
+            params.override_date,
+            None,
+        )
+    };
     // A format that does not record the antenna frequency cannot be read
     // without one; the one the recording was read with stands in, and only
     // the separation is taken from that read. One that does not record the
@@ -466,7 +478,23 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
         .filter(|input| !input::is_netcdf(input))
         .map(|input| formats::resolve_input(input))
         .collect::<Result<Vec<_>, String>>()?;
-    let mut raw = formats::with_channel(raw, params.channel)?;
+    let mut raw = match &params.parts {
+        Some(parts) => {
+            if parts.len() != raw.len() {
+                return Err(format!(
+                    "{} parts were given for {} recordings",
+                    parts.len(),
+                    raw.len()
+                )
+                .into());
+            }
+            raw.into_iter()
+                .zip(parts)
+                .map(|(resolved, part)| formats::with_part(resolved, *part))
+                .collect::<Result<Vec<_>, String>>()?
+        }
+        None => formats::with_channel(raw, params.channel)?,
+    };
     formats::with_coordinates(&mut raw, params.cor_path.as_deref())?;
     crate::sidecar::with_sidecar(&mut raw, &params.sidecar)?;
     let mut raw = raw.into_iter();
@@ -485,6 +513,7 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
             params.override_antenna_mhz,
             params.override_antenna_separation,
             params.override_date,
+            None,
         )?;
         let sidecar = sidecar_summary(&resolved, &meta, &params)?;
         records.push(Inspected::Raw(info_record(
@@ -512,6 +541,7 @@ pub(crate) mod tests {
             override_antenna_separation: None,
             override_date: None,
             channel: None,
+            parts: None,
             sidecar: crate::sidecar::Choice::Beside,
         }
     }
@@ -789,13 +819,14 @@ mod coordinate_tests {
             override_antenna_separation: None,
             override_date: None,
             channel: None,
+            parts: None,
             sidecar: crate::sidecar::Choice::Beside,
         }
     }
 
     fn read(resolved: &formats::ResolvedInput) -> Result<super::GPRLocation, String> {
         crate::processing::input::load_meta_and_location(
-            resolved, 0.168, None, None, None, None, None,
+            resolved, 0.168, None, None, None, None, None, None,
         )
         .map(|(_, location)| location)
         .map_err(|e| e.to_string())

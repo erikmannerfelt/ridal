@@ -50,13 +50,16 @@
         Every file of each recording: <code>.rad</code>, <code>.rd3</code>
         and <code>.cor</code> for RAMAC, <code>.hd</code>, <code>.dt1</code>
         and <code>.gp2</code> for pulseEKKO, <code>.dzt</code> and
-        <code>.dzg</code> for GSSI. A <code>&lt;name&gt;.coords.csv</code>
+        <code>.dzg</code> for GSSI, the <code>.h5</code> for IceRadar and
+        the <code>.dsr</code> for VIRL. Each line of an IceRadar file and
+        each channel of a GSSI file is a recording of its own. A
+        <code>&lt;name&gt;.coords.csv</code>
         from <code>ridal coords</code> is used in place of a recording's own
         positions file. Files are grouped into recordings by their names
         without the extension, and uploaded one at a time.
       </p>
       <input type="file" id="ingest-input" multiple hidden
-             accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx,.csv,.toml">
+             accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx,.h5,.hdf5,.dsr,.csv,.toml">
     </div>
     <p id="ingest-upload" class="hint" aria-live="polite"></p>
     <p><button type="button" id="ingest-cancel" hidden>Stop uploading</button></p>
@@ -72,6 +75,19 @@
         Never merge</label>
     </p>
     <p id="ingest-summary" class="hint" aria-live="polite"></p>
+    {#- One date for every recording read with one (#537): what a VIRL
+        file never gives, and an IceRadar file with its PC clock reset does
+        not. Saved with each radargram's raw data, as the antenna's are. -#}
+    <div class="ingest-date">
+      <label>Date of the recordings (UTC)
+        <input type="date" id="ingest-date" autocomplete="off">
+      </label>
+      <p class="hint">
+        For IceRadar, pulseEKKO and VIRL recordings, whose positions record
+        only the time of day: it replaces the date their files give. VIRL
+        files give none, so they need it.
+      </p>
+    </div>
     {#- One row per antenna the headers name (#409): what its name is read
         as, and a frequency or separation to take instead. Applied before
         anything is merged or named, and saved with each radargram's raw
@@ -85,6 +101,7 @@
               <th scope="col">Read as</th>
               <th scope="col">Frequency override (MHz)</th>
               <th scope="col">Separation override (m)</th>
+              <th scope="col">Sampling frequency (MHz)</th>
               <th scope="col">Recordings</th>
             </tr>
           </thead>
@@ -93,7 +110,8 @@
       </div>
       <p class="hint">
         Only where the files do not say it, or say it wrongly. Empty reads it
-        from the files.
+        from the files. The sampling frequency is asked for only where the
+        files do not record it, as VIRL files do not.
       </p>
     </div>
     <div class="ingest-timeline-wrap">

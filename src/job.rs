@@ -16,6 +16,12 @@ use serde::{Deserialize, Serialize};
 pub struct JobSpec {
     /// The raw recordings, in the order they are merged.
     pub inputs: Vec<PathBuf>,
+    /// The part of each input that is read, in the order of `inputs`: a
+    /// line or a channel of a file of several, or the whole file (#537).
+    /// Absent reads each input as `ridal process` would without `--lines`
+    /// or `--channel`.
+    #[serde(default)]
+    pub parts: Option<Vec<crate::formats::Part>>,
     /// Where the processed file goes. Written to a temporary sibling and
     /// renamed into place, so it exists only once it is complete.
     pub output: PathBuf,
@@ -85,6 +91,7 @@ pub fn run(spec: &JobSpec, emit: &mut dyn FnMut(Event)) -> Result<String, String
             override_antenna_separation: spec.antenna_separation_override,
             group: spec.group_name.clone(),
             group_id: spec.group_id.clone(),
+            parts: spec.parts.clone(),
             // Exported, and nothing rendered: the server renders on demand.
             ..Default::default()
         },
@@ -170,6 +177,7 @@ mod tests {
     fn spec(output: &Path, steps: &[&str]) -> JobSpec {
         JobSpec {
             inputs: vec!["assets/mala/dronbreen-20250327-DAT_0066_A1.rad".into()],
+            parts: None,
             output: output.to_path_buf(),
             steps: steps.iter().map(|s| s.to_string()).collect(),
             medium_velocity: 0.168,
@@ -235,6 +243,42 @@ mod tests {
         let refused = run(&spec, &mut |_| {}).unwrap_err();
         assert!(refused.contains("subset"), "{refused}");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    /// #537: a source of one channel of a GSSI file of several is
+    /// processed as that channel.
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_job_reads_the_part_of_each_input_it_is_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = crate::io::test_dzt::write_two_channel_recording(dir.path(), "two");
+        let output = dir.path().join("out.nc");
+        let spec = JobSpec {
+            inputs: vec![dzt],
+            ..spec(&output, &[])
+        };
+        let whole = run(&spec, &mut |_| {}).unwrap_err();
+        assert!(whole.contains("holds 2 channels"), "{whole}");
+
+        let channel = |n| crate::formats::Part {
+            channel: Some(n),
+            ..Default::default()
+        };
+        let mut revisions = Vec::new();
+        for n in [1, 2] {
+            let spec = JobSpec {
+                parts: Some(vec![channel(n)]),
+                ..spec.clone()
+            };
+            revisions.push(run(&spec, &mut |_| {}).unwrap());
+            let recipe = crate::io::read_recipe(&output).unwrap().unwrap();
+            assert_eq!(
+                recipe.bundles[0].part,
+                Some(channel(n)),
+                "the recipe says which channel"
+            );
+        }
+        assert_ne!(revisions[0], revisions[1]);
     }
 
     #[test]

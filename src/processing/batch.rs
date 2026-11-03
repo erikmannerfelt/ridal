@@ -319,108 +319,58 @@ struct Recording {
 fn batch_recordings(paths: &[PathBuf], channel: Option<u32>) -> Result<Vec<Recording>, String> {
     let mut out = Vec::new();
     for path in paths {
-        let whole = Recording {
-            path: path.clone(),
-            part: formats::Part::default(),
-            line: None,
-        };
         let resolved = match formats::resolve_input(path) {
-            Ok(resolved) if resolved.kind == formats::FormatKind::IceRadar => {
-                let lines = crate::io::iceradar_lines(&resolved.header)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
-                match &lines[..] {
-                    // Read as the whole file, as `ridal process` reads it.
-                    [(only, _)] => out.push(Recording {
-                        line: Some(*only),
-                        ..whole
-                    }),
-                    _ => out.extend(lines.iter().map(|(line, _)| Recording {
-                        part: formats::Part {
-                            line: Some(*line),
-                            ..Default::default()
-                        },
-                        line: Some(*line),
-                        ..whole.clone()
-                    })),
-                }
-                continue;
-            }
-            Ok(resolved) if resolved.kind == formats::FormatKind::Gssi => resolved,
-            // Anything else, or an input that does not resolve, which is
-            // reported with its context when it is read.
-            _ => {
-                out.push(whole);
+            Ok(resolved) => resolved,
+            // Reported with its context when it is read.
+            Err(_) => {
+                out.push(Recording {
+                    path: path.clone(),
+                    part: formats::Part::default(),
+                    line: None,
+                });
                 continue;
             }
         };
-        if let Some(channel) = channel {
+        if let (Some(channel), formats::FormatKind::Gssi) = (channel, resolved.kind) {
             formats::with_channel(vec![resolved], Some(channel))?;
             out.push(Recording {
+                path: path.clone(),
                 part: formats::Part {
                     channel: Some(channel),
                     ..Default::default()
                 },
-                ..whole
+                line: None,
             });
             continue;
         }
-        let channels = crate::io::gssi_channels(&resolved.header)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        match channels.len() {
-            1 => out.push(whole),
-            _ => out.extend(channels.iter().map(|c| Recording {
-                part: formats::Part {
-                    channel: Some(c.number),
-                    ..Default::default()
-                },
-                ..whole.clone()
-            })),
-        }
+        out.extend(
+            formats::recordings_of(&resolved)?
+                .into_iter()
+                .map(|recording| Recording {
+                    path: path.clone(),
+                    part: recording.part,
+                    line: recording.line,
+                }),
+        );
     }
     Ok(out)
 }
 
-/// Group each channel's recordings in time on its own, so that a file's
-/// channels, recorded side by side, are never merged, while the same
-/// channel of consecutive files is. The outputs are in the order their
-/// first recording started. Recordings without a channel are one stream,
-/// as every batch without GSSI channels is: IceRadar lines, recorded one
-/// after another, merge in time as files do.
+/// Group each channel's recordings in time on its own
+/// ([`grouping::group_each_stream`]). Recordings without a channel are one
+/// stream, as every batch without GSSI channels is: IceRadar lines,
+/// recorded one after another, merge in time as files do.
 fn group_each_channel(
     recordings: &[Recording],
     read: &[GroupingRecording],
     threshold: f64,
 ) -> Vec<(Vec<usize>, Option<Split>)> {
-    let mut channels: Vec<Option<u32>> = Vec::new();
-    for recording in recordings {
-        if !channels.contains(&recording.part.channel) {
-            channels.push(recording.part.channel);
-        }
-    }
-    let mut groups = Vec::new();
-    for channel in channels {
-        let indices: Vec<usize> = (0..recordings.len())
-            .filter(|&i| recordings[i].part.channel == channel)
-            .collect();
-        let these: Vec<GroupingRecording> = indices.iter().map(|&i| read[i].clone()).collect();
-        let grouping =
-            grouping::group_chronologically(&these, Some(threshold), &GroupingEdits::default());
-        groups.extend(grouping.groups.into_iter().map(|group| {
-            let members = group
-                .members
-                .iter()
-                .map(|&m| indices[m])
-                .collect::<Vec<_>>();
-            (members, group.split)
-        }));
-    }
-    // Stable, so one stream keeps the order grouping gave it.
-    groups.sort_by(|a, b| {
-        read[a.0[0]]
-            .start_seconds
-            .total_cmp(&read[b.0[0]].start_seconds)
-    });
-    groups
+    let channels: Vec<Option<u32>> = recordings.iter().map(|r| r.part.channel).collect();
+    grouping::group_each_stream(read, &channels, Some(threshold), &GroupingEdits::default())
+        .groups
+        .into_iter()
+        .map(|group| (group.members, group.split))
+        .collect()
 }
 
 /// A warning when an id pattern may not tell the channels of a GSSI file
@@ -494,6 +444,7 @@ fn read_for_grouping(
         params.options.override_antenna_mhz,
         params.options.override_antenna_separation,
         params.options.override_date,
+        None,
     )
     .map_err(|e| format!("{}: {e}", path.display()))?;
     GroupingRecording::of(&meta, &location)

@@ -76,6 +76,22 @@ pub struct Source {
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub antenna_separation: Option<f32>,
+    /// The digitizer's sampling frequency in MHz, where the files do not
+    /// record it (VIRL) or record it wrongly; `None` reads it from the
+    /// files, or a recording's sidecar.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub sampling_mhz: Option<f32>,
+    /// The UTC date of the recordings whose positions record only a time
+    /// of day (IceRadar, pulseEKKO and VIRL, but not one with a
+    /// `.coords.csv`), in place of the date their files give; `None` takes
+    /// it from the files, or a recording's sidecar.
+    #[serde(default, with = "crate::sidecar::date_serde")]
+    #[cfg_attr(
+        feature = "server",
+        schema(value_type = Option<String>, format = Date, required = true)
+    )]
+    pub date: Option<chrono::NaiveDate>,
     /// What to call the radargram while it has none of its own: an id
     /// with raw data and no processed file yet (#382 phase 7). Once it is
     /// served, the catalog's names win and renaming is an override.
@@ -108,12 +124,34 @@ impl Source {
             .chain(self.dem.iter().map(|d| d.file.blake3.as_str()))
     }
 
-    /// The bundles a recipe of this source records: each recording's
-    /// sidecar values but those the source's own antenna settings take
-    /// precedence over, as `sidecar::applied` leaves them out when the
-    /// source is processed.
-    pub fn expected_bundles(&self) -> Vec<Bundle> {
+    /// The bundles as they are read: each recording's sidecar values, with
+    /// the source's sampling frequency and date in place of its own (#537),
+    /// the date only for a recording whose positions are read with one.
+    /// What [`materialize_bundles`] is given, so that every read of the
+    /// source (a draft, a batch, its raw data's zip) is of the same thing.
+    pub fn bundles_to_read(&self) -> Vec<Bundle> {
         self.bundles
+            .iter()
+            .map(|bundle| {
+                let mut overrides = bundle.overrides.unwrap_or_default();
+                overrides.sampling_mhz = self.sampling_mhz.or(overrides.sampling_mhz);
+                if bundle_takes_date(bundle) {
+                    overrides.date = self.date.or(overrides.date);
+                }
+                Bundle {
+                    overrides: Some(overrides).filter(|o| !o.is_empty()),
+                    ..bundle.clone()
+                }
+            })
+            .collect()
+    }
+
+    /// The bundles a recipe of this source records: each recording's
+    /// sidecar values as [`Self::bundles_to_read`] gives them, but those
+    /// the source's own antenna settings take precedence over, as
+    /// `sidecar::applied` leaves them out when the source is processed.
+    pub fn expected_bundles(&self) -> Vec<Bundle> {
+        self.bundles_to_read()
             .iter()
             .map(|bundle| {
                 let applied = bundle.overrides.map(|o| crate::sidecar::Overrides {
@@ -130,6 +168,16 @@ impl Source {
             })
             .collect()
     }
+}
+
+/// Whether a recording's positions are read with a date, as
+/// `input::load_positions` decides: by its format, unless a `.coords.csv`
+/// gives its positions, with dates of their own.
+pub fn bundle_takes_date(bundle: &Bundle) -> bool {
+    let csv = bundle.files.iter().any(|f| {
+        f.role == FileRole::Coordinates && crate::formats::is_coords_csv(Path::new(&f.file.name))
+    });
+    !csv && crate::formats::kind_named(&bundle.format).is_some_and(crate::formats::takes_date)
 }
 
 /// A source's link to one of the project's [`Dem`]s: which, and its file
@@ -525,6 +573,8 @@ pub fn materialize_bundles(
         .collect::<Vec<_>>();
     let mut resolved = materialize(data_dir, &named, dir)?;
     for (recording, bundle) in resolved.iter_mut().zip(bundles) {
+        // The line or channel it is: read as that part again (#537).
+        recording.part = bundle.part.unwrap_or_default();
         // The bundle alone says whether there is one, whatever a directory
         // laid out before left beside the header.
         recording.sidecar = None;
@@ -599,13 +649,34 @@ fn link(stored: &Path, laid: &Path) -> Result<(), String> {
 /// sets none. A recording without one keeps the overrides of the bundle in
 /// `kept` (the source as it was) made of the same files, so that saving a
 /// source again with its own files does not lose them.
+///
+/// `parts` says which part of each recording's file it is (#537): a line
+/// of an IceRadar file or a channel of a GSSI file of several. Empty is
+/// every recording its whole file; otherwise there is one per recording.
+/// A part the file does not have is refused, and a sidecar's `[lines.N]`
+/// or `[channels.N]` values are those of the recording's part.
 pub fn bundles_of(
     data_dir: &Path,
     bundles: &[Vec<NamedFile>],
+    parts: &[crate::formats::Part],
     dir: &Path,
     kept: &[Bundle],
 ) -> Result<Vec<Bundle>, String> {
-    let resolved = materialize(data_dir, bundles, dir)?;
+    if !parts.is_empty() && parts.len() != bundles.len() {
+        return Err(format!(
+            "{} parts were given for {} recordings; give one for each, or none",
+            parts.len(),
+            bundles.len()
+        ));
+    }
+    let resolved = materialize(data_dir, bundles, dir)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, resolved)| match parts.get(index) {
+            Some(part) => crate::formats::with_part(resolved, *part),
+            None => Ok(resolved),
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     resolved
         .iter()
         .zip(bundles)
@@ -656,17 +727,18 @@ pub fn bundles_of(
                 FileRole::Data => 1,
                 FileRole::Coordinates => 2,
             });
+            let part = (!resolved.part.is_whole()).then_some(resolved.part);
             let overrides = if files.iter().any(|f| is_sidecar(&f.name)) {
                 Some(crate::sidecar::overrides_of(resolved)?).filter(|o| !o.is_empty())
             } else {
                 kept.iter()
-                    .find(|bundle| bundle.files == out)
+                    .find(|bundle| bundle.files == out && bundle.part == part)
                     .and_then(|bundle| bundle.overrides)
             };
             Ok(Bundle {
                 format: crate::formats::format_info(resolved.kind).name.to_string(),
                 files: out,
-                part: (!resolved.part.is_whole()).then_some(resolved.part),
+                part,
                 overrides,
             })
         })
@@ -731,8 +803,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let files = recording(dir.path(), LINE);
         let work = tempfile::tempdir().unwrap();
-        let bundles =
-            bundles_of(dir.path(), std::slice::from_ref(&files), work.path(), &[]).unwrap();
+        let bundles = bundles_of(
+            dir.path(),
+            std::slice::from_ref(&files),
+            &[],
+            work.path(),
+            &[],
+        )
+        .unwrap();
         assert_eq!(bundles[0].format, "ramac");
         let roles: Vec<FileRole> = bundles[0].files.iter().map(|f| f.role).collect();
         assert_eq!(
@@ -750,6 +828,7 @@ mod tests {
         let refused = bundles_of(
             dir.path(),
             &[extra],
+            &[],
             tempfile::tempdir().unwrap().path(),
             &[],
         )
@@ -773,7 +852,7 @@ mod tests {
             let mut given = files.clone();
             given.extend(extra);
             let work = tempfile::tempdir().unwrap();
-            bundles_of(dir.path(), &[given], work.path(), kept).unwrap()
+            bundles_of(dir.path(), &[given], &[], work.path(), kept).unwrap()
         };
         let separation = crate::sidecar::Overrides {
             antenna_separation_m: Some(4.5),
@@ -809,6 +888,7 @@ mod tests {
                 vec![sidecar(dir.path(), "[overrides]\nmhz = 1\n")],
             ]
             .concat()],
+            &[],
             tempfile::tempdir().unwrap().path(),
             &[],
         )
@@ -825,8 +905,8 @@ mod tests {
             crate::sidecar::overrides_of(&resolved[0]).unwrap(),
             separation
         );
-        let meta =
-            crate::processing::input::load_meta(&resolved[0], 0.168, None, None, None).unwrap();
+        let meta = crate::processing::input::load_meta(&resolved[0], 0.168, None, None, None, None)
+            .unwrap();
         assert_eq!(meta.antenna_separation, 4.5);
         // Without values, none is read, even one a layout before left there.
         // A fresh directory, as every layout has: Windows will not replace
@@ -842,13 +922,155 @@ mod tests {
         assert_eq!(bare[0].sidecar, None);
     }
 
+    /// #537: each channel of one GSSI file is its own bundle, with the
+    /// sidecar values of its channel, and is laid out as that channel again.
+    #[test]
+    fn a_bundle_is_the_part_of_its_file_it_was_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let dzt = crate::io::test_dzt::write_two_channel_recording(scratch.path(), "two");
+        let sidecar = scratch.path().join("two.ridal.toml");
+        std::fs::write(
+            &sidecar,
+            "[overrides]\nantenna_separation_m = 1\n\n\
+             [channels.2.overrides]\nantenna_separation_m = 2.5\n",
+        )
+        .unwrap();
+        let files: Vec<NamedFile> = [dzt.clone(), dzt.with_extension("DZG"), sidecar]
+            .iter()
+            .map(|path| upload(dir.path(), path.to_str().unwrap()))
+            .collect();
+        let channel = |n| crate::formats::Part {
+            channel: Some(n),
+            ..Default::default()
+        };
+        let recordings = [files.clone(), files.clone()];
+        let work = tempfile::tempdir().unwrap();
+        let bundles = bundles_of(
+            dir.path(),
+            &recordings,
+            &[channel(1), channel(2)],
+            work.path(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(bundles[0].part, Some(channel(1)));
+        assert_eq!(bundles[1].part, Some(channel(2)));
+        assert_eq!(bundles[0].files, bundles[1].files);
+        let separation = |b: &Bundle| b.overrides.and_then(|o| o.antenna_separation_m);
+        assert_eq!(separation(&bundles[0]), Some(1.));
+        assert_eq!(separation(&bundles[1]), Some(2.5));
+
+        let laid = tempfile::tempdir().unwrap();
+        let resolved = materialize_bundles(dir.path(), &bundles, laid.path()).unwrap();
+        assert_eq!(resolved[0].part, channel(1));
+        assert_eq!(resolved[1].part, channel(2));
+        // As a recipe of that channel records it.
+        assert_eq!(
+            crate::recipe::bundle_of(&resolved[1]).unwrap().part,
+            Some(channel(2))
+        );
+
+        // Without parts, the file is one recording, which it is not.
+        let whole = bundles_of(
+            dir.path(),
+            &recordings[..1],
+            &[],
+            tempfile::tempdir().unwrap().path(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(whole.contains("holds 2 channels"), "{whole}");
+        let missing = bundles_of(
+            dir.path(),
+            &recordings[..1],
+            &[channel(3)],
+            tempfile::tempdir().unwrap().path(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(missing.contains("has no channel 3"), "{missing}");
+        let counted = bundles_of(
+            dir.path(),
+            &recordings,
+            &[channel(1)],
+            tempfile::tempdir().unwrap().path(),
+            &[],
+        )
+        .unwrap_err();
+        assert!(counted.contains("1 parts were given for 2"), "{counted}");
+    }
+
+    /// #537: a source's sampling frequency and date are read as each
+    /// recording's sidecar values, taking their place, and the date only
+    /// where positions are read with one.
+    #[test]
+    fn a_source_s_sampling_frequency_and_date_are_read_as_its_recordings() {
+        let file = |name: &str, role| BundleFile {
+            role,
+            file: HashedFile {
+                name: name.to_string(),
+                blake3: "a".repeat(64),
+            },
+        };
+        let bundle = |format: &str, files: Vec<BundleFile>| Bundle {
+            format: format.to_string(),
+            files,
+            part: None,
+            overrides: Some(crate::sidecar::Overrides {
+                sampling_mhz: Some(100.),
+                ..Default::default()
+            }),
+        };
+        let date = chrono::NaiveDate::from_ymd_opt(2014, 4, 5);
+        let source = Source {
+            bundles: vec![
+                bundle("virl", vec![file("030_0001.DSR", FileRole::Header)]),
+                bundle(
+                    "virl",
+                    vec![
+                        file("030_0002.DSR", FileRole::Header),
+                        file("030_0002.coords.csv", FileRole::Coordinates),
+                    ],
+                ),
+                bundle("ramac", vec![file("DAT_0001_A1.rad", FileRole::Header)]),
+            ],
+            crs: None,
+            dem: None,
+            antenna_mhz: None,
+            antenna_separation: None,
+            sampling_mhz: Some(200.),
+            date,
+            names: None,
+        };
+        let read: Vec<_> = source
+            .bundles_to_read()
+            .into_iter()
+            .map(|b| b.overrides.unwrap())
+            .collect();
+        assert!(read.iter().all(|o| o.sampling_mhz == Some(200.)));
+        assert_eq!(
+            read.iter().map(|o| o.date).collect::<Vec<_>>(),
+            [date, None, None],
+            "a .coords.csv and a RAMAC file give their own dates"
+        );
+        // As a recipe of it records them, so changing them makes it stale.
+        assert_eq!(source.expected_bundles()[0].overrides, Some(read[0]));
+    }
+
     #[test]
     fn a_recipe_is_expected_without_what_the_source_takes_precedence_over() {
         let dir = tempfile::tempdir().unwrap();
         let files = recording(dir.path(), LINE);
         let work = tempfile::tempdir().unwrap();
-        let mut bundles =
-            bundles_of(dir.path(), std::slice::from_ref(&files), work.path(), &[]).unwrap();
+        let mut bundles = bundles_of(
+            dir.path(),
+            std::slice::from_ref(&files),
+            &[],
+            work.path(),
+            &[],
+        )
+        .unwrap();
         bundles[0].overrides = Some(crate::sidecar::Overrides {
             antenna_mhz: Some(50.),
             antenna_separation_m: Some(4.5),
@@ -860,6 +1082,8 @@ mod tests {
             dem: None,
             antenna_mhz: mhz,
             antenna_separation: separation,
+            sampling_mhz: None,
+            date: None,
             names: None,
         };
         assert_eq!(source(None, None).expected_bundles(), bundles);
@@ -896,7 +1120,7 @@ mod tests {
         files.insert(0, csv.clone());
 
         let work = tempfile::tempdir().unwrap();
-        let bundles = bundles_of(dir.path(), &[files], work.path(), &[]).unwrap();
+        let bundles = bundles_of(dir.path(), &[files], &[], work.path(), &[]).unwrap();
         assert_eq!(bundles[0].files[2].role, FileRole::Coordinates);
         assert_eq!(bundles[0].files[2].file.name, csv.name);
     }
@@ -936,8 +1160,14 @@ mod tests {
         let store = DocumentStore::new(dir.path().to_path_buf());
         let files = recording(dir.path(), LINE);
         let work = tempfile::tempdir().unwrap();
-        let bundles =
-            bundles_of(dir.path(), std::slice::from_ref(&files), work.path(), &[]).unwrap();
+        let bundles = bundles_of(
+            dir.path(),
+            std::slice::from_ref(&files),
+            &[],
+            work.path(),
+            &[],
+        )
+        .unwrap();
         let id = RadargramId::new("line-01").unwrap();
         let source = Source {
             bundles,
@@ -945,6 +1175,8 @@ mod tests {
             dem: None,
             antenna_mhz: None,
             antenna_separation: None,
+            sampling_mhz: None,
+            date: None,
             names: None,
         };
         write_source(&store, &id, &source, &Expectation::Absent).unwrap();
@@ -997,8 +1229,14 @@ mod tests {
 
         let files = recording(dir.path(), LINE);
         let work = tempfile::tempdir().unwrap();
-        let bundles =
-            bundles_of(dir.path(), std::slice::from_ref(&files), work.path(), &[]).unwrap();
+        let bundles = bundles_of(
+            dir.path(),
+            std::slice::from_ref(&files),
+            &[],
+            work.path(),
+            &[],
+        )
+        .unwrap();
         let line = RadargramId::new("line-01").unwrap();
         let source = Source {
             bundles,
@@ -1009,6 +1247,8 @@ mod tests {
             }),
             antenna_mhz: None,
             antenna_separation: None,
+            sampling_mhz: None,
+            date: None,
             names: None,
         };
         write_source(&store, &line, &source, &Expectation::Absent).unwrap();

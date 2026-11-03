@@ -184,14 +184,25 @@ An `operator` can add the raw recordings of a whole survey at once with
 **Add data → Add raw data in bulk…** in the catalog (or **Add raw data in
 bulk…** on the Processing page). It is for many recordings; **Add data →
 New radargram from raw data…** in the catalog is for one radargram, looked
-at before it is added.
+at before it is added. There, a file of several lines or channels is read
+as one of them: once the files are uploaded, the dialog lists what each
+holds and you choose which one the radargram is made from. Beside the
+antenna frequency and separation, it takes the sampling frequency and the
+date, where the files do not say them or say them wrongly; a VIRL file
+needs the antenna frequency, the sampling frequency and the date before
+it is uploaded. Changing any of them later is saved with the raw data at
+once, and what is served then needs processing again.
 
 1. **Drop the files**, every file of each recording (`.rad`, `.rd3` and
    `.cor` for RAMAC, for example). They are grouped into recordings by
    name and uploaded one at a time. A `<name>.coords.csv` from `ridal
    coords` (see {ref}`ridal-coords`) belongs to the recording of that name
    and is used in place of its own positions file, and a `<name>.ridal.toml`
-   is that recording's sidecar (see {doc}`../reference/sidecar`).
+   is that recording's sidecar (see {doc}`../reference/sidecar`). Each line
+   of an IceRadar file and each channel of a GSSI file that holds several
+   is a recording of its own, as in `ridal batch-process`: lines merge in
+   time like files, and the channels of a file are never merged with each
+   other. `{line}` and `{channel}` in the id pattern say which is which.
 2. **Check the radargrams.** Recordings made less than the threshold apart
    (ten minutes unless changed), with the same antenna and settings, are
    merged into one radargram. The timeline shows one row per radargram:
@@ -206,7 +217,14 @@ at before it is added.
    or say it wrongly: it applies to every recording with that antenna,
    before they are merged and named, and is kept with each radargram's raw
    data, so processing it later uses it too. A recording whose antenna
-   gives no frequency is left out until one is given.
+   gives no frequency is left out until one is given, and likewise one
+   whose files do not record the sampling frequency (VIRL), which is asked
+   for in its antenna's row. **Date of the recordings** gives the UTC date
+   of every IceRadar, pulseEKKO and VIRL recording, whose positions record
+   only the time of day, in place of the date their files give; a VIRL
+   recording, whose files give none, is left out until it is given. It is
+   one date for the whole upload, so add the recordings of each day
+   separately.
 3. **Name them** with an id pattern and a display name pattern, as
    `ridal batch-process --id-pattern` takes them (see
    {doc}`cli`), and type over any single one. An id that already exists in

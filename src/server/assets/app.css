@@ -3228,6 +3228,16 @@ a.processing-state:hover {
   margin: 0;
   flex: 1 1 20rem;
 }
+/* The line or channel of each file that holds several (#537). */
+.process-parts {
+  margin: var(--space-2) 0;
+}
+.process-parts .hint {
+  margin: 0 0 var(--space-1);
+}
+.process-parts select {
+  max-width: 100%;
+}
 /* The DEM select and the line under it that says where to add one. */
 .process-dem {
   margin: var(--space-2) 0;
@@ -3836,6 +3846,13 @@ pre.steps-highlight {
 /* Unlike the layers table's, these boxes are what the step is for, so
  * they look like boxes before the pointer finds them. */
 .ingest-outputs input[type="text"],
+/* One date for every recording read with one (#537). */
+.ingest-date {
+  margin: var(--space-2) 0;
+}
+.ingest-date .hint {
+  margin: var(--space-1) 0 0;
+}
 .ingest-antennas input[type="number"] {
   min-width: 12rem;
   border-color: var(--color-border);

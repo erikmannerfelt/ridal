@@ -99,9 +99,9 @@ Channels
   channels is processed in two runs. The same channel is read from every
   file given. `batch-process` makes each channel its own output, unless
   `--channel N` reads one (see {doc}`cli`). `ridal info` describes the
-  channel given. A server source does not
-  record a channel yet, so the GUI lists a file of several channels as
-  unreadable, naming its channels.
+  channel given. In the GUI, the ingest planner makes each channel its own
+  recording, and **New radargram from raw data…** asks which channel to
+  read (see {doc}`gui`).
 
 Antenna
 : The frequency is read from the antenna's name. A dual-frequency antenna
@@ -206,6 +206,11 @@ What must be given
   ridal override day1/*.DSR --sampling-mhz 200 --date 2014-04-05 \
       --antenna-mhz 25 --antenna-separation-m 11.8
   ```
+
+  In the GUI, **New radargram from raw data…** asks for the antenna
+  frequency, the sampling frequency and the date before it uploads a
+  `.DSR` file, and **Add raw data in bulk…** takes the frequencies by
+  antenna and one date for every recording (see {doc}`gui`).
 
   The sampling frequency scales every time and depth, so take it from the
   survey's notes, not from a guess. For the 2014 campaign it is 200 MHz

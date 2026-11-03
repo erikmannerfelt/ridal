@@ -43,6 +43,8 @@ pub use iceradar::{
 };
 pub use mala::{load_cor, load_rad, load_rd3};
 pub use pulseekko::{load_pe_dt1, load_pe_gp2, load_pe_hd};
+#[cfg(test)]
+pub(crate) use virl::test_dsr;
 pub use virl::{load_virl_data, load_virl_meta, load_virl_positions, virl_fix_count};
 // This is a facade: the submodules are private, and `io` itself is private to
 // the crate, so a name no caller happens to use -- `RidalNetcdfMetadata` is
@@ -85,6 +87,55 @@ impl std::fmt::Display for UnknownAntennaFrequency {
 }
 
 impl Error for UnknownAntennaFrequency {}
+
+/// A recording whose files do not record the sampling frequency (VIRL),
+/// which an override supplies. Its own type, as [`UnknownAntennaFrequency`]
+/// is, so the server can ask for the value where a person gives it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnknownSamplingFrequency {
+    /// The antenna field as the header has it.
+    pub antenna: String,
+    message: String,
+}
+
+impl UnknownSamplingFrequency {
+    fn new(antenna: impl Into<String>, message: String) -> Self {
+        Self {
+            antenna: antenna.into(),
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for UnknownSamplingFrequency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for UnknownSamplingFrequency {}
+
+/// Positions that record only a time of day, of a recording whose files
+/// give no date to put it on (a VIRL file, an IceRadar file with its PC
+/// clock reset), which an override supplies. Its own type, likewise.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnknownDate {
+    message: String,
+}
+
+impl UnknownDate {
+    fn new(message: String) -> Self {
+        Self { message }
+    }
+}
+
+impl std::fmt::Display for UnknownDate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for UnknownDate {}
 
 /// Parse one NMEA `$GPGGA` sentence into an epoch time, a WGS84 coordinate and
 /// an elevation.

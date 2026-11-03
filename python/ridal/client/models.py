@@ -1075,6 +1075,13 @@ class Source:
     antenna_separation: float | None
     """m, overriding what the files say; ``None`` reads it from them."""
     names: SourceNames | None
+    sampling_mhz: float | None = None
+    """The sampling frequency in MHz, overriding what the files say: VIRL
+    files do not record it. ``None`` reads it from them."""
+    date: str | None = None
+    """The UTC date, ``YYYY-MM-DD``, of recordings whose positions record
+    only a time of day (IceRadar, pulseEKKO and VIRL), overriding the date
+    their files give: VIRL files give none. ``None`` takes it from them."""
 
     @classmethod
     def from_json(cls, data: Any) -> "Source":
@@ -1088,6 +1095,8 @@ class Source:
                 antenna_mhz=d["antenna_mhz"],
                 antenna_separation=d["antenna_separation"],
                 names=None if d["names"] is None else SourceNames.from_json(d["names"]),
+                sampling_mhz=d.get("sampling_mhz"),
+                date=d.get("date"),
             ),
         )
 
@@ -1754,14 +1763,30 @@ class PlannedRecording:
     excluded: bool
     unreadable: str | None
     """Why it cannot be read, when it cannot."""
+    part: Part = Part(line=None, channel=None)
+    """The line of an IceRadar file or the channel of a GSSI file that holds
+    several, each its own recording, or the whole file: what
+    :meth:`~ridal.client.Client.set_source` is to be given in ``parts``.
+    The whole file from a server older than this."""
+    missing: str | None = None
+    """What it cannot be read without, which the plan can be given:
+    ``"antenna_frequency"`` or ``"sampling_frequency"`` (in ``antennas``, for
+    its ``antenna``) or ``"date"``."""
 
     @classmethod
     def from_json(cls, data: Any) -> "PlannedRecording":
         def build(d: Mapping[str, Any]) -> "PlannedRecording":
-            plain = {k: d[k] for k in _fields(cls) if k not in ("files", "track")}
+            plain = {
+                k: d[k]
+                for k in _fields(cls)
+                if k not in ("files", "track", "part") and k in d
+            }
             track = d["track"]
             return cls(
                 **plain,
+                part=Part.from_json(d["part"])
+                if "part" in d
+                else Part(line=None, channel=None),
                 files=tuple(d["files"]),
                 track=None
                 if track is None
@@ -1792,11 +1817,20 @@ class PlannedOutput:
     takes it."""
     antenna_separation_override: float | None
     split: Split | None
+    sampling_mhz_override: float | None = None
+    """What its source is to say of the sampling frequency, as
+    :meth:`~ridal.client.Client.set_source` takes it."""
+    date: str | None = None
+    """What its source is to say of the date, likewise."""
 
     @classmethod
     def from_json(cls, data: Any) -> "PlannedOutput":
         def build(d: Mapping[str, Any]) -> "PlannedOutput":
-            plain = {k: d[k] for k in _fields(cls) if k not in ("recordings", "split")}
+            plain = {
+                k: d[k]
+                for k in _fields(cls)
+                if k not in ("recordings", "split") and k in d
+            }
             return cls(
                 **plain,
                 recordings=tuple(d["recordings"]),
@@ -1812,9 +1846,11 @@ class PlanProblem:
 
     kind: str
     """``invalid_pattern``, ``invalid_group``, ``invalid_id``,
-    ``id_collision``, ``id_taken``, ``join_refused``, ``unreadable`` or
-    ``antenna_frequency_unknown`` (an antenna whose name gives no frequency,
-    which ``antennas`` must)."""
+    ``id_collision``, ``id_taken``, ``join_refused``, ``unreadable``,
+    ``antenna_frequency_unknown`` or ``sampling_frequency_unknown`` (what
+    an antenna's files do not say, which ``antennas`` must), or
+    ``date_unknown`` (positions without a date, which ``date`` must
+    give)."""
     message: str
     output: int | None
     recording: str | None
@@ -1843,6 +1879,9 @@ class AntennaOverride:
     mhz: float | None = None
     separation: float | None = None
     """m."""
+    sampling_mhz: float | None = None
+    """The sampling frequency, for recordings whose files do not record it
+    (VIRL); others keep their own."""
 
 
 @dataclass(frozen=True)
@@ -1859,11 +1898,17 @@ class PlannedAntenna:
     mhz_override: float | None
     separation_override: float | None
     recordings: int
+    sampling_needed: bool = False
+    """Whether its recordings' files do not record the sampling frequency
+    (VIRL), which ``sampling_mhz`` in ``antennas`` then gives."""
+    sampling_override: float | None = None
 
     @classmethod
     def from_json(cls, data: Any) -> "PlannedAntenna":
         return _parse(
-            "planned antenna", data, lambda d: cls(**{k: d[k] for k in _fields(cls)})
+            "planned antenna",
+            data,
+            lambda d: cls(**{k: d[k] for k in _fields(cls) if k in d}),
         )
 
 
