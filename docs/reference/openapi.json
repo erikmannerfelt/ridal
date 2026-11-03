@@ -15876,9 +15876,10 @@
       },
       "Part": {
         "type": "object",
-        "description": "Which part of a file holding several recordings one recording is.\n\nEvery field `None` (the default) is the whole file, which is every\nrecording of a format whose files hold one. Lines (IceRadar) are\nrecorded one after another and may be merged in order; a field for\nchannels, recorded side by side, would sit beside `line` and never be\nmerged. Internal: users choose with the format's own word (`--lines`).",
+        "description": "Which part of a file holding several recordings one recording is.\n\nEvery field `None` (the default) is the whole file, which is every\nrecording of a format whose files hold one. Lines (IceRadar) are\nrecorded one after another and may be merged in order; channels (GSSI)\nare recorded side by side and never are. Internal: users choose with\nthe format's own word (`--lines`, `--channel`).",
         "required": [
-          "line"
+          "line",
+          "channel"
         ],
         "properties": {
           "line": {
@@ -15888,6 +15889,15 @@
             ],
             "format": "int32",
             "description": "The line, of an IceRadar file.",
+            "minimum": 0
+          },
+          "channel": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The channel of a GSSI file, from 1 as GSSI numbers them.",
             "minimum": 0
           }
         }

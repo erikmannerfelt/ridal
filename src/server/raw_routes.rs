@@ -803,6 +803,9 @@ pub(super) fn read_recordings(
         override_antenna_mhz: antenna_mhz,
         override_antenna_separation: antenna_separation,
         override_date: None,
+        // A source does not record a part yet, so a file of several
+        // channels is refused here, listing them.
+        channel: None,
         // The one `materialize_bundles` wrote from the bundle's overrides.
         sidecar: crate::sidecar::Choice::Beside,
     })

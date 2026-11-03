@@ -262,6 +262,12 @@ impl Recipe {
                 // this one.
                 put(&mut hasher, b"line");
                 put_optional(&mut hasher, part.line.map(u32::to_le_bytes).as_ref());
+                // Only when set, so a line's recipe keeps the hash it had
+                // before channels existed.
+                if let Some(channel) = part.channel {
+                    put(&mut hasher, b"channel");
+                    put(&mut hasher, &channel.to_le_bytes());
+                }
             }
         }
         if let Some(date) = &self.date_override {
@@ -432,10 +438,16 @@ mod tests {
         with_line.date_override = None;
         assert_eq!(with_line.hash(), recipe().hash());
 
-        with_line.bundles[0].part = Some(crate::formats::Part { line: Some(0) });
+        with_line.bundles[0].part = Some(crate::formats::Part {
+            line: Some(0),
+            ..Default::default()
+        });
         assert_ne!(with_line.hash(), recipe().hash());
         let mut other_line = with_line.clone();
-        other_line.bundles[0].part = Some(crate::formats::Part { line: Some(1) });
+        other_line.bundles[0].part = Some(crate::formats::Part {
+            line: Some(1),
+            ..Default::default()
+        });
         assert_ne!(other_line.hash(), with_line.hash());
 
         let mut dated = recipe();
@@ -625,5 +637,25 @@ mod tests {
         assert_eq!(overridden.files[..2], bundle.files[..2]);
         assert_eq!(overridden.files[2].file, hash_file(other_cor).unwrap());
         assert_ne!(overridden.files[2], bundle.files[2]);
+    }
+
+    #[test]
+    fn a_channel_changes_the_hash_and_a_line_keeps_its_own() {
+        let part = |line, channel| crate::formats::Part { line, channel };
+        let with = |part| {
+            let mut recipe = recipe();
+            recipe.bundles[0].part = Some(part);
+            recipe.hash()
+        };
+        // A line's hash is the one it had before channels existed.
+        assert_eq!(
+            with(part(Some(0), None)),
+            "7e26563b9cdc82c70df5bc9965f68c29e6eab05ccdf22436bf772f8301eebe25"
+        );
+        let one = with(part(None, Some(1)));
+        assert_ne!(one, recipe().hash());
+        assert_ne!(one, with(part(None, None)));
+        assert_ne!(one, with(part(None, Some(2))));
+        assert_ne!(one, with(part(Some(1), None)));
     }
 }

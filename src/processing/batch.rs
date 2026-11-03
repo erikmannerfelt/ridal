@@ -56,6 +56,11 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
     }
 
     let plan = plan_batch(&params)?;
+    if !params.options.quiet {
+        for warning in &plan.warnings {
+            eprintln!("{warning}");
+        }
+    }
     let mut output_paths = Vec::<PathBuf>::new();
 
     for planned in plan.outputs {
@@ -90,7 +95,10 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             // have, from being printed once per output (#368).
             radargram_id,
             display_name,
-            options: params.options.clone(),
+            options: ProcessingOptions {
+                channel: planned.channel,
+                ..params.options.clone()
+            },
         };
 
         // process-mode semantics: one group -> one output, in the order we pass here.
@@ -129,6 +137,9 @@ pub struct PlannedOutput {
     pub output: PathBuf,
     /// In the order they are merged.
     pub inputs: Vec<PathBuf>,
+    /// The channel of the inputs that is read, for GSSI files of several
+    /// channels or with `--channel`; `None` for the whole file.
+    pub channel: Option<u32>,
     /// Why this output is not part of the one before it; `None` for the
     /// first output, and for every output of a batch that does not merge.
     pub split: Option<Split>,
@@ -145,6 +156,9 @@ pub struct BatchPlan {
     /// `--merge`, in seconds, or `None` when the batch does not merge.
     pub merge_threshold_seconds: Option<f64>,
     pub outputs: Vec<PlannedOutput>,
+    /// What the batch would do that may not be what was meant, to show
+    /// before it runs.
+    pub warnings: Vec<String>,
 }
 
 pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
@@ -166,6 +180,12 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     for path in &expanded_filepaths {
         refuse_multiline(path)?;
     }
+    if params.options.channel.is_some() && !expanded_filepaths.iter().any(|p| is_gssi(p)) {
+        return Err(
+            "--channel (channel= in Python) applies to GSSI files only; none was given".to_string(),
+        );
+    }
+    let recordings = batch_recordings(&expanded_filepaths, params.options.channel)?;
     let threshold = params
         .merge
         .as_deref()
@@ -188,28 +208,26 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     // once, and the data is not.
     let read = (threshold.is_some() || params.id_pattern.is_some())
         .then(|| {
-            expanded_filepaths
+            recordings
                 .iter()
-                .map(|path| read_for_grouping(path, params))
+                .map(|recording| read_for_grouping(recording, params))
                 .collect::<Result<Vec<_>, String>>()
         })
         .transpose()?;
 
     let groups: Vec<(Vec<usize>, Option<Split>)> = match (threshold, &read) {
-        (Some(threshold), Some(read)) => {
-            grouping::group_chronologically(read, Some(threshold), &GroupingEdits::default())
-                .groups
-                .into_iter()
-                .map(|group| (group.members, group.split))
-                .collect()
-        }
-        _ => (0..expanded_filepaths.len())
-            .map(|i| (vec![i], None))
-            .collect(),
+        (Some(threshold), Some(read)) => group_each_channel(&recordings, read, threshold),
+        _ => (0..recordings.len()).map(|i| (vec![i], None)).collect(),
     };
     let names = match &read {
-        Some(read) => batch_names(params, &groups, &expanded_filepaths, read)?,
+        Some(read) => batch_names(params, &groups, &recordings, read)?,
         None => None,
+    };
+    let warnings = match (&read, params.id_pattern.as_deref()) {
+        (Some(read), Some(pattern)) => channel_warning(params, pattern, &recordings, read)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
     };
 
     let mut outputs = Vec::with_capacity(groups.len());
@@ -217,13 +235,20 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     for (index, (members, split)) in groups.into_iter().enumerate() {
         let group: Vec<PathBuf> = members
             .iter()
-            .map(|i| expanded_filepaths[*i].clone())
+            .map(|i| recordings[*i].path.clone())
             .collect();
+        // Grouping keeps each channel apart.
+        let channel = recordings[members[0]].channel;
         let first = &group[0];
         let file_stem = first
             .file_stem()
             .and_then(|s| s.to_str())
             .ok_or_else(|| format!("Could not derive output stem from {}", first.display()))?;
+        // As `ridal process` names a channel's output.
+        let file_stem = match channel {
+            Some(channel) => format!("{file_stem}_ch_{channel}"),
+            None => file_stem.to_string(),
+        };
         let (radargram_id, display_name, stem) = match &names {
             Some((ids, display_names)) => (
                 ids[index].to_string(),
@@ -234,9 +259,9 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
                 ids[index].to_string(),
             ),
             None => (
-                crate::identity::RadargramId::from_fallback(file_stem)?.to_string(),
+                crate::identity::RadargramId::from_fallback(&file_stem)?.to_string(),
                 None,
-                file_stem.to_string(),
+                file_stem,
             ),
         };
         let output = params.output_dir.join(format!("{stem}.nc"));
@@ -245,10 +270,15 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
         if let Some(other) = written.insert(output.clone(), first.clone()) {
             return Err(format!(
                 "{} and {} would both be written to {}. Rename one, or name the outputs \
-                 with --id-pattern.",
+                 with --id-pattern{}.",
                 other.display(),
                 first.display(),
-                output.display()
+                output.display(),
+                if channel.is_some() {
+                    ", using {channel} for the channels of a GSSI file"
+                } else {
+                    ""
+                }
             ));
         }
         outputs.push(PlannedOutput {
@@ -256,12 +286,14 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
             display_name,
             output,
             inputs: group,
+            channel,
             split,
         });
     }
     Ok(BatchPlan {
         merge_threshold_seconds: threshold,
         outputs,
+        warnings,
     })
 }
 
@@ -289,10 +321,157 @@ fn refuse_multiline(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether `path` is a GSSI recording, which `--channel` applies to.
+fn is_gssi(path: &Path) -> bool {
+    formats::resolve_input(path).is_ok_and(|r| r.kind == formats::FormatKind::Gssi)
+}
+
+/// One recording of a batch: a file, or one channel of a GSSI file.
+#[derive(Debug, Clone, PartialEq)]
+struct Recording {
+    path: PathBuf,
+    /// `None` for the whole file.
+    channel: Option<u32>,
+}
+
+/// The recordings the batch's files hold: each file, and each channel of a
+/// GSSI file of several, or only `channel` of every GSSI file when it is
+/// given. A channel a file does not have is an error, before anything is
+/// processed.
+fn batch_recordings(paths: &[PathBuf], channel: Option<u32>) -> Result<Vec<Recording>, String> {
+    let mut out = Vec::new();
+    for path in paths {
+        let whole = Recording {
+            path: path.clone(),
+            channel: None,
+        };
+        let resolved = match formats::resolve_input(path) {
+            Ok(resolved) if resolved.kind == formats::FormatKind::Gssi => resolved,
+            // Anything else, or an input that does not resolve, which is
+            // reported with its context when it is read.
+            _ => {
+                out.push(whole);
+                continue;
+            }
+        };
+        if let Some(channel) = channel {
+            formats::with_channel(vec![resolved], Some(channel))?;
+            out.push(Recording {
+                channel: Some(channel),
+                ..whole
+            });
+            continue;
+        }
+        let channels = crate::io::gssi_channels(&resolved.header)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        match channels.len() {
+            1 => out.push(whole),
+            _ => out.extend(channels.iter().map(|c| Recording {
+                channel: Some(c.number),
+                ..whole.clone()
+            })),
+        }
+    }
+    Ok(out)
+}
+
+/// Group each channel's recordings in time on its own, so that a file's
+/// channels, recorded side by side, are never merged, while the same
+/// channel of consecutive files is. The outputs are in the order their
+/// first recording started. Recordings without a channel are one stream,
+/// as every batch without GSSI channels is.
+fn group_each_channel(
+    recordings: &[Recording],
+    read: &[GroupingRecording],
+    threshold: f64,
+) -> Vec<(Vec<usize>, Option<Split>)> {
+    let mut channels: Vec<Option<u32>> = Vec::new();
+    for recording in recordings {
+        if !channels.contains(&recording.channel) {
+            channels.push(recording.channel);
+        }
+    }
+    let mut groups = Vec::new();
+    for channel in channels {
+        let indices: Vec<usize> = (0..recordings.len())
+            .filter(|&i| recordings[i].channel == channel)
+            .collect();
+        let these: Vec<GroupingRecording> = indices.iter().map(|&i| read[i].clone()).collect();
+        let grouping =
+            grouping::group_chronologically(&these, Some(threshold), &GroupingEdits::default());
+        groups.extend(grouping.groups.into_iter().map(|group| {
+            let members = group
+                .members
+                .iter()
+                .map(|&m| indices[m])
+                .collect::<Vec<_>>();
+            (members, group.split)
+        }));
+    }
+    // Stable, so one stream keeps the order grouping gave it.
+    groups.sort_by(|a, b| {
+        read[a.0[0]]
+            .start_seconds
+            .total_cmp(&read[b.0[0]].start_seconds)
+    });
+    groups
+}
+
+/// A warning when an id pattern may not tell the channels of a GSSI file
+/// apart: it uses neither `{channel}` nor, for a file whose channels have
+/// different frequencies, `{freq}`. Two outputs with one id are refused
+/// anyway; this is for ids that differ only by a counter, say, and so do
+/// not say which channel is which.
+fn channel_warning(
+    params: &BatchRunParams,
+    id_pattern: &str,
+    recordings: &[Recording],
+    read: &[GroupingRecording],
+) -> Option<String> {
+    let pattern =
+        crate::id_pattern::Pattern::parse(id_pattern, crate::id_pattern::PatternKind::Id).ok()?;
+    if params.options.channel.is_some() || pattern.uses_channel() {
+        return None;
+    }
+    let mut unclear: Vec<&PathBuf> = Vec::new();
+    for recording in recordings {
+        if recording.channel.is_none() || unclear.contains(&&recording.path) {
+            continue;
+        }
+        let frequencies: Vec<f32> = (0..recordings.len())
+            .filter(|&j| recordings[j].path == recording.path)
+            .map(|j| read[j].key.antenna_mhz.round())
+            .collect();
+        let distinct = frequencies
+            .iter()
+            .enumerate()
+            .all(|(k, f)| !frequencies[..k].contains(f));
+        if !(pattern.uses_freq() && distinct) {
+            unclear.push(&recording.path);
+        }
+    }
+    let first = unclear.first()?;
+    Some(format!(
+        "Warning: --id-pattern {id_pattern:?} uses neither {{channel}} nor a {{freq}} that \
+         differs between the channels, so the ids of {}{} may not say which channel each is. \
+         Add {{channel}} to the pattern, or read one channel with --channel.",
+        first.display(),
+        match unclear.len() {
+            1 => String::new(),
+            n => format!(" and {} other files", n - 1),
+        }
+    ))
+}
+
 /// One input's header and positions, as planning a batch reads them.
-fn read_for_grouping(path: &Path, params: &BatchRunParams) -> Result<GroupingRecording, String> {
-    let mut resolved = formats::resolve_input(path)
+fn read_for_grouping(
+    recording: &Recording,
+    params: &BatchRunParams,
+) -> Result<GroupingRecording, String> {
+    let path = &recording.path;
+    let resolved = formats::resolve_input(path)
         .map_err(|e| format!("Failed to resolve input '{}': {e}", path.display()))?;
+    let mut resolved = formats::with_channel(vec![resolved], recording.channel)?.remove(0);
     formats::with_coordinates(
         std::slice::from_mut(&mut resolved),
         params.options.cor_path.as_deref(),
@@ -318,6 +497,7 @@ pub fn output_facts(
     first: &Path,
     recording: &GroupingRecording,
     n_files: usize,
+    channel: Option<u32>,
 ) -> crate::id_pattern::OutputFacts {
     crate::id_pattern::OutputFacts {
         label: first
@@ -331,6 +511,7 @@ pub fn output_facts(
         start_seconds: recording.start_seconds,
         antenna_mhz: recording.key.antenna_mhz,
         n_files,
+        channel: channel.unwrap_or(1),
     }
 }
 
@@ -345,7 +526,7 @@ pub fn output_facts(
 fn batch_names(
     params: &BatchRunParams,
     groups: &[(Vec<usize>, Option<Split>)],
-    paths: &[PathBuf],
+    recordings: &[Recording],
     read: &[GroupingRecording],
 ) -> Result<
     Option<(
@@ -385,7 +566,10 @@ fn batch_names(
 
     let outputs: Vec<_> = groups
         .iter()
-        .map(|(members, _)| output_facts(&paths[members[0]], &read[members[0]], members.len()))
+        .map(|(members, _)| {
+            let first = &recordings[members[0]];
+            output_facts(&first.path, &read[members[0]], members.len(), first.channel)
+        })
         .collect();
 
     let existing = if id_pattern.needs_existing_ids() {
@@ -607,5 +791,180 @@ mod tests {
         assert!(super::run_batch(params)
             .unwrap_err()
             .contains("needs --id-pattern"));
+    }
+
+    fn two_channel_batch(
+        input: &std::path::Path,
+        output: &std::path::Path,
+        channel: Option<u32>,
+        merge: Option<&str>,
+        id_pattern: Option<&str>,
+    ) -> super::BatchRunParams {
+        use crate::io::test_dzt;
+        super::BatchRunParams {
+            filepaths: vec![
+                test_dzt::write_two_channel_recording(input, "first"),
+                test_dzt::write_two_channel_recording(input, "second"),
+            ],
+            output_dir: output.to_path_buf(),
+            track_dir: None,
+            render_dir: None,
+            merge: merge.map(str::to_string),
+            id_pattern: id_pattern.map(str::to_string),
+            display_name_pattern: None,
+            options: super::ProcessingOptions {
+                quiet: true,
+                channel,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn planned(plan: &super::BatchPlan) -> Vec<(String, Vec<String>, Option<u32>)> {
+        plan.outputs
+            .iter()
+            .map(|o| {
+                (
+                    o.output.file_name().unwrap().to_string_lossy().to_string(),
+                    o.inputs
+                        .iter()
+                        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+                        .collect(),
+                    o.channel,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_batch_makes_each_channel_its_own_output_or_reads_the_one_given() {
+        let input = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let plan = |channel, merge| {
+            super::plan_batch(&two_channel_batch(
+                input.path(),
+                output.path(),
+                channel,
+                merge,
+                None,
+            ))
+            .unwrap()
+        };
+        let one = |name: &str, channel| {
+            (
+                format!("{name}_ch_{channel}.nc"),
+                vec![format!("{name}.DZT")],
+                Some(channel),
+            )
+        };
+
+        assert_eq!(
+            planned(&plan(None, None)),
+            [
+                one("first", 1),
+                one("first", 2),
+                one("second", 1),
+                one("second", 2)
+            ]
+        );
+        assert_eq!(
+            planned(&plan(Some(1), None)),
+            [one("first", 1), one("second", 1)]
+        );
+        let error = super::plan_batch(&two_channel_batch(
+            input.path(),
+            output.path(),
+            Some(3),
+            None,
+            None,
+        ))
+        .unwrap_err();
+        assert!(error.contains("has no channel 3"), "{error}");
+
+        // Merged, each channel of the two files is one radargram, recorded
+        // at the same time as the other channel's.
+        let merged = plan(None, Some("10 min"));
+        let both = || vec!["first.DZT".to_string(), "second.DZT".to_string()];
+        assert_eq!(
+            planned(&merged),
+            [
+                ("first_ch_1.nc".to_string(), both(), Some(1)),
+                ("first_ch_2.nc".to_string(), both(), Some(2)),
+            ]
+        );
+        assert!(merged.warnings.is_empty());
+    }
+
+    #[test]
+    fn an_id_pattern_names_the_channels_or_is_warned_about() {
+        let input = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let plan = |channel, pattern| {
+            super::plan_batch(&two_channel_batch(
+                input.path(),
+                output.path(),
+                channel,
+                None,
+                Some(pattern),
+            ))
+        };
+        let ids = |plan: &super::BatchPlan| {
+            plan.outputs
+                .iter()
+                .map(|o| o.radargram_id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let named = plan(None, "{stem}-ch{channel}").unwrap();
+        assert_eq!(
+            ids(&named),
+            ["first-ch1", "first-ch2", "second-ch1", "second-ch2"]
+        );
+        assert!(named.warnings.is_empty(), "{:?}", named.warnings);
+        // The channels of a 300/800D file differ in frequency.
+        let by_freq = plan(None, "{stem}-{freq}mhz").unwrap();
+        assert_eq!(ids(&by_freq)[..2], ["first-800mhz", "first-300mhz"]);
+        assert!(by_freq.warnings.is_empty(), "{:?}", by_freq.warnings);
+
+        let counted = plan(None, "line-{n:02}").unwrap();
+        let [warning] = &counted.warnings[..] else {
+            panic!("expected one warning: {:?}", counted.warnings);
+        };
+        assert!(warning.contains("uses neither {channel}"), "{warning}");
+        assert!(warning.contains("first.DZT and 1 other files"), "{warning}");
+        // One channel of each needs no telling apart.
+        assert!(plan(Some(2), "line-{n:02}").unwrap().warnings.is_empty());
+        // Two outputs with one id are refused, as ever.
+        let error = plan(None, "{stem}").unwrap_err();
+        assert!(error.contains("first"), "{error}");
+    }
+
+    #[test]
+    fn a_batch_processes_every_channel() {
+        let input = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let params = two_channel_batch(
+            input.path(),
+            output.path(),
+            None,
+            None,
+            Some("{stem}-ch{channel}"),
+        );
+        let result = super::run_batch(params).unwrap();
+        let mut written = result
+            .output_paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        written.sort();
+        assert_eq!(
+            written,
+            [
+                "first-ch1.nc",
+                "first-ch2.nc",
+                "second-ch1.nc",
+                "second-ch2.nc"
+            ]
+        );
     }
 }

@@ -21,6 +21,8 @@ pub struct InfoParams {
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
     pub override_date: Option<chrono::NaiveDate>,
+    /// The channel of multi-channel files (GSSI) to describe, from 1.
+    pub channel: Option<u32>,
     pub sidecar: crate::sidecar::Choice,
 }
 
@@ -432,6 +434,7 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
             params.override_antenna_separation.is_some(),
         ),
         ("override_date", params.override_date.is_some()),
+        ("channel", params.channel.is_some()),
     ];
     if let Some(netcdf) = expanded.iter().find(|input| input::is_netcdf(input)) {
         let given: Vec<&str> = raw_only
@@ -449,11 +452,12 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
         }
     }
 
-    let mut raw = expanded
+    let raw = expanded
         .iter()
         .filter(|input| !input::is_netcdf(input))
         .map(|input| formats::resolve_input(input))
         .collect::<Result<Vec<_>, String>>()?;
+    let mut raw = formats::with_channel(raw, params.channel)?;
     formats::with_coordinates(&mut raw, params.cor_path.as_deref())?;
     crate::sidecar::with_sidecar(&mut raw, &params.sidecar)?;
     let mut raw = raw.into_iter();
@@ -498,6 +502,7 @@ pub(crate) mod tests {
             override_antenna_mhz: None,
             override_antenna_separation: None,
             override_date: None,
+            channel: None,
             sidecar: crate::sidecar::Choice::Beside,
         }
     }
@@ -774,6 +779,7 @@ mod coordinate_tests {
             override_antenna_mhz: None,
             override_antenna_separation: None,
             override_date: None,
+            channel: None,
             sidecar: crate::sidecar::Choice::Beside,
         }
     }

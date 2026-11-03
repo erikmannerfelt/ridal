@@ -954,10 +954,17 @@ class Part:
     """Which part of a file holding several recordings one recording is."""
 
     line: int | None
+    #: The channel of a GSSI file, from 1. ``None`` from a server older
+    #: than channels.
+    channel: int | None = None
 
     @classmethod
     def from_json(cls, data: Any) -> "Part":
-        return _parse("part of a file", data, lambda d: cls(line=d["line"]))
+        return _parse(
+            "part of a file",
+            data,
+            lambda d: cls(line=d["line"], channel=d.get("channel")),
+        )
 
 
 @dataclass(frozen=True)

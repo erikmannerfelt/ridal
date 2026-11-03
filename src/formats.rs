@@ -49,9 +49,9 @@ pub struct ResolvedInput {
 ///
 /// Every field `None` (the default) is the whole file, which is every
 /// recording of a format whose files hold one. Lines (IceRadar) are
-/// recorded one after another and may be merged in order; a field for
-/// channels, recorded side by side, would sit beside `line` and never be
-/// merged. Internal: users choose with the format's own word (`--lines`).
+/// recorded one after another and may be merged in order; channels (GSSI)
+/// are recorded side by side and never are. Internal: users choose with
+/// the format's own word (`--lines`, `--channel`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Part {
@@ -61,6 +61,10 @@ pub struct Part {
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub line: Option<u32>,
+    /// The channel of a GSSI file, from 1 as GSSI numbers them.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub channel: Option<u32>,
 }
 
 impl Part {
@@ -461,11 +465,83 @@ pub fn with_lines(
             }
         };
         out.extend(chosen.into_iter().map(|line| ResolvedInput {
-            part: Part { line: Some(line) },
+            part: Part {
+                line: Some(line),
+                ..recording.part
+            },
             ..recording.clone()
         }));
     }
     Ok(out)
+}
+
+/// Choose the channel of each GSSI recording: `--channel`.
+///
+/// A file of one channel needs no choice. A file of several needs one, and
+/// the error lists its channels: they are recorded side by side, with
+/// different antennas or frequencies, so they are never merged, and one
+/// run reads the same channel of every file given. A choice for inputs
+/// that hold no channels is refused rather than ignored.
+pub fn with_channel(
+    resolved: Vec<ResolvedInput>,
+    channel: Option<u32>,
+) -> Result<Vec<ResolvedInput>, String> {
+    if channel.is_some() && resolved.iter().all(|r| r.kind != FormatKind::Gssi) {
+        return Err(
+            "--channel (channel= in Python) applies to GSSI files only; none was given".to_string(),
+        );
+    }
+    let mut out = Vec::new();
+    for mut recording in resolved {
+        if recording.kind != FormatKind::Gssi {
+            out.push(recording);
+            continue;
+        }
+        let channels = crate::io::gssi_channels(&recording.header).map_err(|e| e.to_string())?;
+        match channel {
+            // Left unset, so the output and the recipe are those of a file
+            // without channels.
+            None if channels.len() == 1 => {}
+            None => return Err(describe_channels(&recording, &channels)),
+            Some(wanted) if !channels.iter().any(|c| c.number == wanted) => {
+                return Err(format!(
+                    "{} has no channel {wanted}; its channels are {}",
+                    recording.header.display(),
+                    channels
+                        .iter()
+                        .map(|c| c.number.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            Some(wanted) => recording.part.channel = Some(wanted),
+        }
+        out.push(recording);
+    }
+    Ok(out)
+}
+
+/// The error for a file of several channels read without choosing one.
+fn describe_channels(recording: &ResolvedInput, channels: &[crate::io::GssiChannel]) -> String {
+    let listing = channels
+        .iter()
+        .map(|c| {
+            let mhz = c
+                .antenna_mhz
+                .map(|mhz| format!("{mhz} MHz, "))
+                .unwrap_or_default();
+            format!("channel {} ({mhz}{:.1} ns)", c.number, c.time_window)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{} holds {} channels: {listing}. Choose one with --channel (channel= in Python), \
+         such as --channel {}. Channels are recorded side by side and are not merged; \
+         process each in its own run.",
+        recording.header.display(),
+        channels.len(),
+        channels[0].number,
+    )
 }
 
 /// A recording's files from any one of them, with the format's own

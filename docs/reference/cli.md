@@ -60,6 +60,10 @@ Override the antenna separation (in m) from file metadata
 The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
 ```
 
+```{option} --channel <N>
+Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them; the same channel is read from every file given. Required for a file of more than one channel, except by batch-process, which without it makes each channel its own output. Channels are recorded side by side and are never merged
+```
+
 ```{option} --sidecar <PATH>
 A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it
 ```
@@ -187,6 +191,10 @@ Override the antenna separation (in m) from file metadata
 The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
 ```
 
+```{option} --channel <N>
+Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them; the same channel is read from every file given. Required for a file of more than one channel, except by batch-process, which without it makes each channel its own output. Channels are recorded side by side and are never merged
+```
+
 ```{option} --sidecar <PATH>
 A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it
 ```
@@ -252,7 +260,7 @@ Explicit override for the group's id, when the id automatically derived from --g
 ```
 
 ```{option} --id-pattern <ID_PATTERN>
-Name each output's radargram id after a pattern, and its file `<id>.nc`. Placeholders: {stem} (first input's file stem), {n} (a counter in time order), {freq} (antenna MHz), {nfiles} (inputs merged), {date} (YYYYMMDD) and {group}. {n:02} pads to two digits; {n, from=15} starts at 15, {n, from=next} continues after the ids already in the output directory, and {n, per=freq} counts each frequency separately. Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}"
+Name each output's radargram id after a pattern, and its file `<id>.nc`. Placeholders: {stem} (first input's file stem), {n} (a counter in time order), {freq} (antenna MHz), {nfiles} (inputs merged), {date} (YYYYMMDD), {group} and {channel} (GSSI channel, 1 for a file of one). {n:02} pads to two digits; {n, from=15} starts at 15, {n, from=next} continues after the ids already in the output directory, and {n, per=freq} counts each frequency separately. Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}"
 ```
 
 ```{option} --display-name-pattern <DISPLAY_NAME_PATTERN>
@@ -320,6 +328,10 @@ Override the antenna separation (in m) from file metadata
 
 ```{option} --override-date <YYYY-MM-DD>
 The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
+```
+
+```{option} --channel <N>
+Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them; the same channel is read from every file given. Required for a file of more than one channel, except by batch-process, which without it makes each channel its own output. Channels are recorded side by side and are never merged
 ```
 
 ```{option} --sidecar <PATH>
@@ -434,6 +446,10 @@ Remove a value, by its key in the sidecar (antenna_mhz, antenna_separation_m). R
 
 ```{option} --lines <LINES>
 For an IceRadar file: change these lines' own values (line 3, 0,2-4 or all), which take precedence over the file's, instead of the file's
+```
+
+```{option} --channel <N>
+For a GSSI file of several channels: change this channel's own values (from 1), which take precedence over the file's, instead of the file's
 ```
 
 ```{option} --template

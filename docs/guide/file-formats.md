@@ -28,8 +28,9 @@ a coordinate CSV, either beside the recording as `<stem>.coords.csv` or with
 `--cor` (see {ref}`coordinate-csv`).
 
 Ridal reads but does not yet write these formats (see
-{doc}`../background/scope`). Multi-channel GSSI files are refused for now;
-a single-channel file whose last trace was cut short is read without it.
+{doc}`../background/scope`). A GSSI file of several channels is read one
+channel at a time (see [below](#gssi)), and one whose last trace was cut
+short is read without it.
 
 ### What is read from the header
 
@@ -78,6 +79,39 @@ ice).
 
 In the GUI, the **Process…** dialog and **Add raw data in bulk…** take the
 antenna overrides (see {doc}`gui`), but not yet the date.
+
+(gssi)=
+### GSSI
+
+Channels
+: A GSSI file can hold several *channels*, recorded side by side: one per
+  antenna, or one per frequency of a dual-frequency antenna. Each channel
+  has its own header, with its own time window, and the traces are stored
+  scan by scan, one trace of every channel in turn. A file of one channel
+  is read like any other recording. A file of several needs `--channel N`
+  (`channel=` in Python), numbered from 1 as GSSI numbers them, and fails
+  with a list of its channels until it is given. Channels are never merged:
+  each is its own radargram, named `<stem>_ch_<N>.nc`, so a file of two
+  channels is processed in two runs. The same channel is read from every
+  file given. `batch-process` makes each channel its own output, unless
+  `--channel N` reads one (see {doc}`cli`). `ridal info` describes the
+  channel given. A server source does not
+  record a channel yet, so the GUI lists a file of several channels as
+  unreadable, naming its channels.
+
+Antenna
+: The frequency is read from the antenna's name. A dual-frequency antenna
+  names both frequencies (`300/800D`) and records the higher one on
+  channel 1, so channel 1 of a `300/800D` file is read as 800 MHz and
+  channel 2 as 300 MHz. GSSI files do not record the antenna separation,
+  which is 0 m with a warning unless given; the two channels of a
+  dual-frequency antenna may have different separations, which a sidecar
+  gives each channel with `[channels.<N>]`.
+
+Date
+: The `.DZG` positions carry their own dates. Dates a GPS week-number
+  rollover behind the `.DZT`'s creation date are corrected, as described
+  under Date above.
 
 (iceradar)=
 ### IceRadar

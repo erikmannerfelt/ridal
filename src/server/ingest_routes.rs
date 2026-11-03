@@ -746,6 +746,8 @@ pub fn plan(
                 start_seconds: read_ok(first).grouping.start_seconds,
                 antenna_mhz: read_ok(first).grouping.key.antenna_mhz,
                 n_files: reads.len(),
+                // A server source holds no file of several channels yet.
+                channel: 1,
             }
         })
         .collect();

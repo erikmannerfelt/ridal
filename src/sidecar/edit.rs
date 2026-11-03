@@ -21,7 +21,14 @@ pub struct Edit {
     /// For an IceRadar file, the lines whose own tables to change instead
     /// of the file's.
     pub lines: Option<LineSelection>,
+    /// For a GSSI file, the channel whose own table to change instead of
+    /// the file's, from 1.
+    pub channel: Option<u32>,
 }
+
+/// Which tables of a sidecar an edit changes: the file's (`None`), or one
+/// line's or channel's.
+type Place = Option<(&'static str, u32)>;
 
 /// What happened to one recording's sidecar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +121,19 @@ fn chosen_lines(resolved: &ResolvedInput, selection: &LineSelection) -> Result<V
     }
 }
 
+/// Check that the file of `resolved` has channel `channel`.
+fn chosen_channel(resolved: &ResolvedInput, channel: u32) -> Result<u32, String> {
+    if resolved.kind != FormatKind::Gssi {
+        return Err(format!(
+            "--channel (channel= in Python) applies to GSSI files only; {} is a {} file",
+            resolved.header.display(),
+            formats::display_name(resolved.kind)
+        ));
+    }
+    formats::with_channel(vec![resolved.clone()], Some(channel))?;
+    Ok(channel)
+}
+
 /// A sidecar's number as TOML writes it: the shortest decimal that reads
 /// back as the same `f32`, so `0.1` is not written as `0.10000000149`.
 fn number(value: f32) -> toml_edit::Item {
@@ -122,12 +142,12 @@ fn number(value: f32) -> toml_edit::Item {
 }
 
 /// The `overrides` table at `place` in `document`, made where it is
-/// missing: the top level for `None`, a line's for `Some`. Tables made only
-/// to hold another are implicit, so a new line's values are written under
-/// one `[lines.N.overrides]` header.
+/// missing: the top level for `None`, a line's or channel's for `Some`.
+/// Tables made only to hold another are implicit, so a new line's values
+/// are written under one `[lines.N.overrides]` header.
 fn overrides_table(
     document: &mut toml_edit::DocumentMut,
-    line: Option<u32>,
+    place: Place,
 ) -> Result<&mut toml_edit::Table, String> {
     fn child<'a>(
         table: &'a mut toml_edit::Table,
@@ -144,19 +164,19 @@ fn overrides_table(
             .ok_or_else(|| format!("{where_}{key} is not a table"))
     }
     let root = document.as_table_mut();
-    match line {
+    match place {
         None => child(root, "overrides", false, ""),
-        Some(line) => {
-            let lines = child(root, "lines", true, "")?;
-            let this = child(lines, &line.to_string(), true, "lines.")?;
-            child(this, "overrides", false, &format!("lines.{line}."))
+        Some((kind, n)) => {
+            let all = child(root, kind, true, "")?;
+            let this = child(all, &n.to_string(), true, &format!("{kind}."))?;
+            child(this, "overrides", false, &format!("{kind}.{n}."))
         }
     }
 }
 
 /// `text`, the sidecar at `path`, with `edit` made in the tables of each
-/// of `lines` (the file's for `None`).
-fn edited(text: &str, path: &Path, edit: &Edit, lines: &[Option<u32>]) -> Result<String, String> {
+/// of `places`.
+fn edited(text: &str, path: &Path, edit: &Edit, places: &[Place]) -> Result<String, String> {
     let mut document: toml_edit::DocumentMut = text
         .parse()
         .map_err(|e| format!("{} is not a valid sidecar: {e}", path.display()))?;
@@ -164,8 +184,8 @@ fn edited(text: &str, path: &Path, edit: &Edit, lines: &[Option<u32>]) -> Result
         // Written before every table, as top-level values are.
         document["schema"] = toml_edit::value(i64::from(SCHEMA));
     }
-    for &line in lines {
-        let table = overrides_table(&mut document, line)?;
+    for &place in places {
+        let table = overrides_table(&mut document, place)?;
         for (key, value) in edit.set.entries() {
             if let Some(value) = value {
                 table[key] = number(value);
@@ -175,30 +195,30 @@ fn edited(text: &str, path: &Path, edit: &Edit, lines: &[Option<u32>]) -> Result
             table.remove(key);
         }
         if table.is_empty() {
-            remove_empty(&mut document, line);
+            remove_empty(&mut document, place);
         }
     }
     Ok(document.to_string())
 }
 
 /// Remove the `overrides` table at `place` and whatever only held it.
-fn remove_empty(document: &mut toml_edit::DocumentMut, line: Option<u32>) {
-    let Some(line) = line else {
+fn remove_empty(document: &mut toml_edit::DocumentMut, place: Place) {
+    let Some((kind, n)) = place else {
         document.remove("overrides");
         return;
     };
-    let key = line.to_string();
-    let Some(lines) = document.get_mut("lines").and_then(|l| l.as_table_mut()) else {
+    let key = n.to_string();
+    let Some(all) = document.get_mut(kind).and_then(|l| l.as_table_mut()) else {
         return;
     };
-    if let Some(this) = lines.get_mut(&key).and_then(|t| t.as_table_mut()) {
+    if let Some(this) = all.get_mut(&key).and_then(|t| t.as_table_mut()) {
         this.remove("overrides");
         if this.is_empty() {
-            lines.remove(&key);
+            all.remove(&key);
         }
     }
-    if lines.is_empty() {
-        document.remove("lines");
+    if all.is_empty() {
+        document.remove(kind);
     }
 }
 
@@ -250,10 +270,14 @@ fn check_keys(edit: &Edit) -> Result<(), String> {
 ///
 /// # Errors
 /// An input that is not a recording, a value out of range, an unknown key,
-/// `lines` for a format without them or a line a file does not have, or an
-/// existing sidecar that is not valid. Nothing is written then.
+/// `lines` or `channel` for a format without them or a line or channel a
+/// file does not have, or an existing sidecar that is not valid. Nothing is
+/// written then.
 pub fn apply(inputs: &[PathBuf], edit: &Edit) -> Result<Vec<Outcome>, String> {
     check_keys(edit)?;
+    if edit.lines.is_some() && edit.channel.is_some() {
+        return Err("--lines and --channel cannot both be given: no file has both".to_string());
+    }
     let mut planned = Vec::new();
     for resolved in recordings(inputs)? {
         let path = sidecar_path(&resolved)?;
@@ -266,17 +290,23 @@ pub fn apply(inputs: &[PathBuf], edit: &Edit) -> Result<Vec<Outcome>, String> {
         };
         // The file as it is must be valid, or its mistakes would be kept.
         super::parse(&before, &path)?;
-        let lines = match &edit.lines {
-            None => vec![None],
-            Some(selection) => chosen_lines(&resolved, selection)?
+        let places = match (&edit.lines, edit.channel) {
+            (Some(selection), _) => chosen_lines(&resolved, selection)?
                 .into_iter()
-                .map(Some)
+                .map(|line| Some(("lines", line)))
                 .collect(),
+            (None, Some(channel)) => vec![Some(("channels", chosen_channel(&resolved, channel)?))],
+            (None, None) => vec![None],
         };
-        let after = edited(&before, &path, edit, &lines)?;
+        let after = edited(&before, &path, edit, &places)?;
         // As every reader will read it.
         let sidecar = super::parse(&after, &path)?;
-        super::check_lines(&sidecar, &path, &resolved)?;
+        if !sidecar.lines.is_empty() {
+            super::check_lines(&sidecar, &path, &resolved)?;
+        }
+        if !sidecar.channels.is_empty() {
+            super::check_channels(&sidecar, &path, &resolved)?;
+        }
         let outcome = match (exists, before == after) {
             (true, true) => Outcome::Unchanged(path),
             (true, false) => Outcome::Changed(path),
@@ -314,8 +344,20 @@ fn header_values(resolved: &ResolvedInput) -> Overrides {
 
 /// A sidecar for `resolved` that sets nothing: every key commented out,
 /// with what the header says of it.
-fn template_text(resolved: &ResolvedInput) -> String {
-    let header = header_values(resolved);
+fn template_text(resolved: &ResolvedInput) -> Result<String, String> {
+    let channels = match resolved.kind {
+        FormatKind::Gssi => {
+            crate::io::gssi_channels(&resolved.header).map_err(|e| e.to_string())?
+        }
+        _ => Vec::new(),
+    };
+    // A file of several channels has a header for each, and none of its
+    // own to describe.
+    let several_channels = channels.len() > 1;
+    let header = match several_channels {
+        true => Overrides::default(),
+        false => header_values(resolved),
+    };
     let name = resolved
         .header
         .file_name()
@@ -335,7 +377,29 @@ fn template_text(resolved: &ResolvedInput) -> String {
         text += &format!("# {key} ({}): {}\n", about.unit, about.description);
         match said {
             Some(value) => text += &format!("# The header says {value}.\n# {key} = {value}\n"),
+            None if several_channels => {
+                text += &format!("# Each channel's header says its own; see below.\n# {key} =\n")
+            }
             None => text += &format!("# The header does not record it.\n# {key} =\n"),
+        }
+    }
+    if several_channels {
+        text += "\n# Each channel's own values, which take precedence over the file's.\n";
+        for channel in &channels {
+            let header = header_values(&ResolvedInput {
+                part: formats::Part {
+                    channel: Some(channel.number),
+                    ..resolved.part
+                },
+                ..resolved.clone()
+            });
+            text += &format!("# [channels.{}.overrides]\n", channel.number);
+            for (key, said) in header.entries() {
+                match said {
+                    Some(value) => text += &format!("# {key} = {value}\n"),
+                    None => text += &format!("# {key} =\n"),
+                }
+            }
         }
     }
     if resolved.kind == FormatKind::IceRadar {
@@ -343,7 +407,7 @@ fn template_text(resolved: &ResolvedInput) -> String {
                  # [lines.0.overrides]\n\
                  # antenna_separation_m =\n";
     }
-    text
+    Ok(text)
 }
 
 /// Write a template sidecar (every key commented out, with what the header
@@ -356,7 +420,7 @@ pub fn template(inputs: &[PathBuf]) -> Result<Vec<Outcome>, String> {
             outcomes.push(Outcome::Exists(path));
             continue;
         }
-        write_replacing(&path, &template_text(&resolved))?;
+        write_replacing(&path, &template_text(&resolved)?)?;
         outcomes.push(Outcome::Created(path));
     }
     Ok(outcomes)
@@ -579,5 +643,49 @@ mod tests {
             template(std::slice::from_ref(&rad)).unwrap(),
             [Outcome::Exists(path)]
         );
+    }
+
+    #[test]
+    fn a_channel_gets_its_own_table_and_a_template_lists_them() {
+        use crate::io::test_dzt;
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = test_dzt::write_two_channel_recording(dir.path(), "track");
+        let sidecar = dir.path().join("track.ridal.toml");
+        let edit = |channel| Edit {
+            set: Overrides {
+                antenna_separation_m: Some(2.5),
+                ..Default::default()
+            },
+            channel,
+            ..Default::default()
+        };
+
+        let template = template_text(&crate::formats::resolve_input(&dzt).unwrap()).unwrap();
+        assert!(
+            template.contains("# [channels.1.overrides]\n# antenna_mhz = 800\n"),
+            "{template}"
+        );
+        assert!(
+            template.contains("# [channels.2.overrides]\n# antenna_mhz = 300\n"),
+            "{template}"
+        );
+
+        apply(std::slice::from_ref(&dzt), &edit(Some(2))).unwrap();
+        let written = std::fs::read_to_string(&sidecar).unwrap();
+        assert!(
+            written.contains("[channels.2.overrides]\nantenna_separation_m = 2.5\n"),
+            "{written}"
+        );
+        let error = apply(std::slice::from_ref(&dzt), &edit(Some(3))).unwrap_err();
+        assert!(error.contains("has no channel 3"), "{error}");
+
+        let unset = Edit {
+            unset: vec!["antenna_separation_m".to_string()],
+            channel: Some(2),
+            ..Default::default()
+        };
+        apply(std::slice::from_ref(&dzt), &unset).unwrap();
+        let written = std::fs::read_to_string(&sidecar).unwrap();
+        assert!(!written.contains("channels"), "{written}");
     }
 }

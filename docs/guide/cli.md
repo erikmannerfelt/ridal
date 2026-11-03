@@ -89,6 +89,12 @@ dat_0144_a1 -> output/DAT_0144_A1.nc
 Two inputs that would write the same output, such as files with one name in
 different directories, are refused rather than overwriting each other.
 
+A GSSI file of several channels (see {ref}`gssi`) gives one output per
+channel, named `<stem>_ch_<N>.nc`, and `--channel N` reads only that one of
+each file. Channels are never merged with each other: with `--merge`, each
+channel of consecutive files is joined on its own, so two files of two
+channels make two outputs, one per channel.
+
 `-r` and `-t` on their own put the images and tracks in the output
 directory, or in the directory given after them. With `--no-export`, `-o` is
 optional and those go in the current directory.
@@ -114,9 +120,10 @@ ridal batch-process "data/*.rd3" --merge "10 min" --default -o output/ \
 | `{nfiles}` | how many inputs were merged into the output |
 | `{date}` | the date of the first trace, `YYYYMMDD` |
 | `{group}` | the group id, from `--group-name` or `--group-id` |
+| `{channel}` | the channel of a GSSI file of several, from 1; `1` for any other recording |
 
-`{n:02}` pads a number to two digits, and so do `{freq:04}` and
-`{nfiles:02}`. The counter takes options after a comma:
+`{n:02}` pads a number to two digits, and so do `{freq:04}`,
+`{nfiles:02}` and `{channel:02}`. The counter takes options after a comma:
 
 - `{n, from=15}` starts at 15.
 - `{n, from=next}` continues after the highest number among the radargrams
@@ -124,7 +131,12 @@ ridal batch-process "data/*.rd3" --merge "10 min" --default -o output/ \
 - `{n, per=freq}` counts each frequency separately, so the example above
   gives `dronbreen-2026-100mhz-01`, `dronbreen-2026-100mhz-02` and
   `dronbreen-2026-800mhz-01`. `per=freq+date` counts each frequency on each
-  day.
+  day, and `per=channel` each channel.
+
+A batch with GSSI files of several channels warns when the pattern does not
+say which channel each output is: when it has no `{channel}`, and no
+`{freq}` that differs between the channels, as it does for a `300/800D`
+antenna's 800 and 300 MHz.
 
 An id may only hold lowercase ASCII letters, digits, `-` and `_`, so the text
 around the placeholders is checked when the pattern is read: write `mhz`, not

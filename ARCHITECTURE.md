@@ -978,7 +978,7 @@ CSV (`src/io/coords_csv.rs`) are interchangeable readers.
   uses them to check; a clear error that names `ridal coords` was chosen
   instead.
 
-## Files that hold several recordings (IceRadar)
+## Files that hold several recordings (IceRadar, GSSI)
 
 An IceRadar file (`src/io/iceradar.rs`) is header, data and positions at
 once, and can hold several lines. A line is one recording: everything after
@@ -991,8 +991,8 @@ input resolution treats it as one file would be treated.
   `LineSelection`). `Part` is internal and general, and the flags use the
   instrument's word: lines are recorded one after another and may be
   merged, where channels (GSSI, and possibly IceRadar's `datacapture_N`)
-  are recorded side by side and must not be, so a `channel` beside `line`
-  would come with its own `--channels` rather than a shared `--parts`. The expansion runs before
+  are recorded side by side and must not be, so `channel` beside `line`
+  comes with its own `--channel` rather than a shared `--parts`. The expansion runs before
   `with_coordinates`, which counts the lines of one file as one recording:
   a single coordinate CSV holds every line of a file, as the file does,
   with a `line` column (`io::CsvPart`) that each line reads its own rows
@@ -1022,9 +1022,41 @@ input resolution treats it as one file would be treated.
 - **Open: batches and the server.** `batch-process` refuses a multi-line
   file, because a batch plan is a list of paths. Making it a list of
   resolved inputs would let batches, and the ingest planner that shares the
-  plan, treat each part as a recording, as a GSSI file of several channels
-  will need. A server source does not record a part either, so reprocessing one of several
-  lines fails asking for `--lines` rather than reading the wrong one.
+  plan, treat each part as a recording. A server source does not record a
+  part either, so reprocessing one of several lines fails asking for
+  `--lines` rather than reading the wrong one, and the ingest planner lists
+  a GSSI file of several channels as unreadable, naming them.
+- **GSSI channels: one per run, never merged.** `formats::with_channel`
+  sets `Part::channel` from `--channel` on every GSSI input, where
+  `with_lines` expands one input into several: one run reads one channel,
+  of every file given, and writes `<stem>_ch_<N>.nc`, so no option can
+  merge two channels. Channels are numbered from 1, as GSSI's own software
+  and `.DZX` files number them, unlike IceRadar's lines, which keep the
+  file's own `line_N` numbering. A channel is hashed into the recipe only
+  when set, so recipes with a line keep their hash.
+- **A batch plans recordings, not files.** `batch::batch_recordings`
+  expands each GSSI file of several channels into one `Recording` per
+  channel (or keeps the `--channel` given), and each `PlannedOutput`
+  carries its channel into the run's `ProcessingOptions`, so one batch
+  processes every channel. `group_each_channel` groups each channel in
+  time on its own, and orders the outputs by start: channels of one file
+  share their times, so in one chronological stream they would alternate
+  and nothing would merge. Without channels it is the one stream it always
+  was. An id pattern gets `{channel}`; a pattern that neither uses it nor a
+  `{freq}` that tells a file's channels apart is warned about rather than
+  refused, since its ids are still unique (duplicates are refused anyway).
+  IceRadar lines could be planned the same way, as a `Recording` field
+  beside `channel`; they are still refused.
+- **Each channel is read through its own header.** A DZT starts with one
+  1024-byte header per channel (each with its own `range`, so its own
+  sample interval), then the scans, each one trace of every channel in
+  turn. `io::gssi::DztLayout` reads the headers from the first 16 KiB and
+  the file's length alone, so listing channels and reading a header do not
+  read the data. Channels of different sample counts or widths are refused
+  rather than guessed at. A dual-frequency antenna's name (`300/800D`) says
+  both frequencies but not which channel has which; the higher on channel 1
+  was checked on a SIR 4000 recording by the two channels' spectra, and is
+  the only dual-frequency name mapped.
 
 ## Sidecars (#527)
 
@@ -1063,8 +1095,12 @@ writer once there are writers (#99). The user-facing description is
   Hashing values rather than the file's bytes means a comment or a
   reformatted sidecar is the same revision. A value given as an argument is
   a different recipe from the same value in a sidecar.
-- **Per line, not per channel yet.** `[lines.<N>]` mirrors `formats::Part`;
-  interleaved multi-channel GSSI would get `[channels.<N>]` the same way.
+- **Per line and per channel.** `[lines.<N>]` and `[channels.<N>]` mirror
+  `formats::Part`, each checked against the file (`check_lines`,
+  `check_channels`), and `ridal override --lines`/`--channel` writes them.
+  A template for a file of several channels lists each channel's header
+  values in commented-out `[channels.<N>.overrides]` tables, since the file
+  has no single header to describe.
 - **On a server, values, not files.** A source keeps a recording's
   sidecar as `Bundle::overrides`, the type its recipe records, so
   `state_of` compares the two directly (through

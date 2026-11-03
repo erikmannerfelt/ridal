@@ -338,10 +338,6 @@ impl GPR {
                 metadata.samples as usize,
                 metadata.last_trace as usize,
             )?),
-            Some(ext) if ext.eq_ignore_ascii_case("dzt") => Ok(io::load_dzt(
-                &metadata.data_filepath,
-                metadata.samples as usize,
-            )?),
             _ => Err(format!("Unknown filetype: {:?}", metadata.data_filepath)),
         }?;
         Self::from_meta_loc_and_data(location, metadata, data)

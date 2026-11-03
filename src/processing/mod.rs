@@ -38,6 +38,8 @@ pub struct ProcessingOptions {
     pub override_date: Option<chrono::NaiveDate>,
     /// Which lines of a multi-line file (IceRadar) to merge, in order.
     pub lines: Option<formats::LineSelection>,
+    /// Which channel of multi-channel files (GSSI) to read, from 1.
+    pub channel: Option<u32>,
     /// Which sidecar each recording is read with (#527).
     pub sidecar: crate::sidecar::Choice,
     pub user_metadata: user_metadata::UserMetadata,
@@ -65,6 +67,7 @@ impl Default for ProcessingOptions {
             override_antenna_separation: None,
             override_date: None,
             lines: None,
+            channel: None,
             sidecar: crate::sidecar::Choice::Beside,
             user_metadata: user_metadata::UserMetadata::new(),
             group: None,
@@ -95,27 +98,37 @@ pub struct ProcessResult {
     pub output_path: PathBuf,
 }
 
-/// `<stem>.nc`, or `<stem>_line_<N>.nc` for a line of a multi-line file,
-/// so processing the lines of one file one by one does not overwrite the
-/// same output. A merge of several lines is named after its first.
-fn default_output_name(first: &ResolvedInput) -> String {
+/// `<stem>.nc`, or `<stem>_line_<N>.nc` for a line of a multi-line file
+/// and `<stem>_ch_<N>.nc` for a channel of a multi-channel one, so
+/// processing the parts of one file one by one does not overwrite the same
+/// output. A merge of several lines is named after its first.
+pub(crate) fn default_output_name(first: &ResolvedInput) -> String {
     let stem = first
         .header
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
-    match first.part.line {
-        Some(line) => format!("{stem}_line_{line}.nc"),
-        None => format!("{stem}.nc"),
+    format!("{stem}{}.nc", part_suffix(&first.part))
+}
+
+/// What a part of a file adds to its stem: `_line_<N>`, `_ch_<N>`, or
+/// nothing for the whole file.
+fn part_suffix(part: &formats::Part) -> String {
+    match (part.line, part.channel) {
+        (Some(line), _) => format!("_line_{line}"),
+        (None, Some(channel)) => format!("_ch_{channel}"),
+        (None, None) => String::new(),
     }
 }
 
-/// A recording as messages name it: its header, and its line if it has one.
+/// A recording as messages name it: its header, and its line or channel if
+/// it has one.
 fn describe_input(resolved: &ResolvedInput) -> String {
-    match resolved.part.line {
-        Some(line) => format!("{:?} line_{line}", resolved.header),
-        None => format!("{:?}", resolved.header),
+    match (resolved.part.line, resolved.part.channel) {
+        (Some(line), _) => format!("{:?} line_{line}", resolved.header),
+        (None, Some(channel)) => format!("{:?} channel {channel}", resolved.header),
+        (None, None) => format!("{:?}", resolved.header),
     }
 }
 
@@ -273,7 +286,8 @@ pub fn build_processed_gpr_with_progress(
     }
     // Before `--cor`, so one positions file is refused for several lines as
     // it is for several files: trace numbers start over in each line.
-    let mut resolved_inputs = formats::with_lines(resolved_inputs, options.lines.as_ref())?;
+    let resolved_inputs = formats::with_lines(resolved_inputs, options.lines.as_ref())?;
+    let mut resolved_inputs = formats::with_channel(resolved_inputs, options.channel)?;
     formats::with_coordinates(&mut resolved_inputs, options.cor_path.as_deref())?;
     crate::sidecar::with_sidecar(&mut resolved_inputs, &options.sidecar)?;
     if !options.quiet {
@@ -633,5 +647,66 @@ mod tests {
         }
         assert!(super::resolve_steps(false, false, Some("no_such_step")).is_err());
         assert!(super::resolve_steps(false, false, Some("subset(1 2 3 4 5 6)")).is_err());
+    }
+
+    #[test]
+    fn a_channel_of_a_multi_channel_gssi_file_is_processed_on_its_own() {
+        use crate::io::test_dzt;
+        let dir = tempfile::tempdir().unwrap();
+        let dzt = test_dzt::write_two_channel_recording(dir.path(), "track");
+        let run = |channel| {
+            super::build_processed_gpr(super::RunParams {
+                filepaths: vec![dzt.clone()],
+                output_path: None,
+                track_path: None,
+                render_path: None,
+                radargram_id: None,
+                display_name: None,
+                options: super::ProcessingOptions {
+                    quiet: true,
+                    channel,
+                    ..Default::default()
+                },
+            })
+        };
+
+        let error = run(None).err().unwrap().to_string();
+        assert!(
+            error.contains(
+                "holds 2 channels: channel 1 (800 MHz, 40.0 ns), channel 2 (300 MHz, 100.0 ns)"
+            ),
+            "{error}"
+        );
+        assert!(error.contains("--channel"), "{error}");
+        let error = run(Some(3)).err().unwrap().to_string();
+        assert!(
+            error.contains("has no channel 3; its channels are 1, 2"),
+            "{error}"
+        );
+
+        let (gpr, output) = run(Some(2)).unwrap();
+        assert_eq!(output, dir.path().join("track_ch_2.nc"));
+        assert_eq!(gpr.metadata.time_window, test_dzt::WINDOWS[1]);
+        assert_eq!(gpr.metadata.antenna_mhz, 300.);
+        assert_eq!(gpr.data.shape(), &[test_dzt::SAMPLES, test_dzt::SCANS]);
+        let scale = 100000.0 / 2f32.powi(16);
+        assert_eq!(gpr.data[[3, 4]], test_dzt::stored(4, 2, 3) as f32 * scale);
+        assert_eq!(
+            gpr.inputs.as_ref().unwrap().bundles[0].part,
+            Some(crate::formats::Part {
+                line: None,
+                channel: Some(2),
+            })
+        );
+    }
+
+    #[test]
+    fn a_channel_is_refused_without_a_gssi_file() {
+        let rad = crate::formats::resolve_input(std::path::Path::new("x.rad")).unwrap();
+        let error = crate::formats::with_channel(vec![rad.clone()], Some(1)).unwrap_err();
+        assert!(error.contains("applies to GSSI files only"), "{error}");
+        // Without one, other formats pass untouched.
+        let kept = crate::formats::with_channel(vec![rad], None).unwrap();
+        assert!(kept[0].part.is_whole());
     }
 }
