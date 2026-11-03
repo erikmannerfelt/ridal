@@ -33,6 +33,13 @@ ridal override stor.h5 --lines 3 --antenna-separation-m 6
 # One channel of a GSSI file of several, likewise.
 ridal override track.DZT --channel 2 --antenna-separation-m 0.5
 
+# The UTC date of pulseEKKO or IceRadar recordings, whose positions record
+# only a time of day: one day's recordings at a time.
+ridal override day1/*.HD --date 2024-08-15
+
+# The digitizer's sampling frequency, for a format that does not record it.
+ridal override survey/*.rad --sampling-mhz 200
+
 # Remove a value again.
 ridal override survey/DAT_0012_A1.rad --unset antenna_separation_m
 
@@ -67,7 +74,8 @@ For each value, the first of these that gives it is used:
 
 1. the option given for the run (`--override-antenna-separation`,
    `override_antenna_separation=` in Python), which then applies to every
-   recording, with a warning where it differs from a sidecar's value;
+   recording, with a warning where it differs from a sidecar's value.
+   `sampling_mhz` has no such option;
 2. the line's or channel's table of the sidecar (`[lines.<N>]`, IceRadar
    only, or `[channels.<N>]`, GSSI only);
 3. the sidecar's `[overrides]`;
@@ -130,6 +138,8 @@ UPDATE_SIDECAR_MD=1 cargo test --no-default-features -F cli sidecar_md -->
 |---|---|---|---|
 | `antenna_mhz` | MHz | `--override-antenna-mhz` | The antenna's center frequency. Needed for an IceRadar file, which does not record it. |
 | `antenna_separation_m` | m | `--override-antenna-separation` | The horizontal distance between the transmitter and the receiver. GSSI and IceRadar files do not record it, and it is taken as 0 m without one. |
+| `sampling_mhz` | MHz | none | The digitizer's sampling frequency, not the antenna's: the time between samples is 1000 / sampling_mhz ns. Needed for a format that does not record it. A wrong value scales every time and depth. |
+| `date` | YYYY-MM-DD | `--override-date` | The UTC date of the recording, for an IceRadar or pulseEKKO file, whose positions record only a time of day or a date that may be wrong. Written as a TOML date (date = 2014-04-05) or a string. |
 
 <!-- end of generated keys -->
 

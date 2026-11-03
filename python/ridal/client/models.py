@@ -976,6 +976,11 @@ class SidecarOverrides:
     """MHz."""
     antenna_separation_m: float | None = None
     """m."""
+    sampling_mhz: float | None = None
+    """The digitizer's sampling frequency, MHz."""
+    date: str | None = None
+    """The UTC date of a recording whose file records only a time of day,
+    ``YYYY-MM-DD``."""
 
     @classmethod
     def from_json(cls, data: Any) -> "SidecarOverrides":
@@ -985,6 +990,8 @@ class SidecarOverrides:
             lambda d: cls(
                 antenna_mhz=d.get("antenna_mhz"),
                 antenna_separation_m=d.get("antenna_separation_m"),
+                sampling_mhz=d.get("sampling_mhz"),
+                date=d.get("date"),
             ),
         )
 

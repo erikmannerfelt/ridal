@@ -1194,6 +1194,60 @@ pub(crate) mod tests {
 
     #[test]
     #[cfg(not(target_os = "windows"))]
+    fn a_sidecar_dates_a_line_and_sets_its_sampling_frequency() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("heli.hdf5");
+        let traces = vec![
+            trace(40, 256, Some("120000.2")),
+            trace(40, 256, Some("120000.8")),
+        ];
+        // The PC clock is at its reset value: no date without one given.
+        write_fixture(&path, Layout::V2, &[traces], "1/1/2000 6:00:00 AM");
+        std::fs::write(
+            dir.path().join("heli.ridal.toml"),
+            "[overrides]\nantenna_mhz = 10\nsampling_mhz = 200\ndate = 2024-08-15\n",
+        )
+        .unwrap();
+        let start = |date: &str| {
+            date.parse::<chrono::NaiveDate>()
+                .unwrap()
+                .and_hms_milli_opt(12, 0, 0, 200)
+                .unwrap()
+                .and_utc()
+                .timestamp_millis() as f64
+                / 1000.
+        };
+
+        let gpr = process(&path, None, None, None).unwrap();
+        assert!((gpr.location.cor_points[0].time_seconds - start("2024-08-15")).abs() < 1e-6);
+        assert_eq!(gpr.metadata.frequency, 200.);
+        // 40 samples, 5 ns apart.
+        assert_eq!(gpr.metadata.time_window, 200.);
+        assert_eq!(
+            gpr.inputs.as_ref().unwrap().bundles[0].overrides,
+            Some(crate::sidecar::Overrides {
+                antenna_mhz: Some(10.),
+                sampling_mhz: Some(200.),
+                date: chrono::NaiveDate::from_ymd_opt(2024, 8, 15),
+                ..Default::default()
+            })
+        );
+
+        // The argument takes precedence, and the recipe leaves the
+        // sidecar's date out.
+        let gpr = process(&path, None, Some("2024-08-16"), None).unwrap();
+        assert!((gpr.location.cor_points[0].time_seconds - start("2024-08-16")).abs() < 1e-6);
+        assert_eq!(
+            gpr.inputs.as_ref().unwrap().bundles[0]
+                .overrides
+                .unwrap()
+                .date,
+            None
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
     fn v1_lines_are_chosen_dated_by_the_pc_and_refused_when_they_differ() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stor.h5");
@@ -1297,7 +1351,8 @@ pub(crate) mod tests {
             overrides(&first),
             crate::sidecar::Overrides {
                 antenna_mhz: Some(20.),
-                antenna_separation_m: Some(4.)
+                antenna_separation_m: Some(4.),
+                ..Default::default()
             }
         );
         let second = process(&path, Some("1"), None, None).unwrap();
@@ -1317,7 +1372,8 @@ pub(crate) mod tests {
             overrides(&given),
             crate::sidecar::Overrides {
                 antenna_mhz: None,
-                antenna_separation_m: Some(6.)
+                antenna_separation_m: Some(6.),
+                ..Default::default()
             }
         );
 

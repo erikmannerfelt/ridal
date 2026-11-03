@@ -105,7 +105,8 @@ pub(crate) fn load_meta(
     let sidecar = crate::sidecar::overrides_of(resolved)?;
     let override_antenna_mhz = override_antenna_mhz.or(sidecar.antenna_mhz);
     let override_antenna_separation = override_antenna_separation.or(sidecar.antenna_separation_m);
-    Ok(match resolved.kind {
+    let override_date = override_date.or(sidecar.date);
+    let mut meta = match resolved.kind {
         FormatKind::Ramac => io::load_rad(
             &resolved.header,
             medium_velocity,
@@ -133,6 +134,23 @@ pub(crate) fn load_meta(
             override_antenna_separation,
             override_date,
         )?,
+    };
+    if let Some(mhz) = sidecar.sampling_mhz {
+        meta.frequency = mhz;
+        meta.time_window = 1000. * meta.samples as f32 / mhz;
+    }
+    Ok(meta)
+}
+
+/// The date to read the positions of `resolved` with: the argument's, or
+/// else its sidecar's.
+fn date_of(
+    resolved: &ResolvedInput,
+    override_date: Option<chrono::NaiveDate>,
+) -> Result<Option<chrono::NaiveDate>, Box<dyn Error>> {
+    Ok(match override_date {
+        Some(date) => Some(date),
+        None => crate::sidecar::overrides_of(resolved)?.date,
     })
 }
 
@@ -168,6 +186,7 @@ pub(crate) fn load_gpr(
     location: GPRLocation,
     override_date: Option<chrono::NaiveDate>,
 ) -> Result<crate::gpr::GPR, Box<dyn Error>> {
+    let override_date = date_of(resolved, override_date)?;
     let gpr = match resolved.kind {
         FormatKind::IceRadar => {
             let data =
@@ -195,14 +214,25 @@ pub(crate) fn load_positions(
     crs: Option<&String>,
     override_date: Option<chrono::NaiveDate>,
 ) -> Result<GPRLocation, Box<dyn Error>> {
-    // Only these record a time of day without a trustworthy date.
-    let dated_by_override = !formats::is_coords_csv(positions)
-        && matches!(resolved.kind, FormatKind::IceRadar | FormatKind::PulseEkko);
+    let dated_by_override =
+        !formats::is_coords_csv(positions) && formats::takes_date(resolved.kind);
     if override_date.is_some() && !dated_by_override {
         return Err(format!(
             "--override-date (override_date= in Python) applies to positions read from IceRadar \
              and pulseEKKO files; \
              {} gives its own dates",
+            positions.display()
+        )
+        .into());
+    }
+    let override_date = date_of(resolved, override_date)?;
+    if let (Some(date), false, Some(sidecar)) =
+        (override_date, dated_by_override, &resolved.sidecar)
+    {
+        return Err(format!(
+            "{} sets date = {date}, which applies to positions read from IceRadar and \
+             pulseEKKO files; {} gives its own dates. Remove it with ridal override --unset date.",
+            sidecar.display(),
             positions.display()
         )
         .into());
@@ -330,6 +360,33 @@ mod tests {
             let error = refused(&resolved(kind, "a.h5"), "a.coords.csv");
             assert!(
                 error.contains("a.coords.csv gives its own dates"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sidecar_date_is_refused_for_positions_with_their_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join("a.ridal.toml");
+        std::fs::write(&sidecar, "[overrides]\ndate = 2024-08-15\n").unwrap();
+        for (kind, header, positions) in [
+            (FormatKind::Ramac, "a.rad", "a.cor"),
+            (FormatKind::PulseEkko, "a.HD", "a.coords.csv"),
+        ] {
+            let resolved = ResolvedInput {
+                sidecar: Some(sidecar.clone()),
+                ..resolved(kind, header)
+            };
+            let error = load_positions(&resolved, Path::new(positions), None, None)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("a.ridal.toml sets date = 2024-08-15"),
+                "{error}"
+            );
+            assert!(
+                error.contains(&format!("{positions} gives its own dates")),
                 "{error}"
             );
         }

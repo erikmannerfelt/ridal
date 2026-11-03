@@ -149,6 +149,8 @@ pub(crate) fn assumptions(
     let given = crate::sidecar::Overrides {
         antenna_mhz: options.override_antenna_mhz,
         antenna_separation_m: options.override_antenna_separation,
+        sampling_mhz: None,
+        date: options.override_date,
     };
     for r in resolved {
         let sidecar = crate::sidecar::overrides_of(r)?;
@@ -161,7 +163,8 @@ pub(crate) fn assumptions(
                     .iter()
                     .find(|k| k.name == key)
                     .expect("every key is listed")
-                    .argument;
+                    .argument
+                    .expect("a key given as an argument has one");
                 warnings.push(format!(
                     "Warning: {argument} {given} takes precedence over {key} = {beside} in {}.",
                     r.sidecar
@@ -217,6 +220,9 @@ pub(crate) fn assumptions(
             .iter()
             .filter(|r| r.kind == formats::FormatKind::IceRadar)
         {
+            if crate::sidecar::overrides_of(r)?.date.is_some() {
+                continue;
+            }
             let line = input::iceradar_line(r)?;
             if let crate::io::IceRadarDate::PcClock(date) =
                 crate::io::iceradar_date(&r.header, line, None)?
@@ -224,7 +230,8 @@ pub(crate) fn assumptions(
                 warnings.push(format!(
                     "Warning: {} is dated {date} by the acquisition PC's clock, which is local \
                      time and may be wrong; the GPS records only the time of day. Give the UTC \
-                     date with --override-date (override_date= in Python) if it is not {date}.",
+                     date with --override-date (override_date= in Python), or as date in its \
+                     sidecar, if it is not {date}.",
                     describe_input(r)
                 ));
             }
@@ -330,6 +337,7 @@ pub fn build_processed_gpr_with_progress(
                 resolved,
                 options.override_antenna_mhz,
                 options.override_antenna_separation,
+                options.override_date,
             )
         })
         .collect::<Result<Vec<_>, String>>()?;

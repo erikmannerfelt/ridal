@@ -48,6 +48,8 @@ def override(
     *,
     antenna_mhz: float | None = ...,
     antenna_separation_m: float | None = ...,
+    sampling_mhz: float | None = ...,
+    date: datetime.date | str | None = ...,
     unset: str | Sequence[str] | None = ...,
     lines: int | Sequence[int] | str | None = ...,
     channel: int | None = ...,

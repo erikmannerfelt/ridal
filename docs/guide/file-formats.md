@@ -64,8 +64,10 @@ Date
   and the date comes from elsewhere: a pulseEKKO file's header, where in
   older files it was typed by hand, and an IceRadar line's acquisition PC
   clock, which is local time. Either can be wrong.
-  `--override-date YYYY-MM-DD` gives the UTC date instead. It is refused for formats whose positions carry their own dates, and for
-  positions from a coordinate CSV.
+  `--override-date YYYY-MM-DD` gives the UTC date instead, for a run, and
+  `date` in a recording's {doc}`sidecar <../reference/sidecar>` for that
+  recording. Both are refused for formats whose positions carry their own
+  dates, and for positions from a coordinate CSV.
 
   GSSI positions carry their own dates, but an older GPS receiver that
   does not know about a GPS week-number rollover reports dates a multiple
@@ -147,7 +149,7 @@ Date
 : The GPS gives the time of day in UTC. The date is the acquisition PC's,
   which is local time and may be off by hours, so Ridal warns that it used
   it. A file whose PC clock was at its reset value (1 January 2000) is
-  refused until `--override-date` gives the date. A line that runs past
+  refused until `--override-date` or the sidecar's `date` gives the date. A line that runs past
   midnight UTC continues into the next day.
 
 Positions

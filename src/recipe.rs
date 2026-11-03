@@ -297,6 +297,16 @@ impl Recipe {
                         .map(f32::to_le_bytes)
                         .as_ref(),
                 );
+                // Only when set, so a recipe keeps the hash it had before
+                // these keys existed.
+                if let Some(mhz) = overrides.sampling_mhz {
+                    put(&mut hasher, b"sampling_mhz");
+                    put(&mut hasher, &mhz.to_le_bytes());
+                }
+                if let Some(date) = overrides.date {
+                    put(&mut hasher, b"date");
+                    put(&mut hasher, date.format("%Y-%m-%d").to_string().as_bytes());
+                }
             }
         }
         hasher.finalize().to_hex().to_string()
@@ -496,12 +506,32 @@ mod tests {
             ..Default::default()
         });
         assert_ne!(frequency.hash(), overridden.hash());
+        // Neither is a value of 4 under another name.
+        let mut sampling = recipe();
+        sampling.bundles[0].overrides = Some(crate::sidecar::Overrides {
+            sampling_mhz: Some(4.),
+            ..Default::default()
+        });
+        assert_ne!(sampling.hash(), frequency.hash());
+        let mut dated = overridden.clone();
+        dated.bundles[0].overrides = Some(crate::sidecar::Overrides {
+            date: chrono::NaiveDate::from_ymd_opt(2014, 4, 5),
+            ..separation
+        });
+        assert_ne!(dated.hash(), overridden.hash());
+        // The sidecar's date is not the argument's.
+        let mut date_argument = overridden.clone();
+        date_argument.date_override = Some("2014-04-05".to_string());
+        assert_ne!(date_argument.hash(), dated.hash());
+        let read: Recipe = serde_json::from_str(&dated.to_json()).unwrap();
+        assert_eq!(read, dated);
+        assert!(dated.to_json().contains(r#""date":"2014-04-05""#));
 
         let read: Recipe = serde_json::from_str(&overridden.to_json()).unwrap();
         assert_eq!(read, overridden);
         assert!(overridden
             .to_json()
-            .contains(r#""overrides":{"antenna_mhz":null,"antenna_separation_m":4.0}"#));
+            .contains(r#""overrides":{"antenna_mhz":null,"antenna_separation_m":4.0,"sampling_mhz":null,"date":null}"#));
     }
 
     #[test]

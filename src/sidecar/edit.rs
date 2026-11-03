@@ -8,7 +8,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Overrides, OVERRIDE_KEYS, SCHEMA, SIDECAR_SUFFIX};
+use chrono::Datelike;
+
+use super::{Overrides, Value, OVERRIDE_KEYS, SCHEMA, SIDECAR_SUFFIX};
 use crate::formats::{self, FormatKind, LineSelection, ResolvedInput};
 
 /// What to change in each recording's sidecar.
@@ -134,11 +136,25 @@ fn chosen_channel(resolved: &ResolvedInput, channel: u32) -> Result<u32, String>
     Ok(channel)
 }
 
-/// A sidecar's number as TOML writes it: the shortest decimal that reads
-/// back as the same `f32`, so `0.1` is not written as `0.10000000149`.
-fn number(value: f32) -> toml_edit::Item {
-    let shortest: f64 = value.to_string().parse().expect("a float's own text");
-    toml_edit::value(shortest)
+/// A sidecar's value as TOML writes it: a number as the shortest decimal
+/// that reads back as the same `f32`, so `0.1` is not written as
+/// `0.10000000149`, and a date as a TOML local date.
+fn item(value: Value) -> toml_edit::Item {
+    match value {
+        Value::Number(number) => {
+            let shortest: f64 = number.to_string().parse().expect("a float's own text");
+            toml_edit::value(shortest)
+        }
+        Value::Date(date) => toml_edit::value(toml_edit::Datetime {
+            date: Some(toml_edit::Date {
+                year: date.year() as u16,
+                month: date.month() as u8,
+                day: date.day() as u8,
+            }),
+            time: None,
+            offset: None,
+        }),
+    }
 }
 
 /// The `overrides` table at `place` in `document`, made where it is
@@ -188,7 +204,7 @@ fn edited(text: &str, path: &Path, edit: &Edit, places: &[Place]) -> Result<Stri
         let table = overrides_table(&mut document, place)?;
         for (key, value) in edit.set.entries() {
             if let Some(value) = value {
-                table[key] = number(value);
+                table[key] = item(value);
             }
         }
         for key in &edit.unset {
@@ -290,6 +306,14 @@ pub fn apply(inputs: &[PathBuf], edit: &Edit) -> Result<Vec<Outcome>, String> {
         };
         // The file as it is must be valid, or its mistakes would be kept.
         super::parse(&before, &path)?;
+        if edit.set.date.is_some() && !formats::takes_date(resolved.kind) {
+            return Err(format!(
+                "date applies to IceRadar and pulseEKKO files, whose positions record only a \
+                 time of day; {} is a {} file, which dates its own",
+                resolved.header.display(),
+                formats::display_name(resolved.kind)
+            ));
+        }
         let places = match (&edit.lines, edit.channel) {
             (Some(selection), _) => chosen_lines(&resolved, selection)?
                 .into_iter()
@@ -330,15 +354,20 @@ fn header_values(resolved: &ResolvedInput) -> Overrides {
         ..resolved.clone()
     };
     let read = |mhz| crate::processing::input::load_meta(&bare, 0.168, mhz, None, None);
-    let (antenna_mhz, separation) = match read(None) {
-        Ok(meta) => (Some(meta.antenna_mhz), Some(meta.antenna_separation)),
+    let (antenna_mhz, meta) = match read(None) {
+        Ok(meta) => (Some(meta.antenna_mhz), Some(meta)),
         // IceRadar: no frequency, so any stands in to read the rest.
-        Err(_) => (None, read(Some(1.)).ok().map(|m| m.antenna_separation)),
+        Err(_) => (None, read(Some(1.)).ok()),
     };
     Overrides {
         antenna_mhz,
-        antenna_separation_m: separation
+        antenna_separation_m: meta
+            .as_ref()
+            .map(|m| m.antenna_separation)
             .filter(|_| formats::records_antenna_separation(resolved.kind)),
+        sampling_mhz: meta.as_ref().map(|m| m.frequency),
+        // Not one value a header says: the date of each position.
+        date: None,
     }
 }
 
@@ -369,13 +398,20 @@ fn template_text(resolved: &ResolvedInput) -> Result<String, String> {
          # precedence over this file.\n\
          schema = {SCHEMA}\n\n[overrides]\n"
     );
+    let takes_date = formats::takes_date(resolved.kind);
     for (key, said) in header.entries() {
+        if key == "date" && !takes_date {
+            continue;
+        }
         let about = OVERRIDE_KEYS
             .iter()
             .find(|k| k.name == key)
             .expect("every key is listed");
         text += &format!("# {key} ({}): {}\n", about.unit, about.description);
         match said {
+            None if key == "date" => {
+                text += "# Without it, the date is the one the file gives.\n# date =\n"
+            }
             Some(value) => text += &format!("# The header says {value}.\n# {key} = {value}\n"),
             None if several_channels => {
                 text += &format!("# Each channel's header says its own; see below.\n# {key} =\n")
@@ -394,7 +430,8 @@ fn template_text(resolved: &ResolvedInput) -> Result<String, String> {
                 ..resolved.clone()
             });
             text += &format!("# [channels.{}.overrides]\n", channel.number);
-            for (key, said) in header.entries() {
+            // A GSSI file dates its own positions.
+            for (key, said) in header.entries().into_iter().filter(|(k, _)| *k != "date") {
                 match said {
                     Some(value) => text += &format!("# {key} = {value}\n"),
                     None => text += &format!("# {key} =\n"),
@@ -687,5 +724,34 @@ mod tests {
         apply(std::slice::from_ref(&dzt), &unset).unwrap();
         let written = std::fs::read_to_string(&sidecar).unwrap();
         assert!(!written.contains("channels"), "{written}");
+    }
+
+    #[test]
+    fn a_date_is_written_as_a_toml_date_for_a_format_that_takes_one() {
+        let date = chrono::NaiveDate::from_ymd_opt(2014, 4, 5);
+        let dated = Edit {
+            set: Overrides {
+                date,
+                sampling_mhz: Some(200.),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // A header to name the recording by; nothing reads it.
+        let dir = tempfile::tempdir().unwrap();
+        let hd = dir.path().join("line.HD");
+        std::fs::write(&hd, "").unwrap();
+        apply(std::slice::from_ref(&hd), &dated).unwrap();
+        let written = std::fs::read_to_string(dir.path().join("line.ridal.toml")).unwrap();
+        assert!(written.contains("date = 2014-04-05\n"), "{written}");
+        assert!(written.contains("sampling_mhz = 200.0\n"), "{written}");
+        let read = super::super::parse(&written, &hd).unwrap();
+        assert_eq!(read.overrides.date, date);
+
+        // A MALA file dates its own positions.
+        let (_dir, rad) = dronbreen();
+        let error = apply(std::slice::from_ref(&rad), &dated).unwrap_err();
+        assert!(error.contains("which dates its own"), "{error}");
+        assert!(!rad.with_extension("ridal.toml").exists());
     }
 }

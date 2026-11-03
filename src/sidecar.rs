@@ -49,6 +49,62 @@ pub struct Overrides {
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub antenna_separation_m: Option<f32>,
+    /// The digitizer's sampling frequency, in MHz: not the antenna's.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub sampling_mhz: Option<f32>,
+    /// The UTC date of a recording whose file records only a time of day,
+    /// as `YYYY-MM-DD`.
+    #[serde(default, with = "date_serde")]
+    #[cfg_attr(
+        feature = "server",
+        schema(value_type = Option<String>, format = Date, required = true)
+    )]
+    pub date: Option<chrono::NaiveDate>,
+}
+
+/// `date` as `YYYY-MM-DD`: a string in JSON, and in TOML either a string
+/// or a local date (`date = 2014-04-05`), which is what one would write.
+mod date_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    const FORMAT: &str = "%Y-%m-%d";
+
+    pub fn serialize<S: Serializer>(
+        date: &Option<chrono::NaiveDate>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match date {
+            Some(date) => serializer.serialize_str(&date.format(FORMAT).to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<chrono::NaiveDate>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Written {
+            Text(String),
+            Toml(toml::value::Datetime),
+        }
+        let text = match Option::<Written>::deserialize(deserializer)? {
+            None => return Ok(None),
+            Some(Written::Text(text)) => text,
+            Some(Written::Toml(datetime)) => {
+                if datetime.time.is_some() || datetime.offset.is_some() {
+                    return Err(serde::de::Error::custom(format!(
+                        "date must be a date alone (YYYY-MM-DD), not {datetime}"
+                    )));
+                }
+                datetime.to_string()
+            }
+        };
+        chrono::NaiveDate::parse_from_str(&text, FORMAT)
+            .map(Some)
+            .map_err(|_| serde::de::Error::custom(format!("date must be YYYY-MM-DD, not {text:?}")))
+    }
 }
 
 /// One key of `[overrides]`, for `ridal override` and the reference page.
@@ -56,8 +112,8 @@ pub struct OverrideKey {
     pub name: &'static str,
     pub unit: &'static str,
     pub description: &'static str,
-    /// The argument that takes precedence over it.
-    pub argument: &'static str,
+    /// The argument that takes precedence over it, if there is one.
+    pub argument: Option<&'static str>,
 }
 
 /// Every key of `[overrides]`. `every_override_key_is_listed` checks this
@@ -69,7 +125,7 @@ pub const OVERRIDE_KEYS: &[OverrideKey] = &[
         unit: "MHz",
         description: "The antenna's center frequency. Needed for an IceRadar file, which does \
                       not record it.",
-        argument: "--override-antenna-mhz",
+        argument: Some("--override-antenna-mhz"),
     },
     OverrideKey {
         name: "antenna_separation_m",
@@ -77,7 +133,23 @@ pub const OVERRIDE_KEYS: &[OverrideKey] = &[
         description: "The horizontal distance between the transmitter and the receiver. GSSI \
                       and IceRadar files do not record it, and it is taken as 0 m without \
                       one.",
-        argument: "--override-antenna-separation",
+        argument: Some("--override-antenna-separation"),
+    },
+    OverrideKey {
+        name: "sampling_mhz",
+        unit: "MHz",
+        description: "The digitizer's sampling frequency, not the antenna's: the time between \
+                      samples is 1000 / sampling_mhz ns. Needed for a format that does not \
+                      record it. A wrong value scales every time and depth.",
+        argument: None,
+    },
+    OverrideKey {
+        name: "date",
+        unit: "YYYY-MM-DD",
+        description: "The UTC date of the recording, for an IceRadar or pulseEKKO file, whose \
+                      positions record only a time of day or a date that may be wrong. Written \
+                      as a TOML date (date = 2014-04-05) or a string.",
+        argument: Some("--override-date"),
     },
 ];
 
@@ -96,6 +168,8 @@ impl Overrides {
         Overrides {
             antenna_mhz: other.antenna_mhz.or(self.antenna_mhz),
             antenna_separation_m: other.antenna_separation_m.or(self.antenna_separation_m),
+            sampling_mhz: other.sampling_mhz.or(self.sampling_mhz),
+            date: other.date.or(self.date),
         }
     }
 
@@ -110,14 +184,24 @@ impl Overrides {
                 return Err(format!("antenna_separation_m must be 0 or more, not {m}"));
             }
         }
+        if let Some(mhz) = self.sampling_mhz {
+            if !(mhz.is_finite() && mhz > 0.) {
+                return Err(format!("sampling_mhz must be above 0, not {mhz}"));
+            }
+        }
         Ok(())
     }
 
     /// Each key, by its name in a sidecar, and its value.
-    pub fn entries(&self) -> [(&'static str, Option<f32>); 2] {
+    pub fn entries(&self) -> [(&'static str, Option<Value>); 4] {
         [
-            ("antenna_mhz", self.antenna_mhz),
-            ("antenna_separation_m", self.antenna_separation_m),
+            ("antenna_mhz", self.antenna_mhz.map(Value::Number)),
+            (
+                "antenna_separation_m",
+                self.antenna_separation_m.map(Value::Number),
+            ),
+            ("sampling_mhz", self.sampling_mhz.map(Value::Number)),
+            ("date", self.date.map(Value::Date)),
         ]
     }
 
@@ -128,6 +212,22 @@ impl Overrides {
             .filter_map(|(key, value)| value.map(|value| format!("{key} = {value}")))
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+/// The value of one key of [`Overrides`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Value {
+    Number(f32),
+    Date(chrono::NaiveDate),
+}
+
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Number(number) => write!(f, "{number}"),
+            Value::Date(date) => write!(f, "{}", date.format("%Y-%m-%d")),
+        }
     }
 }
 
@@ -348,6 +448,7 @@ pub fn applied(
     resolved: &ResolvedInput,
     antenna_mhz: Option<f32>,
     antenna_separation_m: Option<f32>,
+    date: Option<chrono::NaiveDate>,
 ) -> Result<Overrides, String> {
     let from_sidecar = overrides_of(resolved)?;
     Ok(Overrides {
@@ -355,13 +456,16 @@ pub fn applied(
         antenna_separation_m: from_sidecar
             .antenna_separation_m
             .filter(|_| antenna_separation_m.is_none()),
+        // No argument takes precedence over it.
+        sampling_mhz: from_sidecar.sampling_mhz,
+        date: from_sidecar.date.filter(|_| date.is_none()),
     })
 }
 
 /// A sidecar that sets `overrides` and nothing else, as a server writes
 /// one beside a recording it lays out from values it stores.
 pub fn to_toml(overrides: &Overrides) -> String {
-    let table = toml::to_string(overrides).expect("overrides are plain numbers");
+    let table = toml::to_string(overrides).expect("overrides are plain numbers and a date");
     format!("schema = {SCHEMA}\n\n[overrides]\n{table}")
 }
 
@@ -462,7 +566,8 @@ mod tests {
             read,
             Overrides {
                 antenna_mhz: Some(50.),
-                antenna_separation_m: Some(4.5)
+                antenna_separation_m: Some(4.5),
+                ..Default::default()
             }
         );
         // Without a sidecar, nothing is overridden.
@@ -472,6 +577,19 @@ mod tests {
         assert!(overrides_of(&ramac(dir.path(), Some(empty)))
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn a_date_is_a_toml_date_or_a_string() {
+        let dir = tempfile::tempdir().unwrap();
+        for text in ["date = 2014-04-05", "date = \"2014-04-05\""] {
+            let path = write(dir.path(), &format!("[overrides]\n{text}\n"));
+            assert_eq!(
+                overrides_of(&ramac(dir.path(), Some(path))).unwrap().date,
+                chrono::NaiveDate::from_ymd_opt(2014, 4, 5),
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -492,6 +610,19 @@ mod tests {
                 "antenna_separation_m must be 0 or more",
             ),
             ("[overrides]\nantenna_mhz = \"50\"\n", "antenna_mhz"),
+            (
+                "[overrides]\nsampling_mhz = 0\n",
+                "sampling_mhz must be above 0",
+            ),
+            (
+                "[overrides]\ndate = 2014-04-05T10:00:00\n",
+                "date must be a date alone",
+            ),
+            (
+                "[overrides]\ndate = \"5 April 2014\"\n",
+                "date must be YYYY-MM-DD",
+            ),
+            ("[overrides]\ndate = 20140405\n", "date"),
             ("[native.dzt]\n", "[native.dzt] is not a format"),
             ("[lines.first]\n", "[lines.first] is not a line number"),
             (
@@ -520,10 +651,17 @@ mod tests {
             Overrides {
                 antenna_mhz: Some(25.),
                 antenna_separation_m: None,
+                ..Default::default()
             },
             Overrides {
                 antenna_mhz: Some(100.),
                 antenna_separation_m: Some(0.25),
+                ..Default::default()
+            },
+            Overrides {
+                sampling_mhz: Some(200.),
+                date: chrono::NaiveDate::from_ymd_opt(2014, 4, 5),
+                ..Default::default()
             },
         ] {
             let path = write(dir.path(), &to_toml(&overrides));
@@ -543,13 +681,16 @@ mod tests {
         );
         let resolved = ramac(dir.path(), Some(path));
         assert_eq!(
-            applied(&resolved, Some(100.), None).unwrap(),
+            applied(&resolved, Some(100.), None, None).unwrap(),
             Overrides {
                 antenna_mhz: None,
-                antenna_separation_m: Some(4.)
+                antenna_separation_m: Some(4.),
+                ..Default::default()
             }
         );
-        assert!(applied(&resolved, Some(100.), Some(1.)).unwrap().is_empty());
+        assert!(applied(&resolved, Some(100.), Some(1.), None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -676,9 +817,13 @@ mod tests {
             "| Key | Unit | Option that takes precedence | Description |\n|---|---|---|---|\n",
         );
         for key in OVERRIDE_KEYS {
+            let argument = match key.argument {
+                Some(argument) => format!("`{argument}`"),
+                None => "none".to_string(),
+            };
             table += &format!(
-                "| `{}` | {} | `{}` | {} |\n",
-                key.name, key.unit, key.argument, key.description
+                "| `{}` | {} | {argument} | {} |\n",
+                key.name, key.unit, key.description
             );
         }
         table
@@ -716,6 +861,8 @@ mod tests {
         let all = Overrides {
             antenna_mhz: Some(1.),
             antenna_separation_m: Some(1.),
+            sampling_mhz: Some(1.),
+            date: chrono::NaiveDate::from_ymd_opt(2014, 4, 5),
         };
         let table = toml::Table::try_from(all).unwrap();
         let mut fields = table.keys().map(String::as_str).collect::<Vec<_>>();
