@@ -586,12 +586,21 @@ mod tests {
         let holds_the_file =
             |name: &str, spawn: &dyn Fn(&mut std::process::Command) -> std::process::Child| {
                 let path = dir.path().join(format!("{name}.nc"));
+                // Held from the file's creation to the child's start: a
+                // `spawn_tool` on another thread (a test outside
+                // `serial(netcdf)` projecting positions, say) clears the
+                // inherit flag of every descriptor in the process, which
+                // made the control fail now and then. It takes this lock
+                // too, and the lock is reentrant, so `create` and the
+                // helper's own spawn still take it here.
+                let guard = netcdf_sys::libnetcdf_lock.lock();
                 let file = netcdf::create(&path).unwrap();
                 let mut child = spawn(
                     std::process::Command::new("ping")
                         .args(["-n", "30", "127.0.0.1"])
                         .stdout(std::process::Stdio::null()),
                 );
+                drop(guard);
                 drop(file);
                 let moved = std::fs::rename(&path, dir.path().join(format!("{name}-moved.nc")));
                 child.kill().unwrap();
