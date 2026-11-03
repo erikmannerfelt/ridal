@@ -356,6 +356,7 @@ pub mod ridal {
             override_date: date_arg(py, override_date)?,
             lines: lines_arg(py, lines)?,
             channel: channel_arg(channel)?,
+            parts: None,
             sidecar: sidecar_arg(py, sidecar)?,
             user_metadata: optional_metadata(py, metadata)?,
             group: group_name,
@@ -1018,8 +1019,10 @@ pub mod ridal {
     ///     ``<id>.nc``. Placeholders: ``{stem}`` (the first input's file stem),
     ///     ``{n}`` (a counter over the outputs in time order), ``{freq}``
     ///     (antenna frequency in MHz), ``{nfiles}`` (how many inputs were
-    ///     merged), ``{date}`` (``YYYYMMDD``) and ``{group}``. ``{n:02}`` pads to
-    ///     two digits; ``{n, from=15}`` starts at 15, ``{n, from=next}``
+    ///     merged), ``{date}`` (``YYYYMMDD``), ``{group}``, ``{channel}``
+    ///     (the GSSI channel, 1 for a file of one) and ``{line}`` (the IceRadar
+    ///     line; each line of a file of several is its own recording).
+    ///     ``{n:02}`` pads to two digits; ``{n, from=15}`` starts at 15, ``{n, from=next}``
     ///     continues after the ids already in `output`, and ``{n, per=freq}``
     ///     counts each frequency separately. For example,
     ///     ``"dronbreen-2026-{freq}mhz-{n:02, per=freq}"``. Literal text may only
@@ -1151,7 +1154,7 @@ pub mod ridal {
                 override_antenna_separation,
                 override_date,
                 sidecar,
-                // Batch processing does not split a file into lines yet.
+                // A batch makes each line its own recording.
                 None,
                 channel,
                 metadata,

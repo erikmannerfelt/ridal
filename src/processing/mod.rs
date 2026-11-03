@@ -40,6 +40,10 @@ pub struct ProcessingOptions {
     pub lines: Option<formats::LineSelection>,
     /// Which channel of multi-channel files (GSSI) to read, from 1.
     pub channel: Option<u32>,
+    /// The part of each input to read, in order, as a batch plans them:
+    /// one IceRadar line from one file and another from the next. Takes the
+    /// place of `lines` and `channel`.
+    pub parts: Option<Vec<formats::Part>>,
     /// Which sidecar each recording is read with (#527).
     pub sidecar: crate::sidecar::Choice,
     pub user_metadata: user_metadata::UserMetadata,
@@ -68,6 +72,7 @@ impl Default for ProcessingOptions {
             override_date: None,
             lines: None,
             channel: None,
+            parts: None,
             sidecar: crate::sidecar::Choice::Beside,
             user_metadata: user_metadata::UserMetadata::new(),
             group: None,
@@ -114,7 +119,7 @@ pub(crate) fn default_output_name(first: &ResolvedInput) -> String {
 
 /// What a part of a file adds to its stem: `_line_<N>`, `_ch_<N>`, or
 /// nothing for the whole file.
-fn part_suffix(part: &formats::Part) -> String {
+pub(crate) fn part_suffix(part: &formats::Part) -> String {
     match (part.line, part.channel) {
         (Some(line), _) => format!("_line_{line}"),
         (None, Some(channel)) => format!("_ch_{channel}"),
@@ -286,8 +291,30 @@ pub fn build_processed_gpr_with_progress(
     }
     // Before `--cor`, so one positions file is refused for several lines as
     // it is for several files: trace numbers start over in each line.
-    let resolved_inputs = formats::with_lines(resolved_inputs, options.lines.as_ref())?;
-    let mut resolved_inputs = formats::with_channel(resolved_inputs, options.channel)?;
+    let mut resolved_inputs = match &options.parts {
+        Some(parts) => {
+            if parts.len() != resolved_inputs.len() {
+                return Err(format!(
+                    "{} parts were given for {} inputs",
+                    parts.len(),
+                    resolved_inputs.len()
+                )
+                .into());
+            }
+            resolved_inputs
+                .into_iter()
+                .zip(parts)
+                .map(|(resolved, part)| ResolvedInput {
+                    part: *part,
+                    ..resolved
+                })
+                .collect()
+        }
+        None => {
+            let resolved_inputs = formats::with_lines(resolved_inputs, options.lines.as_ref())?;
+            formats::with_channel(resolved_inputs, options.channel)?
+        }
+    };
     formats::with_coordinates(&mut resolved_inputs, options.cor_path.as_deref())?;
     crate::sidecar::with_sidecar(&mut resolved_inputs, &options.sidecar)?;
     if !options.quiet {

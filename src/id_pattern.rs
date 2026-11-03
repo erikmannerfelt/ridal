@@ -17,9 +17,10 @@
 //! | `{date}` | the start date, `YYYYMMDD` |
 //! | `{group}` | the group id |
 //! | `{channel}` | the GSSI channel, from 1; 1 for a recording of one channel |
+//! | `{line}` | the IceRadar line; an error for other formats |
 //! | `{id}`, `{group_name}` | display names only: the rendered id, and the group's name |
 //!
-//! `{n}`, `{freq}`, `{nfiles}` and `{channel}` take a zero-padded width,
+//! `{n}`, `{freq}`, `{nfiles}`, `{channel}` and `{line}` take a zero-padded width,
 //! `{n:02}`. `{n}` also takes `from=15` (start at 15), `from=next`
 //! (continue after the highest number among existing ids that match), and
 //! `per=freq` or `per=freq+date` (one counter for each value of those). `{{` and `}}` are
@@ -61,6 +62,7 @@ enum Field {
     Date,
     Group,
     Channel,
+    Line,
     Id,
     GroupName,
 }
@@ -75,6 +77,7 @@ impl Field {
             "date" => Field::Date,
             "group" => Field::Group,
             "channel" => Field::Channel,
+            "line" => Field::Line,
             "id" => Field::Id,
             "group_name" => Field::GroupName,
             _ => return None,
@@ -84,7 +87,7 @@ impl Field {
     fn padded(self) -> bool {
         matches!(
             self,
-            Field::N | Field::Freq | Field::NFiles | Field::Channel
+            Field::N | Field::Freq | Field::NFiles | Field::Channel | Field::Line
         )
     }
 }
@@ -314,7 +317,7 @@ fn parse_placeholder(
     let field = Field::parse(name).ok_or_else(|| {
         whole(format!(
             "`{{{name}}}` is not a placeholder; there are `{{stem}}`, `{{n}}`, `{{freq}}`, \
-             `{{nfiles}}`, `{{date}}`, `{{group}}` and `{{channel}}`{}",
+             `{{nfiles}}`, `{{date}}`, `{{group}}`, `{{channel}}` and `{{line}}`{}",
             if kind == PatternKind::DisplayName {
                 ", and `{id}` and `{group_name}` in a display name"
             } else {
@@ -384,7 +387,7 @@ fn parse_placeholder(
                         Some(Field::N) | None | Some(Field::Id) => {
                             return Err(whole(format!(
                                 "`per={name}` is not something to count by; use `stem`, \
-                                 `freq`, `nfiles`, `date`, `group` or `channel`"
+                                 `freq`, `nfiles`, `date`, `group`, `channel` or `line`"
                             )))
                         }
                         Some(Field::GroupName) if kind == PatternKind::Id => {
@@ -419,6 +422,8 @@ pub struct OutputFacts {
     pub n_files: usize,
     /// The GSSI channel, from 1; 1 for a recording of one channel.
     pub channel: u32,
+    /// The IceRadar line, or `None` for other formats.
+    pub line: Option<u32>,
 }
 
 /// What every output of a batch shares.
@@ -461,6 +466,15 @@ fn value(
         Field::Freq => pad(output.antenna_mhz.round() as i64, width),
         Field::NFiles => pad(output.n_files, width),
         Field::Channel => pad(output.channel, width),
+        Field::Line => match output.line {
+            Some(line) => pad(line, width),
+            None => {
+                return Err(format!(
+                    "{}: `{{line}}` is the line of an IceRadar file, and this is not one",
+                    output.label
+                ))
+            }
+        },
         Field::Date => chrono::DateTime::from_timestamp(output.start_seconds.floor() as i64, 0)
             .ok_or_else(|| format!("{}: its start time is not a date", output.label))?
             .format("%Y%m%d")
@@ -713,6 +727,7 @@ mod tests {
             antenna_mhz: mhz,
             n_files,
             channel: 1,
+            line: None,
         }
     }
 
@@ -941,7 +956,19 @@ mod tests {
         assert!(uses("t-{channel}"));
         assert!(uses("t-{n, per=channel}"));
         assert!(!uses("t-{n}-{freq}"));
-        let error = Pattern::parse("{n, per=line}", PatternKind::Id).unwrap_err();
-        assert!(error.message.contains("`channel`"), "{}", error.message);
+        let error = Pattern::parse("{n, per=antenna}", PatternKind::Id).unwrap_err();
+        assert!(
+            error.message.contains("`channel` or `line`"),
+            "{}",
+            error.message
+        );
+        let line = |n| OutputFacts {
+            line: Some(n),
+            ..output("stor", n as f64, 20., 1)
+        };
+        assert_eq!(
+            ids("stor-l{line:02}", &[line(0), line(3)], &[]).unwrap(),
+            ["stor-l00", "stor-l03"]
+        );
     }
 }

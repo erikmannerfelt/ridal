@@ -859,6 +859,7 @@ impl RunArgs {
             override_date: recording.override_date,
             lines: None,
             channel: recording.channel,
+            parts: None,
             sidecar: recording.sidecar_choice(),
             user_metadata: user_metadata::parse_cli_metadata(&self.metadata)?,
             group,
@@ -968,8 +969,8 @@ pub struct BatchProcessArgs {
     /// Name each output's radargram id after a pattern, and its file
     /// `<id>.nc`. Placeholders: {stem} (first input's file stem), {n} (a
     /// counter in time order), {freq} (antenna MHz), {nfiles} (inputs
-    /// merged), {date} (YYYYMMDD), {group} and {channel} (GSSI channel, 1
-    /// for a file of one). {n:02} pads to two digits; {n, from=15} starts at
+    /// merged), {date} (YYYYMMDD), {group}, {channel} (GSSI channel, 1
+    /// for a file of one) and {line} (IceRadar line). {n:02} pads to two digits; {n, from=15} starts at
     /// 15, {n, from=next} continues after the ids already in the output
     /// directory, and {n, per=freq} counts each frequency separately.
     /// Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}".
@@ -1219,12 +1220,13 @@ fn describe_batch_plan(plan: &crate::processing::batch::BatchPlan) -> String {
         if let Some(name) = &planned.display_name {
             out.push_str(&format!("  \"{name}\"\n"));
         }
-        let channel = planned
-            .channel
-            .map(|channel| format!(" (channel {channel})"))
-            .unwrap_or_default();
-        for input in &planned.inputs {
-            out.push_str(&format!("  {}{channel}\n", input.display()));
+        for (input, part) in planned.inputs.iter().zip(&planned.parts) {
+            let part = match (part.line, part.channel) {
+                (Some(line), _) => format!(" (line {line})"),
+                (None, Some(channel)) => format!(" (channel {channel})"),
+                (None, None) => String::new(),
+            };
+            out.push_str(&format!("  {}{part}\n", input.display()));
         }
     }
     for warning in &plan.warnings {
@@ -2560,7 +2562,7 @@ mod tests {
                 display_name: None,
                 output: PathBuf::from(format!("out/{id}.nc")),
                 inputs: inputs.iter().map(PathBuf::from).collect(),
-                channel: None,
+                parts: vec![Default::default(); inputs.len()],
                 split,
             }
         };

@@ -748,6 +748,7 @@ pub fn plan(
                 n_files: reads.len(),
                 // A server source holds no file of several channels yet.
                 channel: 1,
+                line: None,
             }
         })
         .collect();
