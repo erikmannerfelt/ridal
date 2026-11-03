@@ -93,8 +93,9 @@ Channels
   with a list of its channels until it is given. Channels are never merged:
   each is its own radargram, named `<stem>_ch_<N>.nc`, so a file of two
   channels is processed in two runs. The same channel is read from every
-  file given, and `batch-process --channel N` reads that channel of each
-  file. `ridal info` describes the channel given. A server source does not
+  file given. `batch-process` makes each channel its own output, unless
+  `--channel N` reads one (see {doc}`cli`). `ridal info` describes the
+  channel given. A server source does not
   record a channel yet, so the GUI lists a file of several channels as
   unreadable, naming its channels.
 

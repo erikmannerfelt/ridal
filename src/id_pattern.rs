@@ -16,12 +16,13 @@
 //! | `{nfiles}` | how many inputs were merged into the output |
 //! | `{date}` | the start date, `YYYYMMDD` |
 //! | `{group}` | the group id |
+//! | `{channel}` | the GSSI channel, from 1; 1 for a recording of one channel |
 //! | `{id}`, `{group_name}` | display names only: the rendered id, and the group's name |
 //!
-//! `{n}`, `{freq}` and `{nfiles}` take a zero-padded width, `{n:02}`. `{n}`
-//! also takes `from=15` (start at 15), `from=next` (continue after the
-//! highest number among existing ids that match), and `per=freq` or
-//! `per=freq+date` (one counter for each value of those). `{{` and `}}` are
+//! `{n}`, `{freq}`, `{nfiles}` and `{channel}` take a zero-padded width,
+//! `{n:02}`. `{n}` also takes `from=15` (start at 15), `from=next`
+//! (continue after the highest number among existing ids that match), and
+//! `per=freq` or `per=freq+date` (one counter for each value of those). `{{` and `}}` are
 //! literal braces.
 //!
 //! An id pattern is checked when it is parsed: its literal text may only
@@ -59,6 +60,7 @@ enum Field {
     NFiles,
     Date,
     Group,
+    Channel,
     Id,
     GroupName,
 }
@@ -72,6 +74,7 @@ impl Field {
             "nfiles" => Field::NFiles,
             "date" => Field::Date,
             "group" => Field::Group,
+            "channel" => Field::Channel,
             "id" => Field::Id,
             "group_name" => Field::GroupName,
             _ => return None,
@@ -79,7 +82,10 @@ impl Field {
     }
 
     fn padded(self) -> bool {
-        matches!(self, Field::N | Field::Freq | Field::NFiles)
+        matches!(
+            self,
+            Field::N | Field::Freq | Field::NFiles | Field::Channel
+        )
     }
 }
 
@@ -234,6 +240,26 @@ impl Pattern {
         Ok(())
     }
 
+    /// Whether the pattern says which channel an output is: `{channel}`,
+    /// or `{n, per=channel}`.
+    pub fn uses_channel(&self) -> bool {
+        self.uses(Field::Channel)
+    }
+
+    /// Whether the pattern says an output's antenna frequency: `{freq}`.
+    pub fn uses_freq(&self) -> bool {
+        self.segments
+            .iter()
+            .any(|s| matches!(s, Segment::Placeholder(p) if p.field == Field::Freq))
+    }
+
+    fn uses(&self, field: Field) -> bool {
+        self.segments.iter().any(|s| match s {
+            Segment::Placeholder(p) => p.field == field && field != Field::N,
+            Segment::Literal(_) => false,
+        }) || self.counter().is_some_and(|p| p.per.contains(&field))
+    }
+
     /// Whether rendering needs the ids that already exist, for `from=next`.
     pub fn needs_existing_ids(&self) -> bool {
         self.counter().is_some_and(|p| p.from == Some(Start::Next))
@@ -288,7 +314,7 @@ fn parse_placeholder(
     let field = Field::parse(name).ok_or_else(|| {
         whole(format!(
             "`{{{name}}}` is not a placeholder; there are `{{stem}}`, `{{n}}`, `{{freq}}`, \
-             `{{nfiles}}`, `{{date}}` and `{{group}}`{}",
+             `{{nfiles}}`, `{{date}}`, `{{group}}` and `{{channel}}`{}",
             if kind == PatternKind::DisplayName {
                 ", and `{id}` and `{group_name}` in a display name"
             } else {
@@ -358,7 +384,7 @@ fn parse_placeholder(
                         Some(Field::N) | None | Some(Field::Id) => {
                             return Err(whole(format!(
                                 "`per={name}` is not something to count by; use `stem`, \
-                                 `freq`, `nfiles`, `date` or `group`"
+                                 `freq`, `nfiles`, `date`, `group` or `channel`"
                             )))
                         }
                         Some(Field::GroupName) if kind == PatternKind::Id => {
@@ -391,6 +417,8 @@ pub struct OutputFacts {
     pub start_seconds: f64,
     pub antenna_mhz: f32,
     pub n_files: usize,
+    /// The GSSI channel, from 1; 1 for a recording of one channel.
+    pub channel: u32,
 }
 
 /// What every output of a batch shares.
@@ -432,6 +460,7 @@ fn value(
         },
         Field::Freq => pad(output.antenna_mhz.round() as i64, width),
         Field::NFiles => pad(output.n_files, width),
+        Field::Channel => pad(output.channel, width),
         Field::Date => chrono::DateTime::from_timestamp(output.start_seconds.floor() as i64, 0)
             .ok_or_else(|| format!("{}: its start time is not a date", output.label))?
             .format("%Y%m%d")
@@ -683,6 +712,7 @@ mod tests {
             start_seconds: start,
             antenna_mhz: mhz,
             n_files,
+            channel: 1,
         }
     }
 
@@ -890,5 +920,28 @@ mod tests {
         let pattern = Pattern::parse("{group}-{n}", PatternKind::Id).unwrap();
         let refused = render_ids(&pattern, &survey(), &BatchFacts::default(), &[]).unwrap_err();
         assert!(refused.contains("no group was given"), "{refused}");
+    }
+
+    #[test]
+    fn the_channel_is_a_placeholder_and_a_counter_partition() {
+        let channel = |n| OutputFacts {
+            channel: n,
+            ..output("track", n as f64, 800., 1)
+        };
+        let outputs = [channel(1), channel(2), channel(1), channel(2)];
+        assert_eq!(
+            ids("t-ch{channel:02}-{n, per=channel}", &outputs, &[]).unwrap(),
+            ["t-ch01-1", "t-ch02-1", "t-ch01-2", "t-ch02-2"]
+        );
+        let uses = |text| {
+            Pattern::parse(text, PatternKind::Id)
+                .unwrap()
+                .uses_channel()
+        };
+        assert!(uses("t-{channel}"));
+        assert!(uses("t-{n, per=channel}"));
+        assert!(!uses("t-{n}-{freq}"));
+        let error = Pattern::parse("{n, per=line}", PatternKind::Id).unwrap_err();
+        assert!(error.message.contains("`channel`"), "{}", error.message);
     }
 }

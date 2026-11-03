@@ -438,3 +438,17 @@ def test_a_channel_of_a_gssi_file_is_read_alone(tmp_path):
 def test_channel_zero_is_refused_before_reading():
     with pytest.raises(ValueError, match="numbered from 1"):
         ridal.read(str(FIXTURE), channel=0)
+
+
+@pytest.mark.skipif(
+    not (shutil.which("cs2cs") and shutil.which("projinfo")),
+    reason="projecting the positions needs PROJ",
+)
+def test_batch_process_makes_each_channel_its_own_output(tmp_path):
+    dzt = write_two_channel_gssi(tmp_path)
+    output = tmp_path / "out"
+    output.mkdir()
+    written = ridal.batch_process(
+        [str(dzt)], str(output), quiet=True, id_pattern="{stem}-ch{channel}"
+    )
+    assert sorted(Path(p).name for p in written) == ["track-ch1.nc", "track-ch2.nc"]

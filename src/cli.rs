@@ -747,7 +747,7 @@ pub struct RecordingArgs {
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub override_date: Option<chrono::NaiveDate>,
 
-    /// Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them. Required for a file of more than one channel; the same channel is read from every file given. Channels are recorded side by side and are never merged.
+    /// Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them; the same channel is read from every file given. Required for a file of more than one channel, except by batch-process, which without it makes each channel its own output. Channels are recorded side by side and are never merged.
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub channel: Option<u32>,
 
@@ -968,10 +968,11 @@ pub struct BatchProcessArgs {
     /// Name each output's radargram id after a pattern, and its file
     /// `<id>.nc`. Placeholders: {stem} (first input's file stem), {n} (a
     /// counter in time order), {freq} (antenna MHz), {nfiles} (inputs
-    /// merged), {date} (YYYYMMDD) and {group}. {n:02} pads to two digits;
-    /// {n, from=15} starts at 15, {n, from=next} continues after the ids
-    /// already in the output directory, and {n, per=freq} counts each
-    /// frequency separately. Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}".
+    /// merged), {date} (YYYYMMDD), {group} and {channel} (GSSI channel, 1
+    /// for a file of one). {n:02} pads to two digits; {n, from=15} starts at
+    /// 15, {n, from=next} continues after the ids already in the output
+    /// directory, and {n, per=freq} counts each frequency separately.
+    /// Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}".
     #[arg(long = "id-pattern")]
     pub id_pattern: Option<String>,
 
@@ -1172,7 +1173,13 @@ fn human_duration(seconds: f64) -> String {
 /// `batch-process --dry-run` as text: one block per output, each saying why
 /// it is not part of the one before.
 fn describe_batch_plan(plan: &crate::processing::batch::BatchPlan) -> String {
-    let n_inputs: usize = plan.outputs.iter().map(|o| o.inputs.len()).sum();
+    // Distinct, since each channel of a GSSI file is an output of its own.
+    let n_inputs = plan
+        .outputs
+        .iter()
+        .flat_map(|o| &o.inputs)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
     let mut out = format!(
         "{} output{} from {} input{}, {}.\n",
         plan.outputs.len(),
@@ -1212,9 +1219,16 @@ fn describe_batch_plan(plan: &crate::processing::batch::BatchPlan) -> String {
         if let Some(name) = &planned.display_name {
             out.push_str(&format!("  \"{name}\"\n"));
         }
+        let channel = planned
+            .channel
+            .map(|channel| format!(" (channel {channel})"))
+            .unwrap_or_default();
         for input in &planned.inputs {
-            out.push_str(&format!("  {}\n", input.display()));
+            out.push_str(&format!("  {}{channel}\n", input.display()));
         }
+    }
+    for warning in &plan.warnings {
+        out.push_str(&format!("\n{warning}\n"));
     }
     out
 }
@@ -2546,11 +2560,13 @@ mod tests {
                 display_name: None,
                 output: PathBuf::from(format!("out/{id}.nc")),
                 inputs: inputs.iter().map(PathBuf::from).collect(),
+                channel: None,
                 split,
             }
         };
         let plan = crate::processing::batch::BatchPlan {
             merge_threshold_seconds: Some(600.),
+            warnings: Vec::new(),
             outputs: vec![
                 output("line-01", &["a.rad", "b.rad"], None),
                 output(

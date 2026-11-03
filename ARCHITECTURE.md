@@ -1026,18 +1026,27 @@ input resolution treats it as one file would be treated.
   part either, so reprocessing one of several lines fails asking for
   `--lines` rather than reading the wrong one, and the ingest planner lists
   a GSSI file of several channels as unreadable, naming them.
-- **GSSI channels: one per run, never expanded.** `formats::with_channel`
+- **GSSI channels: one per run, never merged.** `formats::with_channel`
   sets `Part::channel` from `--channel` on every GSSI input, where
   `with_lines` expands one input into several: one run reads one channel,
-  of every file given, and writes `<stem>_ch_<N>.nc`, so processing both
-  channels is two runs and no option can merge them. Channels are numbered
-  from 1, as GSSI's own software and `.DZX` files number them, unlike
-  IceRadar's lines, which keep the file's own `line_N` numbering. Because
-  the choice applies to every file alike, `batch-process --channel N` needs
-  no per-file plan and reads that channel of each GSSI file, naming each
-  output after it; it is applied only to outputs that hold a GSSI file, so
-  a mixed batch works. A channel is hashed into the recipe only when set,
-  so recipes with a line keep their hash.
+  of every file given, and writes `<stem>_ch_<N>.nc`, so no option can
+  merge two channels. Channels are numbered from 1, as GSSI's own software
+  and `.DZX` files number them, unlike IceRadar's lines, which keep the
+  file's own `line_N` numbering. A channel is hashed into the recipe only
+  when set, so recipes with a line keep their hash.
+- **A batch plans recordings, not files.** `batch::batch_recordings`
+  expands each GSSI file of several channels into one `Recording` per
+  channel (or keeps the `--channel` given), and each `PlannedOutput`
+  carries its channel into the run's `ProcessingOptions`, so one batch
+  processes every channel. `group_each_channel` groups each channel in
+  time on its own, and orders the outputs by start: channels of one file
+  share their times, so in one chronological stream they would alternate
+  and nothing would merge. Without channels it is the one stream it always
+  was. An id pattern gets `{channel}`; a pattern that neither uses it nor a
+  `{freq}` that tells a file's channels apart is warned about rather than
+  refused, since its ids are still unique (duplicates are refused anyway).
+  IceRadar lines could be planned the same way, as a `Recording` field
+  beside `channel`; they are still refused.
 - **Each channel is read through its own header.** A DZT starts with one
   1024-byte header per channel (each with its own `range`, so its own
   sample interval), then the scans, each one trace of every channel in

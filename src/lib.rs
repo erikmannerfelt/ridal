@@ -995,9 +995,10 @@ pub mod ridal {
     ///     of one IceRadar file; or ``False`` for none. The ``override_*``
     ///     arguments take precedence over it.
     /// channel : int, optional
-    ///     Which channel of GSSI files recorded with several to read, from 1
-    ///     as GSSI numbers them; each such file's output is named
-    ///     ``<stem>_ch_<N>``. Required for a file of more than one channel.
+    ///     Which channel of GSSI files to read, from 1 as GSSI numbers them.
+    ///     Without it, each channel of a GSSI file recorded with several is
+    ///     its own output, named ``<stem>_ch_<N>`` or after ``{channel}`` in
+    ///     ``id_pattern``; channels are never merged with each other.
     /// metadata : mapping, optional
     ///     Additional user metadata to attach independently to each produced output.
     ///     This should be a JSON-serializable mapping. Root keys are interpreted as
@@ -1525,10 +1526,10 @@ pub mod ridal {
     ///     recording, if there is one; a path, for one recording or the lines
     ///     of one IceRadar file; or ``False`` for none. The ``override_*``
     ///     arguments take precedence over it.
-    ///
     /// channel : int, optional
     ///     Which channel of a GSSI file recorded with several to describe,
     ///     from 1. Required for a file of more than one channel.
+    ///
     /// Returns
     /// -------
     /// list of dict

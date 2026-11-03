@@ -61,7 +61,7 @@ The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, o
 ```
 
 ```{option} --channel <N>
-Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them. Required for a file of more than one channel; the same channel is read from every file given. Channels are recorded side by side and are never merged
+Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them; the same channel is read from every file given. Required for a file of more than one channel, except by batch-process, which without it makes each channel its own output. Channels are recorded side by side and are never merged
 ```
 
 ```{option} --sidecar <PATH>
@@ -192,7 +192,7 @@ The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, o
 ```
 
 ```{option} --channel <N>
-Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them. Required for a file of more than one channel; the same channel is read from every file given. Channels are recorded side by side and are never merged
+Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them; the same channel is read from every file given. Required for a file of more than one channel, except by batch-process, which without it makes each channel its own output. Channels are recorded side by side and are never merged
 ```
 
 ```{option} --sidecar <PATH>
@@ -260,7 +260,7 @@ Explicit override for the group's id, when the id automatically derived from --g
 ```
 
 ```{option} --id-pattern <ID_PATTERN>
-Name each output's radargram id after a pattern, and its file `<id>.nc`. Placeholders: {stem} (first input's file stem), {n} (a counter in time order), {freq} (antenna MHz), {nfiles} (inputs merged), {date} (YYYYMMDD) and {group}. {n:02} pads to two digits; {n, from=15} starts at 15, {n, from=next} continues after the ids already in the output directory, and {n, per=freq} counts each frequency separately. Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}"
+Name each output's radargram id after a pattern, and its file `<id>.nc`. Placeholders: {stem} (first input's file stem), {n} (a counter in time order), {freq} (antenna MHz), {nfiles} (inputs merged), {date} (YYYYMMDD), {group} and {channel} (GSSI channel, 1 for a file of one). {n:02} pads to two digits; {n, from=15} starts at 15, {n, from=next} continues after the ids already in the output directory, and {n, per=freq} counts each frequency separately. Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}"
 ```
 
 ```{option} --display-name-pattern <DISPLAY_NAME_PATTERN>
@@ -331,7 +331,7 @@ The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, o
 ```
 
 ```{option} --channel <N>
-Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them. Required for a file of more than one channel; the same channel is read from every file given. Channels are recorded side by side and are never merged
+Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them; the same channel is read from every file given. Required for a file of more than one channel, except by batch-process, which without it makes each channel its own output. Channels are recorded side by side and are never merged
 ```
 
 ```{option} --sidecar <PATH>
