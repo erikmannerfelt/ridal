@@ -1236,25 +1236,27 @@ pub(crate) mod tests {
         assert_eq!(merged.width(), 4);
         assert_eq!(merged.inputs.as_ref().unwrap().bundles.len(), 2);
 
+        // A batch makes each line its own radargram.
         let out = tempfile::tempdir().unwrap();
-        let error = crate::processing::batch::run_batch(crate::processing::batch::BatchRunParams {
-            filepaths: vec![path.clone()],
-            output_dir: out.path().to_path_buf(),
-            track_dir: None,
-            render_dir: None,
-            merge: None,
-            id_pattern: None,
-            display_name_pattern: None,
-            options: crate::processing::ProcessingOptions {
-                quiet: true,
-                override_antenna_mhz: Some(20.),
-                ..Default::default()
-            },
-        })
-        .unwrap_err();
-        assert!(
-            error.contains("does not split a file into lines yet"),
-            "{error}"
+        let written =
+            crate::processing::batch::run_batch(crate::processing::batch::BatchRunParams {
+                filepaths: vec![path.clone()],
+                output_dir: out.path().to_path_buf(),
+                track_dir: None,
+                render_dir: None,
+                merge: None,
+                id_pattern: None,
+                display_name_pattern: None,
+                options: crate::processing::ProcessingOptions {
+                    quiet: true,
+                    override_antenna_mhz: Some(20.),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            written.output_paths,
+            [0, 1, 2].map(|n| out.path().join(format!("stor_line_{n}.nc")))
         );
 
         let error = process(&path, Some("all"), None, Some(20.)).err().unwrap();

@@ -95,6 +95,12 @@ each file. Channels are never merged with each other: with `--merge`, each
 channel of consecutive files is joined on its own, so two files of two
 channels make two outputs, one per channel.
 
+An IceRadar file of several lines (see {ref}`iceradar`) gives one output per
+line, named `<stem>_line_<N>.nc`. Lines are recorded one after another, so
+with `--merge` they are joined in time like files, and an output named after
+its first line may hold lines of several files. The dry run names each
+input's line or channel.
+
 `-r` and `-t` on their own put the images and tracks in the output
 directory, or in the directory given after them. With `--no-export`, `-o` is
 optional and those go in the current directory.
@@ -121,9 +127,10 @@ ridal batch-process "data/*.rd3" --merge "10 min" --default -o output/ \
 | `{date}` | the date of the first trace, `YYYYMMDD` |
 | `{group}` | the group id, from `--group-name` or `--group-id` |
 | `{channel}` | the channel of a GSSI file of several, from 1; `1` for any other recording |
+| `{line}` | the line of an IceRadar file (`N` of `line_N`); an error for other formats |
 
 `{n:02}` pads a number to two digits, and so do `{freq:04}`,
-`{nfiles:02}` and `{channel:02}`. The counter takes options after a comma:
+`{nfiles:02}`, `{channel:02}` and `{line:02}`. The counter takes options after a comma:
 
 - `{n, from=15}` starts at 15.
 - `{n, from=next}` continues after the highest number among the radargrams
@@ -131,7 +138,7 @@ ridal batch-process "data/*.rd3" --merge "10 min" --default -o output/ \
 - `{n, per=freq}` counts each frequency separately, so the example above
   gives `dronbreen-2026-100mhz-01`, `dronbreen-2026-100mhz-02` and
   `dronbreen-2026-800mhz-01`. `per=freq+date` counts each frequency on each
-  day, and `per=channel` each channel.
+  day, and `per=channel` each channel (or `per=line` each line).
 
 A batch with GSSI files of several channels warns when the pattern does not
 say which channel each output is: when it has no `{channel}`, and no

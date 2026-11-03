@@ -96,7 +96,11 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             radargram_id,
             display_name,
             options: ProcessingOptions {
-                channel: planned.channel,
+                // The parts the plan chose, which a run's own
+                // `--lines` and `--channel` would otherwise choose.
+                parts: Some(planned.parts.clone()),
+                lines: None,
+                channel: None,
                 ..params.options.clone()
             },
         };
@@ -137,9 +141,10 @@ pub struct PlannedOutput {
     pub output: PathBuf,
     /// In the order they are merged.
     pub inputs: Vec<PathBuf>,
-    /// The channel of the inputs that is read, for GSSI files of several
-    /// channels or with `--channel`; `None` for the whole file.
-    pub channel: Option<u32>,
+    /// The part of each input that is read, in the order of `inputs`: a
+    /// line of an IceRadar file or a channel of a GSSI file of several, or
+    /// the whole file.
+    pub parts: Vec<formats::Part>,
     /// Why this output is not part of the one before it; `None` for the
     /// first output, and for every output of a batch that does not merge.
     pub split: Option<Split>,
@@ -176,9 +181,6 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
                 crate::sidecar::SIDECAR_SUFFIX
             ));
         }
-    }
-    for path in &expanded_filepaths {
-        refuse_multiline(path)?;
     }
     if params.options.channel.is_some() && !expanded_filepaths.iter().any(|p| is_gssi(p)) {
         return Err(
@@ -237,18 +239,14 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
             .iter()
             .map(|i| recordings[*i].path.clone())
             .collect();
-        // Grouping keeps each channel apart.
-        let channel = recordings[members[0]].channel;
+        let parts: Vec<formats::Part> = members.iter().map(|i| recordings[*i].part).collect();
         let first = &group[0];
         let file_stem = first
             .file_stem()
             .and_then(|s| s.to_str())
             .ok_or_else(|| format!("Could not derive output stem from {}", first.display()))?;
-        // As `ridal process` names a channel's output.
-        let file_stem = match channel {
-            Some(channel) => format!("{file_stem}_ch_{channel}"),
-            None => file_stem.to_string(),
-        };
+        // As `ridal process` names a line's or a channel's output.
+        let file_stem = format!("{file_stem}{}", processing::part_suffix(&parts[0]));
         let (radargram_id, display_name, stem) = match &names {
             Some((ids, display_names)) => (
                 ids[index].to_string(),
@@ -274,10 +272,10 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
                 other.display(),
                 first.display(),
                 output.display(),
-                if channel.is_some() {
-                    ", using {channel} for the channels of a GSSI file"
-                } else {
-                    ""
+                match (parts[0].line, parts[0].channel) {
+                    (Some(_), _) => ", using {line} for the lines of an IceRadar file",
+                    (None, Some(_)) => ", using {channel} for the channels of a GSSI file",
+                    (None, None) => "",
                 }
             ));
         }
@@ -286,7 +284,7 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
             display_name,
             output,
             inputs: group,
-            channel,
+            parts,
             split,
         });
     }
@@ -297,55 +295,56 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     })
 }
 
-/// Refuse a file of several IceRadar lines, which a batch cannot split into
-/// recordings yet, with what to do instead. Before anything is processed,
-/// so a batch fails as a whole rather than partway.
-fn refuse_multiline(path: &Path) -> Result<(), String> {
-    let Ok(resolved) = formats::resolve_input(path) else {
-        // Reported, with its context, when the input is read.
-        return Ok(());
-    };
-    if resolved.kind != formats::FormatKind::IceRadar {
-        return Ok(());
-    }
-    let lines = crate::io::iceradar_lines(&resolved.header).map_err(|e| e.to_string())?;
-    if lines.len() > 1 {
-        return Err(format!(
-            "{} holds {} IceRadar lines, and batch processing does not split a file into \
-             lines yet. Process its lines with `ridal process --lines` (`ridal.process(..., \
-             lines=...)` in Python).",
-            path.display(),
-            lines.len()
-        ));
-    }
-    Ok(())
-}
-
 /// Whether `path` is a GSSI recording, which `--channel` applies to.
 fn is_gssi(path: &Path) -> bool {
     formats::resolve_input(path).is_ok_and(|r| r.kind == formats::FormatKind::Gssi)
 }
 
-/// One recording of a batch: a file, or one channel of a GSSI file.
+/// One recording of a batch: a file, one line of an IceRadar file, or one
+/// channel of a GSSI file.
 #[derive(Debug, Clone, PartialEq)]
 struct Recording {
     path: PathBuf,
-    /// `None` for the whole file.
-    channel: Option<u32>,
+    /// The whole file, or the line or channel read.
+    part: formats::Part,
+    /// The IceRadar line it is, for `{line}`: the part's, or the only line
+    /// of a file of one, which is read as the whole file.
+    line: Option<u32>,
 }
 
-/// The recordings the batch's files hold: each file, and each channel of a
-/// GSSI file of several, or only `channel` of every GSSI file when it is
-/// given. A channel a file does not have is an error, before anything is
-/// processed.
+/// The recordings the batch's files hold: each file, each line of an
+/// IceRadar file of several, and each channel of a GSSI file of several, or
+/// only `channel` of every GSSI file when it is given. A channel a file
+/// does not have is an error, before anything is processed.
 fn batch_recordings(paths: &[PathBuf], channel: Option<u32>) -> Result<Vec<Recording>, String> {
     let mut out = Vec::new();
     for path in paths {
         let whole = Recording {
             path: path.clone(),
-            channel: None,
+            part: formats::Part::default(),
+            line: None,
         };
         let resolved = match formats::resolve_input(path) {
+            Ok(resolved) if resolved.kind == formats::FormatKind::IceRadar => {
+                let lines = crate::io::iceradar_lines(&resolved.header)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                match &lines[..] {
+                    // Read as the whole file, as `ridal process` reads it.
+                    [(only, _)] => out.push(Recording {
+                        line: Some(*only),
+                        ..whole
+                    }),
+                    _ => out.extend(lines.iter().map(|(line, _)| Recording {
+                        part: formats::Part {
+                            line: Some(*line),
+                            ..Default::default()
+                        },
+                        line: Some(*line),
+                        ..whole.clone()
+                    })),
+                }
+                continue;
+            }
             Ok(resolved) if resolved.kind == formats::FormatKind::Gssi => resolved,
             // Anything else, or an input that does not resolve, which is
             // reported with its context when it is read.
@@ -357,7 +356,10 @@ fn batch_recordings(paths: &[PathBuf], channel: Option<u32>) -> Result<Vec<Recor
         if let Some(channel) = channel {
             formats::with_channel(vec![resolved], Some(channel))?;
             out.push(Recording {
-                channel: Some(channel),
+                part: formats::Part {
+                    channel: Some(channel),
+                    ..Default::default()
+                },
                 ..whole
             });
             continue;
@@ -367,7 +369,10 @@ fn batch_recordings(paths: &[PathBuf], channel: Option<u32>) -> Result<Vec<Recor
         match channels.len() {
             1 => out.push(whole),
             _ => out.extend(channels.iter().map(|c| Recording {
-                channel: Some(c.number),
+                part: formats::Part {
+                    channel: Some(c.number),
+                    ..Default::default()
+                },
                 ..whole.clone()
             })),
         }
@@ -379,7 +384,8 @@ fn batch_recordings(paths: &[PathBuf], channel: Option<u32>) -> Result<Vec<Recor
 /// channels, recorded side by side, are never merged, while the same
 /// channel of consecutive files is. The outputs are in the order their
 /// first recording started. Recordings without a channel are one stream,
-/// as every batch without GSSI channels is.
+/// as every batch without GSSI channels is: IceRadar lines, recorded one
+/// after another, merge in time as files do.
 fn group_each_channel(
     recordings: &[Recording],
     read: &[GroupingRecording],
@@ -387,14 +393,14 @@ fn group_each_channel(
 ) -> Vec<(Vec<usize>, Option<Split>)> {
     let mut channels: Vec<Option<u32>> = Vec::new();
     for recording in recordings {
-        if !channels.contains(&recording.channel) {
-            channels.push(recording.channel);
+        if !channels.contains(&recording.part.channel) {
+            channels.push(recording.part.channel);
         }
     }
     let mut groups = Vec::new();
     for channel in channels {
         let indices: Vec<usize> = (0..recordings.len())
-            .filter(|&i| recordings[i].channel == channel)
+            .filter(|&i| recordings[i].part.channel == channel)
             .collect();
         let these: Vec<GroupingRecording> = indices.iter().map(|&i| read[i].clone()).collect();
         let grouping =
@@ -435,7 +441,7 @@ fn channel_warning(
     }
     let mut unclear: Vec<&PathBuf> = Vec::new();
     for recording in recordings {
-        if recording.channel.is_none() || unclear.contains(&&recording.path) {
+        if recording.part.channel.is_none() || unclear.contains(&&recording.path) {
             continue;
         }
         let frequencies: Vec<f32> = (0..recordings.len())
@@ -471,7 +477,10 @@ fn read_for_grouping(
     let path = &recording.path;
     let resolved = formats::resolve_input(path)
         .map_err(|e| format!("Failed to resolve input '{}': {e}", path.display()))?;
-    let mut resolved = formats::with_channel(vec![resolved], recording.channel)?.remove(0);
+    let mut resolved = formats::ResolvedInput {
+        part: recording.part,
+        ..resolved
+    };
     formats::with_coordinates(
         std::slice::from_mut(&mut resolved),
         params.options.cor_path.as_deref(),
@@ -493,25 +502,26 @@ fn read_for_grouping(
 
 /// What a pattern is rendered from, for an output made of `members`, the
 /// first of which is `first` and reads as `recording`.
-pub fn output_facts(
-    first: &Path,
+fn output_facts(
+    first: &Recording,
     recording: &GroupingRecording,
     n_files: usize,
-    channel: Option<u32>,
 ) -> crate::id_pattern::OutputFacts {
+    let first_path = &first.path;
     crate::id_pattern::OutputFacts {
-        label: first
+        label: first_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default(),
-        stem: first
+        stem: first_path
             .file_stem()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default(),
         start_seconds: recording.start_seconds,
         antenna_mhz: recording.key.antenna_mhz,
         n_files,
-        channel: channel.unwrap_or(1),
+        channel: first.part.channel.unwrap_or(1),
+        line: first.line,
     }
 }
 
@@ -566,10 +576,7 @@ fn batch_names(
 
     let outputs: Vec<_> = groups
         .iter()
-        .map(|(members, _)| {
-            let first = &recordings[members[0]];
-            output_facts(&first.path, &read[members[0]], members.len(), first.channel)
-        })
+        .map(|(members, _)| output_facts(&recordings[members[0]], &read[members[0]], members.len()))
         .collect();
 
     let existing = if id_pattern.needs_existing_ids() {
@@ -830,7 +837,7 @@ mod tests {
                         .iter()
                         .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
                         .collect(),
-                    o.channel,
+                    o.parts[0].channel,
                 )
             })
             .collect()
@@ -966,5 +973,122 @@ mod tests {
                 "second-ch2.nc"
             ]
         );
+    }
+
+    /// A two-line IceRadar file, its second line recorded a few seconds
+    /// after the first, in a batch at 20 MHz.
+    #[cfg(not(target_os = "windows"))]
+    fn two_line_batch(
+        input: &std::path::Path,
+        output: &std::path::Path,
+        merge: Option<&str>,
+        id_pattern: Option<&str>,
+    ) -> super::BatchRunParams {
+        use crate::io::iceradar::tests::{trace, write_fixture};
+        use crate::io::iceradar::Layout;
+        let path = input.join("stor.h5");
+        let line = |times: [&'static str; 2]| times.map(|t| trace(40, 256, Some(t))).to_vec();
+        write_fixture(
+            &path,
+            Layout::V1,
+            &[
+                line(["103045.6", "103046.8"]),
+                line(["103050.0", "103051.2"]),
+            ],
+            "6/18/2024 1:30:00 PM",
+        );
+        super::BatchRunParams {
+            filepaths: vec![path],
+            output_dir: output.to_path_buf(),
+            track_dir: None,
+            render_dir: None,
+            merge: merge.map(str::to_string),
+            id_pattern: id_pattern.map(str::to_string),
+            display_name_pattern: None,
+            options: super::ProcessingOptions {
+                quiet: true,
+                override_antenna_mhz: Some(20.),
+                crs: Some("EPSG:32632".to_string()),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn a_batch_makes_each_iceradar_line_a_recording() {
+        let input = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let plan = |merge, pattern| {
+            super::plan_batch(&two_line_batch(input.path(), output.path(), merge, pattern))
+        };
+        let line = |n| crate::formats::Part {
+            line: Some(n),
+            ..Default::default()
+        };
+
+        let apart = plan(None, None).unwrap();
+        assert_eq!(
+            planned_parts(&apart),
+            [
+                ("stor_line_0.nc".to_string(), vec![line(0)]),
+                ("stor_line_1.nc".to_string(), vec![line(1)]),
+            ]
+        );
+        // Recorded one after another, the lines merge as files do.
+        let merged = plan(Some("10 min"), None).unwrap();
+        assert_eq!(
+            planned_parts(&merged),
+            [("stor_line_0.nc".to_string(), vec![line(0), line(1)])]
+        );
+        assert_eq!(merged.outputs[0].inputs.len(), 2);
+
+        let named = plan(None, Some("{stem}-l{line:02}")).unwrap();
+        let ids: Vec<_> = named
+            .outputs
+            .iter()
+            .map(|o| o.radargram_id.as_str())
+            .collect();
+        assert_eq!(ids, ["stor-l00", "stor-l01"]);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn a_batch_processes_merged_lines_of_one_file() {
+        let input = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let params = two_line_batch(input.path(), output.path(), Some("10 min"), None);
+        let result = super::run_batch(params).unwrap();
+        assert_eq!(result.output_paths, [output.path().join("stor_line_0.nc")]);
+        let info = crate::io::inspect_ridal_netcdf(&result.output_paths[0]).unwrap();
+        let crate::io::RidalNetcdfKind::Supported(meta) = info else {
+            panic!("not a Ridal file");
+        };
+        // Both lines' two traces.
+        assert_eq!(meta.shape.1, 4, "{:?}", meta.shape);
+    }
+
+    #[test]
+    fn the_line_placeholder_is_refused_for_other_formats() {
+        let output = tempfile::tempdir().unwrap();
+        let mut params = batch_params(output.path(), Some("x-{line}"));
+        params.filepaths.truncate(1);
+        let error = super::plan_batch(&params).unwrap_err();
+        assert!(
+            error.contains("`{line}` is the line of an IceRadar file"),
+            "{error}"
+        );
+    }
+
+    fn planned_parts(plan: &super::BatchPlan) -> Vec<(String, Vec<crate::formats::Part>)> {
+        plan.outputs
+            .iter()
+            .map(|o| {
+                (
+                    o.output.file_name().unwrap().to_string_lossy().to_string(),
+                    o.parts.clone(),
+                )
+            })
+            .collect()
     }
 }

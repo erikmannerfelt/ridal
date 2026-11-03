@@ -260,7 +260,7 @@ Explicit override for the group's id, when the id automatically derived from --g
 ```
 
 ```{option} --id-pattern <ID_PATTERN>
-Name each output's radargram id after a pattern, and its file `<id>.nc`. Placeholders: {stem} (first input's file stem), {n} (a counter in time order), {freq} (antenna MHz), {nfiles} (inputs merged), {date} (YYYYMMDD), {group} and {channel} (GSSI channel, 1 for a file of one). {n:02} pads to two digits; {n, from=15} starts at 15, {n, from=next} continues after the ids already in the output directory, and {n, per=freq} counts each frequency separately. Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}"
+Name each output's radargram id after a pattern, and its file `<id>.nc`. Placeholders: {stem} (first input's file stem), {n} (a counter in time order), {freq} (antenna MHz), {nfiles} (inputs merged), {date} (YYYYMMDD), {group}, {channel} (GSSI channel, 1 for a file of one) and {line} (IceRadar line). {n:02} pads to two digits; {n, from=15} starts at 15, {n, from=next} continues after the ids already in the output directory, and {n, per=freq} counts each frequency separately. Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}"
 ```
 
 ```{option} --display-name-pattern <DISPLAY_NAME_PATTERN>

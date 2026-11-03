@@ -130,8 +130,10 @@ Lines
   merged as several files are, so lines recorded with different settings,
   such as a different record length, are refused with the reason. The
   output of one line of a multi-line file is named `<stem>_line_<N>.nc`.
-  `batch-process` does not split a file into lines yet, and refuses a file
-  of several.
+  `batch-process` makes each line of a file of several its own recording:
+  one output per line, or with `--merge`, consecutive lines (and the lines
+  of consecutive files) merged in time as files are. `{line}` names them in
+  an id pattern (see {doc}`cli`).
 
 Antenna
 : IceRadar files record neither the antenna frequency nor the antenna
