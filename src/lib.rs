@@ -528,7 +528,7 @@ pub mod ridal {
     /// override_date : datetime.date or str, optional
     ///     The UTC date of recordings whose files record only a time of day,
     ///     or a date that may be wrong: IceRadar, whose date is the
-    ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
+    ///     acquisition PC's clock, pulseEKKO and VIRL. A ``datetime.date`` or a
     ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
     /// sidecar : path-like or bool, optional
     ///     Where to read overrides from (a ``.ridal.toml``). By default
@@ -790,7 +790,7 @@ pub mod ridal {
     /// override_date : datetime.date or str, optional
     ///     The UTC date of recordings whose files record only a time of day,
     ///     or a date that may be wrong: IceRadar, whose date is the
-    ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
+    ///     acquisition PC's clock, pulseEKKO and VIRL. A ``datetime.date`` or a
     ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
     /// sidecar : path-like or bool, optional
     ///     Where to read overrides from (a ``.ridal.toml``). By default
@@ -989,7 +989,7 @@ pub mod ridal {
     /// override_date : datetime.date or str, optional
     ///     The UTC date of recordings whose files record only a time of day,
     ///     or a date that may be wrong: IceRadar, whose date is the
-    ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
+    ///     acquisition PC's clock, pulseEKKO and VIRL. A ``datetime.date`` or a
     ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
     /// sidecar : path-like or bool, optional
     ///     Where to read overrides from (a ``.ridal.toml``). By default
@@ -1523,7 +1523,7 @@ pub mod ridal {
     /// override_date : datetime.date or str, optional
     ///     The UTC date of recordings whose files record only a time of day,
     ///     or a date that may be wrong: IceRadar, whose date is the
-    ///     acquisition PC's clock, and pulseEKKO. A ``datetime.date`` or a
+    ///     acquisition PC's clock, pulseEKKO and VIRL. A ``datetime.date`` or a
     ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
     /// sidecar : path-like or bool, optional
     ///     Where to read overrides from (a ``.ridal.toml``). By default
@@ -1646,7 +1646,7 @@ pub mod ridal {
     ///     The digitizer's sampling frequency, in MHz: not the antenna's. The
     ///     time between samples is ``1000 / sampling_mhz`` ns.
     /// date : datetime.date or str, optional
-    ///     The UTC date of an IceRadar or pulseEKKO recording, whose
+    ///     The UTC date of an IceRadar, pulseEKKO or VIRL recording, whose
     ///     positions record only a time of day, as a date or ``"YYYY-MM-DD"``.
     /// unset : str or sequence of str, optional
     ///     Keys to remove: ``"antenna_mhz"``, ``"antenna_separation_m"``,

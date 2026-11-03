@@ -743,7 +743,7 @@ pub struct RecordingArgs {
 
     /// The UTC date (YYYY-MM-DD) of recordings whose files record only a
     /// time of day, or a date that is wrong: IceRadar, whose date is the
-    /// acquisition PC's clock, and pulseEKKO.
+    /// acquisition PC's clock, pulseEKKO and VIRL.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub override_date: Option<chrono::NaiveDate>,
 
@@ -1035,7 +1035,7 @@ pub struct OverrideArgs {
     #[arg(long)]
     pub sampling_mhz: Option<f32>,
 
-    /// The UTC date of an IceRadar or pulseEKKO recording, whose positions record only a time of day.
+    /// The UTC date of an IceRadar, pulseEKKO or VIRL recording, whose positions record only a time of day.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub date: Option<chrono::NaiveDate>,
 

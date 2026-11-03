@@ -8,6 +8,8 @@
 //! - [`gssi`]: GSSI (`.DZT` / `.DZG`).
 //! - [`iceradar`]: Blue System Integration IceRadar (`.h5` / `.hdf5`), with
 //!   the header, the data and the positions in one file.
+//! - [`virl`]: VIRL radar (`.DSR`), with the header, the data and the
+//!   positions in one file, and neither the sampling frequency nor the date.
 //! - [`coords_csv`]: Ridal's coordinate CSV, which `--cor` reads in place of
 //!   any format's own positions file (#13).
 //! - [`ridal`]: Ridal's own products -- the processed NetCDF and the track
@@ -24,6 +26,7 @@ pub(crate) mod iceradar;
 mod mala;
 mod pulseekko;
 mod ridal;
+mod virl;
 
 pub use coords_csv::{
     load_coords_csv, write_coords_csv, AltOrigin, CoordsRow, CsvPart, TimeOrigin,
@@ -40,6 +43,7 @@ pub use iceradar::{
 };
 pub use mala::{load_cor, load_rad, load_rd3};
 pub use pulseekko::{load_pe_dt1, load_pe_gp2, load_pe_hd};
+pub use virl::{load_virl_data, load_virl_meta, load_virl_positions, virl_fix_count};
 // This is a facade: the submodules are private, and `io` itself is private to
 // the crate, so a name no caller happens to use -- `RidalNetcdfMetadata` is
 // only reached through `RidalNetcdfKind` -- reads as an unused import even

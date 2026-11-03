@@ -134,6 +134,14 @@ pub(crate) fn load_meta(
             override_antenna_separation,
             override_date,
         )?,
+        FormatKind::Virl => io::load_virl_meta(
+            &resolved.header,
+            medium_velocity,
+            override_antenna_mhz,
+            override_antenna_separation,
+            sidecar.sampling_mhz,
+            override_date,
+        )?,
     };
     if let Some(mhz) = sidecar.sampling_mhz {
         meta.frequency = mhz;
@@ -193,6 +201,10 @@ pub(crate) fn load_gpr(
                 io::load_iceradar_data(&resolved.header, iceradar_line(resolved)?, override_date)?;
             crate::gpr::GPR::from_meta_loc_and_data(location, meta, data)
         }
+        FormatKind::Virl => {
+            let data = io::load_virl_data(&resolved.header)?;
+            crate::gpr::GPR::from_meta_loc_and_data(location, meta, data)
+        }
         FormatKind::Gssi => {
             let data = io::load_dzt(
                 &resolved.data,
@@ -218,8 +230,8 @@ pub(crate) fn load_positions(
         !formats::is_coords_csv(positions) && formats::takes_date(resolved.kind);
     if override_date.is_some() && !dated_by_override {
         return Err(format!(
-            "--override-date (override_date= in Python) applies to positions read from IceRadar \
-             and pulseEKKO files; \
+            "--override-date (override_date= in Python) applies to positions read from IceRadar, \
+             pulseEKKO and VIRL files; \
              {} gives its own dates",
             positions.display()
         )
@@ -230,8 +242,8 @@ pub(crate) fn load_positions(
         (override_date, dated_by_override, &resolved.sidecar)
     {
         return Err(format!(
-            "{} sets date = {date}, which applies to positions read from IceRadar and \
-             pulseEKKO files; {} gives its own dates. Remove it with ridal override --unset date.",
+            "{} sets date = {date}, which applies to positions read from IceRadar, \
+             pulseEKKO and VIRL files; {} gives its own dates. Remove it with ridal override --unset date.",
             sidecar.display(),
             positions.display()
         )
@@ -256,6 +268,9 @@ pub(crate) fn load_positions(
             crs,
         );
     }
+    if resolved.kind == FormatKind::Virl && positions == resolved.header {
+        return io::load_virl_positions(&resolved.header, override_date, crs);
+    }
     let native = formats::format_info(resolved.kind).files.coordinates;
     let is_native = positions
         .extension()
@@ -277,11 +292,15 @@ pub(crate) fn load_positions(
         FormatKind::Gssi => {
             io::load_gssi_dzg(positions, crs, io::gssi_recorded_date(&resolved.header)?)
         }
-        FormatKind::IceRadar => Err(format!(
-            "{} cannot hold the positions of {}: an IceRadar recording's positions are in \
+        FormatKind::IceRadar | FormatKind::Virl => Err(format!(
+            "{} cannot hold the positions of {}: {} recording's positions are in \
              the file itself, or in a Ridal coordinate CSV (.csv).",
             positions.display(),
             resolved.header.display(),
+            match resolved.kind {
+                FormatKind::IceRadar => "an IceRadar",
+                _ => "a VIRL",
+            },
         )
         .into()),
     }

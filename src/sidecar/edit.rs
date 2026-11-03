@@ -308,7 +308,7 @@ pub fn apply(inputs: &[PathBuf], edit: &Edit) -> Result<Vec<Outcome>, String> {
         super::parse(&before, &path)?;
         if edit.set.date.is_some() && !formats::takes_date(resolved.kind) {
             return Err(format!(
-                "date applies to IceRadar and pulseEKKO files, whose positions record only a \
+                "date applies to IceRadar, pulseEKKO and VIRL files, whose positions record only a \
                  time of day; {} is a {} file, which dates its own",
                 resolved.header.display(),
                 formats::display_name(resolved.kind)

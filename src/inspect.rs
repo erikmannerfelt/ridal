@@ -345,17 +345,21 @@ fn sidecar_summary(
         ..resolved.clone()
     };
     let read = |mhz| input::load_meta(&bare, meta.medium_velocity, mhz, None, params.override_date);
-    // A format that does not record the frequency cannot be read without
-    // one; the one the recording was read with stands in, and only the
-    // separation is taken from that read.
+    // A format that does not record the antenna frequency cannot be read
+    // without one; the one the recording was read with stands in, and only
+    // the separation is taken from that read. One that does not record the
+    // sampling frequency cannot be read without its sidecar at all.
     let (header_mhz, header) = match read(None) {
-        Ok(header) => (Some(header.antenna_mhz), header),
-        Err(_) => (None, read(Some(meta.antenna_mhz))?),
+        Ok(header) => (Some(header.antenna_mhz), Some(header)),
+        Err(_) => (None, read(Some(meta.antenna_mhz)).ok()),
     };
-    let header_separation =
-        formats::records_antenna_separation(resolved.kind).then_some(header.antenna_separation);
-    // Every format read so far records its sampling frequency. A header's
-    // date is not one value to show, so `header.date` is left out.
+    let header_separation = header
+        .as_ref()
+        .map(|h| h.antenna_separation)
+        .filter(|_| formats::records_antenna_separation(resolved.kind));
+    let header_sampling = header.as_ref().map(|h| h.frequency);
+    // A header's date is not one value to show, so `header.date` is left
+    // out.
     Ok(Some(SidecarSummary {
         path: path.to_string_lossy().to_string(),
         applied,
@@ -363,7 +367,7 @@ fn sidecar_summary(
             antenna_mhz: header_mhz.filter(|_| applied.antenna_mhz.is_some()),
             antenna_separation_m: header_separation
                 .filter(|_| applied.antenna_separation_m.is_some()),
-            sampling_mhz: applied.sampling_mhz.is_some().then_some(header.frequency),
+            sampling_mhz: header_sampling.filter(|_| applied.sampling_mhz.is_some()),
             date: None,
         },
     }))

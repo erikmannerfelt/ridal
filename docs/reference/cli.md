@@ -57,7 +57,7 @@ Override the antenna separation (in m) from file metadata
 ```
 
 ```{option} --override-date <YYYY-MM-DD>
-The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
+The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, pulseEKKO and VIRL
 ```
 
 ```{option} --channel <N>
@@ -188,7 +188,7 @@ Override the antenna separation (in m) from file metadata
 ```
 
 ```{option} --override-date <YYYY-MM-DD>
-The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
+The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, pulseEKKO and VIRL
 ```
 
 ```{option} --channel <N>
@@ -327,7 +327,7 @@ Override the antenna separation (in m) from file metadata
 ```
 
 ```{option} --override-date <YYYY-MM-DD>
-The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, and pulseEKKO
+The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, pulseEKKO and VIRL
 ```
 
 ```{option} --channel <N>
@@ -445,7 +445,7 @@ The digitizer's sampling frequency, in MHz: not the antenna's. The time between 
 ```
 
 ```{option} --date <YYYY-MM-DD>
-The UTC date of an IceRadar or pulseEKKO recording, whose positions record only a time of day
+The UTC date of an IceRadar, pulseEKKO or VIRL recording, whose positions record only a time of day
 ```
 
 ```{option} --unset <KEY>

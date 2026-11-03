@@ -123,15 +123,15 @@ pub const OVERRIDE_KEYS: &[OverrideKey] = &[
     OverrideKey {
         name: "antenna_mhz",
         unit: "MHz",
-        description: "The antenna's center frequency. Needed for an IceRadar file, which does \
-                      not record it.",
+        description: "The antenna's center frequency. Needed for an IceRadar or VIRL file, \
+                      which does not record it.",
         argument: Some("--override-antenna-mhz"),
     },
     OverrideKey {
         name: "antenna_separation_m",
         unit: "m",
-        description: "The horizontal distance between the transmitter and the receiver. GSSI \
-                      and IceRadar files do not record it, and it is taken as 0 m without \
+        description: "The horizontal distance between the transmitter and the receiver. GSSI, \
+                      IceRadar and VIRL files do not record it, and it is taken as 0 m without \
                       one.",
         argument: Some("--override-antenna-separation"),
     },
@@ -139,15 +139,15 @@ pub const OVERRIDE_KEYS: &[OverrideKey] = &[
         name: "sampling_mhz",
         unit: "MHz",
         description: "The digitizer's sampling frequency, not the antenna's: the time between \
-                      samples is 1000 / sampling_mhz ns. Needed for a format that does not \
+                      samples is 1000 / sampling_mhz ns. Needed for a VIRL file, which does not \
                       record it. A wrong value scales every time and depth.",
         argument: None,
     },
     OverrideKey {
         name: "date",
         unit: "YYYY-MM-DD",
-        description: "The UTC date of the recording, for an IceRadar or pulseEKKO file, whose \
-                      positions record only a time of day or a date that may be wrong. Written \
+        description: "The UTC date of the recording, for an IceRadar, pulseEKKO or VIRL file, \
+                      whose positions record only a time of day or a date that may be wrong. Written \
                       as a TOML date (date = 2014-04-05) or a string.",
         argument: Some("--override-date"),
     },
