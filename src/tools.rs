@@ -40,6 +40,15 @@ pub fn parse_step_list(steps: &str) -> Result<Vec<String>, String> {
 ///
 /// CI also sets `HDF5_USE_FILE_LOCKING=FALSE` (#154), which hides the
 /// failure rather than preventing it, and only there.
+///
+/// Windows has the same leak in another form (#534). HDF5 opens files with
+/// the C runtime's `_wopen`, whose handles are inheritable, and
+/// `CreateProcessW` hands a child every inheritable handle. A tool then
+/// keeps a file open that was closed here, and renaming it into place fails
+/// with "being used by another process" (os error 32) until the tool exits.
+/// Before the spawn, under the same lock, every C runtime descriptor above
+/// stderr is made non-inheritable. That is permanent, which is harmless:
+/// nothing in Ridal hands a file to a child by inheritance.
 pub fn spawn_tool(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
     #[cfg(test)]
     if TOOLS_HIDDEN.get() {
@@ -56,6 +65,8 @@ pub fn spawn_tool(command: &mut std::process::Command) -> std::io::Result<std::p
         }
     }
     let _guard = netcdf_sys::libnetcdf_lock.lock();
+    #[cfg(all(windows, target_env = "msvc"))]
+    stop_descriptors_being_inherited();
     command.spawn()
 }
 
@@ -153,6 +164,53 @@ fn close_inherited_descriptors_on_exec() -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Make every C runtime descriptor above stderr non-inheritable.
+///
+/// The Windows counterpart of [`close_inherited_descriptors_on_exec`], run
+/// in the parent before `CreateProcessW` since there is no fork. The C
+/// runtime is the shared `ucrtbase.dll` that HDF5 and netcdf-c are built
+/// against too (`/MD`, as the `cmake` crate passes it), so its descriptor
+/// table is theirs.
+#[cfg(all(windows, target_env = "msvc"))]
+fn stop_descriptors_being_inherited() {
+    use std::ffi::{c_int, c_uint, c_void};
+
+    type InvalidParameterHandler =
+        Option<unsafe extern "C" fn(*const u16, *const u16, *const u16, c_uint, usize)>;
+    unsafe extern "C" {
+        fn _get_osfhandle(fd: c_int) -> isize;
+        fn _set_thread_local_invalid_parameter_handler(
+            handler: InvalidParameterHandler,
+        ) -> InvalidParameterHandler;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    }
+    const HANDLE_FLAG_INHERIT: u32 = 0x1;
+    // The C runtime's hard limit on low-level descriptors (`_NHANDLE_`).
+    const MAX_DESCRIPTORS: c_int = 8192;
+
+    // `_get_osfhandle` on a descriptor that is not open calls the invalid
+    // parameter handler, whose default ends the process. Ignoring it makes
+    // the call return -1, which is the answer wanted for such a descriptor.
+    unsafe extern "C" fn ignore(_: *const u16, _: *const u16, _: *const u16, _: c_uint, _: usize) {}
+    // SAFETY: plain C runtime and Win32 calls on integers. The handler is
+    // this thread's only, and restored before returning. A handle cleared
+    // of its inherit flag stays valid and is not closed.
+    unsafe {
+        let previous = _set_thread_local_invalid_parameter_handler(Some(ignore));
+        for fd in 3..MAX_DESCRIPTORS {
+            let handle = _get_osfhandle(fd);
+            // -2 is a descriptor with no console attached.
+            if handle != -1 && handle != -2 {
+                SetHandleInformation(handle as *mut c_void, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+        _set_thread_local_invalid_parameter_handler(previous);
+    }
 }
 
 /// Read a text file and return all lines as a vec
@@ -515,6 +573,46 @@ mod tests {
             "a tool started through spawn_tool inherited an open NetCDF file"
         );
         drop(file);
+    }
+
+    #[test]
+    #[cfg(all(windows, target_env = "msvc"))]
+    #[serial_test::serial(netcdf)]
+    fn a_tool_does_not_inherit_an_open_netcdf_file() {
+        // #534: a child holding an inherited handle to a NetCDF file keeps
+        // it open after it is closed here, and renaming it into place fails
+        // with os error 32. Checked by that rename, which is what failed.
+        let dir = tempfile::tempdir().unwrap();
+        let holds_the_file =
+            |name: &str, spawn: &dyn Fn(&mut std::process::Command) -> std::process::Child| {
+                let path = dir.path().join(format!("{name}.nc"));
+                let file = netcdf::create(&path).unwrap();
+                let mut child = spawn(
+                    std::process::Command::new("ping")
+                        .args(["-n", "30", "127.0.0.1"])
+                        .stdout(std::process::Stdio::null()),
+                );
+                drop(file);
+                let moved = std::fs::rename(&path, dir.path().join(format!("{name}-moved.nc")));
+                child.kill().unwrap();
+                child.wait().unwrap();
+                match moved {
+                    Ok(()) => false,
+                    Err(e) if e.raw_os_error() == Some(32) => true,
+                    Err(e) => panic!("renaming {} failed: {e}", path.display()),
+                }
+            };
+        // The control: without the helper the child does inherit it. If
+        // this starts failing, HDF5 has stopped opening files inheritable
+        // and `spawn_tool` no longer has anything to do on Windows.
+        assert!(
+            holds_the_file("plain", &|command| command.spawn().unwrap()),
+            "a plain Command was expected to inherit HDF5's handle"
+        );
+        assert!(
+            !holds_the_file("tool", &|command| super::spawn_tool(command).unwrap()),
+            "a tool started through spawn_tool inherited an open NetCDF file"
+        );
     }
 
     /// More than a pipe holds, which is when writing it all before reading
