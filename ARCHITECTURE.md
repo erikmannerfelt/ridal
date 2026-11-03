@@ -1098,6 +1098,16 @@ writer once there are writers (#99). The user-facing description is
   Hashing values rather than the file's bytes means a comment or a
   reformatted sidecar is the same revision. A value given as an argument is
   a different recipe from the same value in a sidecar.
+  `sampling_mhz` and `date`, added later, are hashed only when set, so a
+  recipe from before them keeps its hash; one with a sidecar is now
+  written with them as `null`.
+- **Not every key is a number or has an argument.** `date` is a
+  `NaiveDate`, read from a TOML local date or a string, so
+  `Overrides::entries` yields `sidecar::Value`. `sampling_mhz` has no run
+  option (`OverrideKey::argument` is `None`): it replaces the header's
+  sampling frequency and the time window with it in `load_meta`, for any
+  format. A sidecar `date` goes where `--override-date` does, through
+  `input::date_of`, and is refused where that is (`formats::takes_date`).
 - **Per line and per channel.** `[lines.<N>]` and `[channels.<N>]` mirror
   `formats::Part`, each checked against the file (`check_lines`,
   `check_channels`), and `ridal override --lines`/`--channel` writes them.

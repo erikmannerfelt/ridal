@@ -1016,7 +1016,7 @@ pub struct InfoArgs {
     ArgGroup::new("change")
         .required(true)
         .multiple(true)
-        .args(["antenna_mhz", "antenna_separation_m", "unset", "template"]),
+        .args(["antenna_mhz", "antenna_separation_m", "sampling_mhz", "date", "unset", "template"]),
 ))]
 pub struct OverrideArgs {
     /// Recordings, by any of their files, or glob patterns. Each gets its own "<stem>.ridal.toml" beside its header, made if there is none; comments and anything else in an existing one are kept.
@@ -1031,7 +1031,15 @@ pub struct OverrideArgs {
     #[arg(long)]
     pub antenna_separation_m: Option<f32>,
 
-    /// Remove a value, by its key in the sidecar (antenna_mhz, antenna_separation_m). Repeatable, or comma-separated.
+    /// The digitizer's sampling frequency, in MHz: not the antenna's. The time between samples is 1000 / this, in ns.
+    #[arg(long)]
+    pub sampling_mhz: Option<f32>,
+
+    /// The UTC date of an IceRadar or pulseEKKO recording, whose positions record only a time of day.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    pub date: Option<chrono::NaiveDate>,
+
+    /// Remove a value, by its key in the sidecar (antenna_mhz, antenna_separation_m, sampling_mhz, date). Repeatable, or comma-separated.
     #[arg(long, value_name = "KEY", value_delimiter = ',')]
     pub unset: Vec<String>,
 
@@ -1044,7 +1052,7 @@ pub struct OverrideArgs {
     pub channel: Option<u32>,
 
     /// Write a sidecar that sets nothing, with every key commented out beside what the header says of it, for each recording that has none.
-    #[arg(long, conflicts_with_all = ["antenna_mhz", "antenna_separation_m", "unset", "lines", "channel"])]
+    #[arg(long, conflicts_with_all = ["antenna_mhz", "antenna_separation_m", "sampling_mhz", "date", "unset", "lines", "channel"])]
     pub template: bool,
 }
 
@@ -1485,6 +1493,8 @@ fn override_command(args: &OverrideArgs) -> Result<(), String> {
                 set: crate::sidecar::Overrides {
                     antenna_mhz: args.antenna_mhz,
                     antenna_separation_m: args.antenna_separation_m,
+                    sampling_mhz: args.sampling_mhz,
+                    date: args.date,
                 },
                 unset: args.unset.clone(),
                 lines: args.lines.clone(),
@@ -1831,6 +1841,15 @@ fn print_info_record(record: &crate::inspect::InfoRecord) {
                 "Antenna sep:\t{m} m ({})",
                 header(sidecar.header.antenna_separation_m, " m")
             );
+        }
+        if let Some(mhz) = sidecar.applied.sampling_mhz {
+            println!(
+                "Sampling freq:\t{mhz} MHz ({})",
+                header(sidecar.header.sampling_mhz, " MHz")
+            );
+        }
+        if let Some(date) = sidecar.applied.date {
+            println!("Date:\t\t{}", date.format("%Y-%m-%d"));
         }
     }
     println!();

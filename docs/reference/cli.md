@@ -419,7 +419,7 @@ A DEM to take every altitude from, before any other
 Set or remove values in recordings' sidecars ("<stem>.ridal.toml" beside each), which take precedence over their headers (#527)
 
 ```console
-$ ridal override [OPTIONS] <--antenna-mhz <ANTENNA_MHZ>|--antenna-separation-m <ANTENNA_SEPARATION_M>|--unset <KEY>|--template> <INPUTS>...
+$ ridal override [OPTIONS] <--antenna-mhz <ANTENNA_MHZ>|--antenna-separation-m <ANTENNA_SEPARATION_M>|--sampling-mhz <SAMPLING_MHZ>|--date <YYYY-MM-DD>|--unset <KEY>|--template> <INPUTS>...
 ```
 
 **Arguments**
@@ -440,8 +440,16 @@ The antenna's center frequency, in MHz
 The horizontal distance between the transmitter and the receiver, in m
 ```
 
+```{option} --sampling-mhz <SAMPLING_MHZ>
+The digitizer's sampling frequency, in MHz: not the antenna's. The time between samples is 1000 / this, in ns
+```
+
+```{option} --date <YYYY-MM-DD>
+The UTC date of an IceRadar or pulseEKKO recording, whose positions record only a time of day
+```
+
 ```{option} --unset <KEY>
-Remove a value, by its key in the sidecar (antenna_mhz, antenna_separation_m). Repeatable, or comma-separated
+Remove a value, by its key in the sidecar (antenna_mhz, antenna_separation_m, sampling_mhz, date). Repeatable, or comma-separated
 ```
 
 ```{option} --lines <LINES>

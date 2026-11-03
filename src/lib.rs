@@ -227,10 +227,14 @@ pub mod ridal {
         Ok(Some(parts?.join(",")))
     }
 
-    /// `override_date=`: a `datetime.date` or a `"YYYY-MM-DD"` string. A
+    /// A date argument, called `name`: a `datetime.date` or a `"YYYY-MM-DD"` string. A
     /// `datetime.datetime` is refused rather than cut to its date, since its
     /// time zone could make that the wrong day.
-    fn date_arg(py: Python<'_>, value: Option<Py<PyAny>>) -> PyResult<Option<chrono::NaiveDate>> {
+    fn date_arg(
+        py: Python<'_>,
+        name: &str,
+        value: Option<Py<PyAny>>,
+    ) -> PyResult<Option<chrono::NaiveDate>> {
         use pyo3::exceptions::{PyTypeError, PyValueError};
         let Some(value) = value else {
             return Ok(None);
@@ -238,25 +242,23 @@ pub mod ridal {
         let value = value.bind(py);
         let datetime = py.import("datetime")?;
         let text = if value.is_instance(&datetime.getattr("datetime")?)? {
-            return Err(PyTypeError::new_err(
-                "override_date must be a date, not a datetime: give the UTC date, \
-                 for example dt.date() after converting it to UTC",
-            ));
+            return Err(PyTypeError::new_err(format!(
+                "{name} must be a date, not a datetime: give the UTC date, \
+                 for example dt.date() after converting it to UTC"
+            )));
         } else if value.is_instance(&datetime.getattr("date")?)? {
             value.call_method0("isoformat")?.extract::<String>()?
         } else if let Ok(text) = value.extract::<String>() {
             text
         } else {
-            return Err(PyTypeError::new_err(
-                "override_date must be a datetime.date or a \"YYYY-MM-DD\" string",
-            ));
+            return Err(PyTypeError::new_err(format!(
+                "{name} must be a datetime.date or a \"YYYY-MM-DD\" string"
+            )));
         };
         chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d")
             .map(Some)
             .map_err(|e| {
-                PyValueError::new_err(format!(
-                    "override_date {text:?} is not a YYYY-MM-DD date: {e}"
-                ))
+                PyValueError::new_err(format!("{name} {text:?} is not a YYYY-MM-DD date: {e}"))
             })
     }
 
@@ -353,7 +355,7 @@ pub mod ridal {
             render_topo,
             override_antenna_mhz,
             override_antenna_separation,
-            override_date: date_arg(py, override_date)?,
+            override_date: date_arg(py, "override_date", override_date)?,
             lines: lines_arg(py, lines)?,
             channel: channel_arg(channel)?,
             parts: None,
@@ -1602,7 +1604,7 @@ pub mod ridal {
             crs,
             override_antenna_mhz,
             override_antenna_separation,
-            override_date: date_arg(py, override_date)?,
+            override_date: date_arg(py, "override_date", override_date)?,
             channel: channel_arg(channel)?,
             sidecar: sidecar_arg(py, sidecar)?,
         };
@@ -1640,8 +1642,15 @@ pub mod ridal {
     /// antenna_separation_m : float, optional
     ///     The horizontal distance between the transmitter and the receiver,
     ///     in m.
+    /// sampling_mhz : float, optional
+    ///     The digitizer's sampling frequency, in MHz: not the antenna's. The
+    ///     time between samples is ``1000 / sampling_mhz`` ns.
+    /// date : datetime.date or str, optional
+    ///     The UTC date of an IceRadar or pulseEKKO recording, whose
+    ///     positions record only a time of day, as a date or ``"YYYY-MM-DD"``.
     /// unset : str or sequence of str, optional
-    ///     Keys to remove: ``"antenna_mhz"``, ``"antenna_separation_m"``.
+    ///     Keys to remove: ``"antenna_mhz"``, ``"antenna_separation_m"``,
+    ///     ``"sampling_mhz"``, ``"date"``.
     /// lines : int, sequence of int or str, optional
     ///     For an IceRadar file, the lines whose own values to change instead
     ///     of the file's, as ``process()`` takes them: ``3``, ``[0, 2]``,
@@ -1679,6 +1688,8 @@ pub mod ridal {
         *,
         antenna_mhz=None,
         antenna_separation_m=None,
+        sampling_mhz=None,
+        date=None,
         unset=None,
         lines=None,
         channel=None,
@@ -1689,6 +1700,8 @@ pub mod ridal {
         inputs: Py<PyAny>,
         antenna_mhz: Option<f32>,
         antenna_separation_m: Option<f32>,
+        sampling_mhz: Option<f32>,
+        date: Option<Py<PyAny>>,
         unset: Option<Py<PyAny>>,
         lines: Option<Py<PyAny>>,
         channel: Option<u32>,
@@ -1711,6 +1724,8 @@ pub mod ridal {
         let set = crate::sidecar::Overrides {
             antenna_mhz,
             antenna_separation_m,
+            sampling_mhz,
+            date: date_arg(py, "date", date)?,
         };
         let outcomes = if template {
             if !set.is_empty() || !unset.is_empty() || lines.is_some() || channel.is_some() {
@@ -1722,8 +1737,8 @@ pub mod ridal {
         } else {
             if set.is_empty() && unset.is_empty() {
                 return Err(PyValueError::new_err(
-                    "nothing to change: give antenna_mhz, antenna_separation_m, unset or \
-                     template=True",
+                    "nothing to change: give antenna_mhz, antenna_separation_m, \
+                     sampling_mhz, date, unset or template=True",
                 ));
             }
             crate::sidecar::edit::apply(

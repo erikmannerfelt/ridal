@@ -335,6 +335,7 @@ fn sidecar_summary(
         resolved,
         params.override_antenna_mhz,
         params.override_antenna_separation,
+        params.override_date,
     )?;
     let Some(path) = resolved.sidecar.as_ref().filter(|_| !applied.is_empty()) else {
         return Ok(None);
@@ -353,6 +354,8 @@ fn sidecar_summary(
     };
     let header_separation =
         formats::records_antenna_separation(resolved.kind).then_some(header.antenna_separation);
+    // Every format read so far records its sampling frequency. A header's
+    // date is not one value to show, so `header.date` is left out.
     Ok(Some(SidecarSummary {
         path: path.to_string_lossy().to_string(),
         applied,
@@ -360,6 +363,8 @@ fn sidecar_summary(
             antenna_mhz: header_mhz.filter(|_| applied.antenna_mhz.is_some()),
             antenna_separation_m: header_separation
                 .filter(|_| applied.antenna_separation_m.is_some()),
+            sampling_mhz: applied.sampling_mhz.is_some().then_some(header.frequency),
+            date: None,
         },
     }))
 }

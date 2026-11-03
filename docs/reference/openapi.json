@@ -15852,7 +15852,9 @@
         "description": "Values that take precedence over the header's. Each is `None` where\nthe sidecar does not set it.",
         "required": [
           "antenna_mhz",
-          "antenna_separation_m"
+          "antenna_separation_m",
+          "sampling_mhz",
+          "date"
         ],
         "properties": {
           "antenna_mhz": {
@@ -15870,6 +15872,22 @@
             ],
             "format": "float",
             "description": "The horizontal distance between the transmitter and the receiver,\nin m."
+          },
+          "sampling_mhz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The digitizer's sampling frequency, in MHz: not the antenna's."
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The UTC date of a recording whose file records only a time of day,\nas `YYYY-MM-DD`."
           }
         },
         "additionalProperties": false

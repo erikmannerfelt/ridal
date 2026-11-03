@@ -172,6 +172,16 @@ pub fn records_antenna_separation(kind: FormatKind) -> bool {
     }
 }
 
+/// Whether a recording of `kind` is dated by `--override-date` or a
+/// sidecar's `date`: its positions record a time of day without a
+/// trustworthy date.
+pub fn takes_date(kind: FormatKind) -> bool {
+    match kind {
+        FormatKind::IceRadar | FormatKind::PulseEkko => true,
+        FormatKind::Ramac | FormatKind::Gssi => false,
+    }
+}
+
 pub fn find_neighbor_case_insensitive(base: &Path, target_extension: &str) -> Option<PathBuf> {
     let parent = base.parent().unwrap_or_else(|| Path::new("."));
     let stem = base.file_stem().or_else(|| base.file_name())?.to_str()?;

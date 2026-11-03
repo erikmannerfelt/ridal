@@ -121,6 +121,7 @@ impl Source {
                     antenna_separation_m: o
                         .antenna_separation_m
                         .filter(|_| self.antenna_separation.is_none()),
+                    ..o
                 });
                 Bundle {
                     overrides: applied.filter(|o| !o.is_empty()),
@@ -851,6 +852,7 @@ mod tests {
         bundles[0].overrides = Some(crate::sidecar::Overrides {
             antenna_mhz: Some(50.),
             antenna_separation_m: Some(4.5),
+            ..Default::default()
         });
         let source = |mhz, separation| Source {
             bundles: bundles.clone(),
@@ -866,6 +868,7 @@ mod tests {
             Some(crate::sidecar::Overrides {
                 antenna_mhz: None,
                 antenna_separation_m: Some(4.5),
+                ..Default::default()
             })
         );
         assert_eq!(
