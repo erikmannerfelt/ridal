@@ -1614,7 +1614,11 @@ and changed by operators through `/api/v1/render-profiles`.
   `#[serial_test::serial(netcdf)]`. A `Netcdf(-101)` is not a known flake:
   the one that was, a child process inheriting HDF5's `flock` on an open
   file, is fixed by starting every tool through `tools::spawn_tool` (#324),
-  so one now means something new is wrong.
+  so one now means something new is wrong. On Windows the same leak shows
+  as a rename refused with os error 32: a tool inherits HDF5's handle (the
+  C runtime's `_wopen` makes it inheritable) and keeps the file open, so
+  `spawn_tool` makes every C runtime descriptor above stderr
+  non-inheritable before it spawns (#534).
 
 ## Server logging (#282, #391)
 
