@@ -21,10 +21,41 @@ on:
     - .readthedocs.yaml
   workflow_dispatch:
 
+concurrency:
+  # A new push to a pull request cancels the run for its previous commit.
+  # Everything else gets a group of its own, so each commit on main, and
+  # each tag, runs to the end.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
+  # Whether a pull request changes anything besides the documentation. A
+  # docs-only PR still needs the wheel, which the documentation is built
+  # from, but not the jobs that test or publish it.
+  changes:
+    name: Changed paths
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+    # The merge commit and its first parent, the base branch.
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 2
+
+    # A failing `git diff` counts as a change, so the jobs then run.
+    - id: diff
+      run: |
+        if git diff --quiet HEAD^1 HEAD -- . ':(exclude)docs' ':(exclude).readthedocs.yaml'; then
+          echo code=false >> "$GITHUB_OUTPUT"
+        else
+          echo code=true >> "$GITHUB_OUTPUT"
+        fi
+
   build-pr:
     name: Build PR (ubuntu / python 3.12)
     if: github.event_name == 'pull_request'
@@ -35,9 +66,9 @@ jobs:
 
   dry-run-publish:
     name: Dry-run publish
-    needs: build-pr
+    needs: [build-pr, changes]
     runs-on: ubuntu-24.04
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
     permissions:
       contents: read
 
@@ -89,9 +120,9 @@ jobs:
   # for `ridal.impdar`.
   client-integration:
     name: Python client against a real server
-    needs: build-pr
+    needs: [build-pr, changes]
     runs-on: ubuntu-24.04
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
     permissions:
       contents: read
 

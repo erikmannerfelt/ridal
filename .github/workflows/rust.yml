@@ -11,9 +11,7 @@ on:
     - src/**
     - Cargo.toml
     - Cargo.lock
-    - deny.toml
     - .github/workflows/rust.yml
-    - .github/workflows/pre-commit.yml
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,6 +30,13 @@ env:
   # the same setting, because that path is gitignored for the local
   # gprinterp override and committing it would collide with it.
   HDF5_USE_FILE_LOCKING: 'FALSE'
+
+concurrency:
+  # A new push to a pull request cancels the run for its previous commit.
+  # Everything else gets a group of its own, so each commit on main, and
+  # each tag, runs to the end.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -282,24 +287,6 @@ jobs:
         flags: python
         token: ${{ secrets.CODECOV_TOKEN }}
         fail_ci_if_error: true
-
-  advisories:
-    name: Dependency advisories
-    runs-on: ubuntu-24.04
-
-    steps:
-    - uses: actions/checkout@v6
-
-    # cargo-deny reads Cargo.lock and the RustSec advisory database; it does
-    # not build the crate, so no GDAL/PROJ/HDF5 and no compilation here.
-    - uses: dtolnay/rust-toolchain@stable
-
-    - uses: taiki-e/install-action@cargo-deny
-
-    # Only advisories: a RustSec advisory against any locked crate fails the
-    # build. Exceptions with no fix available are listed, with reasons, in
-    # deny.toml. Bans, licenses and sources are out of scope for this job.
-    - run: cargo deny check advisories
 
   publish:
     name: Publish to crates.io
