@@ -2981,7 +2981,9 @@ fn curated_priority(key: &str) -> (u8, usize) {
 /// actionable; `ridal_recipe` is a JSON document of everything the file
 /// was made from (#382), for Ridal to compare rather than for a person to
 /// read, and its `ridal_recipe_hash` row already identifies it;
-/// `antenna_frequency` is shown in the "Antenna" row (#412). `*_unit` keys
+/// `antenna_frequency` is shown in the "Antenna" row (#412), and
+/// `antenna_separation_effective` in the "Antenna separation" row (#497).
+/// `*_unit` keys
 /// are consumed by their base attribute, not skipped by name here.
 const SKIP_FROM_ENTRIES: &[&str] = &[
     "start_datetime",
@@ -2993,6 +2995,7 @@ const SKIP_FROM_ENTRIES: &[&str] = &[
     "Conventions",
     "ridal_recipe",
     "antenna_frequency",
+    "antenna_separation_effective",
 ];
 
 /// What a radargram's `distance` and `time` say of how it was surveyed
@@ -3035,6 +3038,31 @@ fn antenna_value(name: &str, raw: &serde_json::Map<String, serde_json::Value>) -
         (Some(mhz), _) => format!("{name} (overridden: {} MHz)", format_rounded(mhz as f64)),
         (None, Some(mhz)) => format!("{name} (parsed as {} MHz)", format_rounded(mhz)),
         (None, None) => name.to_string(),
+    }
+}
+
+/// The "Antenna separation" row: the separation it was acquired with, and
+/// the one its `twtt` is relative to (#497) -- 0 once
+/// `correct_antenna_separation` has run. A file without the effective
+/// separation says the separation alone.
+fn antenna_separation_value(
+    value: &serde_json::Value,
+    raw: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let unit = raw.get("antenna_separation_unit").and_then(|v| v.as_str());
+    let separation = format_display_value(value, unit);
+    match raw.get("antenna_separation_effective") {
+        Some(effective) => {
+            let effective_unit = raw
+                .get("antenna_separation_effective_unit")
+                .and_then(|v| v.as_str());
+            let effective = match effective_unit {
+                Some(unit) => format!("{} {unit}", plain_value_string(effective)),
+                None => plain_value_string(effective),
+            };
+            format!("{separation} (effective: {effective})")
+        }
+        None => separation,
     }
 }
 
@@ -3125,6 +3153,14 @@ fn build_metadata_entries(
                 });
                 continue;
             }
+        }
+        if key == "antenna_separation" {
+            entries.push(Entry {
+                key: key.clone(),
+                label: prettify_label(key),
+                value: antenna_separation_value(value, raw),
+            });
+            continue;
         }
         let unit = raw.get(&format!("{key}_unit")).and_then(|v| v.as_str());
         entries.push(Entry {
@@ -3800,5 +3836,36 @@ mod tests {
             antenna_value("100 MHz", &raw(serde_json::json!({}))),
             "100 MHz"
         );
+    }
+
+    #[test]
+    fn the_effective_antenna_separation_is_in_the_separation_row() {
+        let raw = serde_json::json!({
+            "antenna_separation": 4.0,
+            "antenna_separation_unit": "m",
+            "antenna_separation_effective": 0.0,
+            "antenna_separation_effective_unit": "m",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let entries = build_metadata_entries(&raw, (1, 1), "r", SurveyFacts::default());
+        let by_label: std::collections::HashMap<_, _> = entries
+            .iter()
+            .map(|e| (e.label.as_str(), e.value.as_str()))
+            .collect();
+        assert_eq!(by_label["Antenna separation"], "4 (m) (effective: 0 m)");
+        assert!(!entries.iter().any(|e| e.label.contains("ffective")));
+
+        // A file without it says the separation alone.
+        let mut before = raw.clone();
+        before.remove("antenna_separation_effective");
+        before.remove("antenna_separation_effective_unit");
+        let entries = build_metadata_entries(&before, (1, 1), "r", SurveyFacts::default());
+        let row = entries
+            .iter()
+            .find(|e| e.label == "Antenna separation")
+            .unwrap();
+        assert_eq!(row.value, "4 (m)");
     }
 }

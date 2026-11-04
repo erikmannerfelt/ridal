@@ -149,15 +149,23 @@
           <code>{stem}</code> the first file's name, <code>{n}</code> a
           number in time order, <code>{freq}</code> the antenna in MHz,
           <code>{nfiles}</code> how many recordings were merged,
-          <code>{date}</code> the start date as <code>YYYYMMDD</code>, and
-          <code>{group}</code> the group's id. A display name can also say
-          <code>{id}</code> and <code>{group_name}</code>.
+          <code>{date}</code> the start date as <code>YYYYMMDD</code>,
+          <code>{group}</code> the group's id, <code>{channel}</code> the
+          channel of a GSSI file of several (<code>1</code> for any other
+          recording), and <code>{line}</code> the line of an IceRadar file.
+          A display name can also say <code>{id}</code> and
+          <code>{group_name}</code>.
         </p>
         <p>
-          <code>{n:02}</code> pads to two digits. <code>{n, from=15}</code>
-          starts at 15, <code>{n, from=next}</code> continues after the ids
-          already in the project, and <code>{n, per=freq}</code> counts
-          each antenna on its own. An id may hold only lowercase letters,
+          <code>{n:02}</code> pads to two digits, and so do
+          <code>{freq:04}</code>, <code>{nfiles:02}</code>,
+          <code>{channel:02}</code> and <code>{line:02}</code>.
+          <code>{n, from=15}</code> starts at 15, <code>{n, from=next}</code>
+          continues after the ids already in the project, and
+          <code>{n, per=freq}</code> counts each antenna on its own;
+          <code>per=freq+date</code> counts each antenna on each day, and
+          <code>per=channel</code> and <code>per=line</code> each channel or
+          line. An id may hold only lowercase letters,
           digits, <code>-</code> and <code>_</code>. For example
           <code>{group}-2026-{freq}mhz-{n:02, per=freq}</code>.
         </p>
