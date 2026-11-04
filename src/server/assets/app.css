@@ -3362,6 +3362,9 @@ a.processing-state:hover {
  * transparent -- the <pre> is what is read -- but its caret stays visible. */
 .editor-input {
   position: relative;
+  /* Keeps the textarea's z-index inside the editor: without it the
+   * textarea painted over the process dialog's sticky footer (#543). */
+  isolation: isolate;
   margin: var(--space-2) 0;
 }
 

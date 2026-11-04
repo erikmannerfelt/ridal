@@ -1235,7 +1235,7 @@ const readout = document.getElementById('cursor-readout');
 // `mousemove` (populate, shift down). It made the first tap on any control
 // land on whatever had just moved out from under it, and put a placed
 // vertex a line higher than where it was tapped.
-readout.textContent = `trace - / ${SOURCE_WIDTH}`;
+readout.textContent = `trace - / ${SOURCE_WIDTH} · sample - / ${SOURCE_HEIGHT}`;
 map.on('mousemove', (event) => {
   const viewerX = event.latlng.lng / xScale;
   const viewerY = -event.latlng.lat;
@@ -1254,6 +1254,11 @@ map.on('mousemove', (event) => {
   traceView.setCursorRow(viewerY);
 
   let text = `trace ${Math.round(traceIndex)} / ${SOURCE_WIDTH}`;
+  // In the corrected view the raster is taller than a trace, so a row
+  // above or below this trace's own samples has no sample (#542).
+  const sample = Math.round(sampleIndex);
+  const sampleText = sample >= 0 && sample < SOURCE_HEIGHT ? sample : '-';
+  text += ` · sample ${sampleText} / ${SOURCE_HEIGHT}`;
   if (axes) {
     const distance = axisValue(axes.distance, traceIndex);
     const twtt = axisValue(axes.twtt, sampleIndex);
