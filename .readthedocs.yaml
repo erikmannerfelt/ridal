@@ -8,6 +8,23 @@ build:
     # builds for Python 3.12.
     python: '3.12'
   jobs:
+    # Cancel a pull request's build when it changes nothing the documentation
+    # is built from: the pages would be main's, after waiting 8 min for a
+    # wheel that CI never builds for such a PR. Exit code 183 cancels the
+    # build, and Read the Docs reports the check as passed. The paths must
+    # stay within python.yml's `paths`, or a PR that changes only the others
+    # builds here without a wheel of its own. If git cannot find where the
+    # PR branched off, the condition fails and the build goes ahead.
+    post_checkout:
+    - |
+      if [ "$READTHEDOCS_VERSION_TYPE" = external ] \
+        && git fetch --quiet --depth=100 origin main:refs/remotes/origin/main \
+        && base=$(git merge-base origin/main HEAD) \
+        && git diff --quiet "$base" HEAD -- \
+          docs .readthedocs.yaml src python pyproject.toml Cargo.toml; then
+        echo "Nothing the documentation is built from has changed."
+        exit 183
+      fi
     # The Python reference is read from an installed `ridal`. It is installed
     # from a prebuilt wheel, since building one here compiles HDF5.
     post_install:
