@@ -206,6 +206,7 @@ pub(crate) fn per_trace_max_peak(gpr: &mut super::GPR) {
             method: crate::processing::steps::zero_corr::Method::MaxPeak,
             scope: crate::processing::steps::zero_corr::Scope::Trace,
             sigma: 5.,
+            fraction: 0.01,
             time_zero: crate::processing::steps::zero_corr::Reference::Peak,
             margin: crate::processing::steps::zero_corr::Margin::Ns(0.),
             window: 51,

@@ -67,6 +67,8 @@ pub(super) const RUNS: &[&str] = &[
     "zero_corr(first_break, sigma=4)",
     "zero_corr(coppens, margin=5)",
     "zero_corr(legacy, factor=0.9)",
+    "zero_corr(amplitude)",
+    "zero_corr(amplitude, trace, fraction=0.02)",
     "bandpass",
     "bandpass_mhz(50 200)",
     "equidistant_traces",

@@ -8,9 +8,10 @@
 //! need one an estimate of the noise before the pulse.
 //!
 //! None of the pickers depend on the amplitude scale. The noise statistics
-//! scale with the data, the AIC is a difference of log-variances, and the
-//! energy ratio is a ratio; so gain or a different digitiser does not move
-//! the pick.
+//! scale with the data, the AIC is a difference of log-variances, the
+//! energy ratio is a ratio, and `amplitude`'s threshold is a fraction of
+//! the direct wave; so gain or a different digitiser does not move the
+//! pick.
 
 use std::fmt;
 use std::str::FromStr;
@@ -38,15 +39,19 @@ pub enum Method {
     /// The steepest rise of the smoothed energy ratio (modified Coppens;
     /// Sabbione & Velis, 2010).
     Coppens,
+    /// The first sample beyond a fraction of the direct wave's largest
+    /// value, interpolated between samples.
+    Amplitude,
 }
 
 impl Method {
-    const ALL: [(Method, &'static str); 5] = [
+    const ALL: [(Method, &'static str); 6] = [
         (Method::Legacy, "legacy"),
         (Method::MaxPeak, "max_peak"),
         (Method::FirstBreak, "first_break"),
         (Method::Aic, "aic"),
         (Method::Coppens, "coppens"),
+        (Method::Amplitude, "amplitude"),
     ];
 
     pub fn name(self) -> &'static str {
@@ -122,6 +127,10 @@ const MIN_NOISE_SAMPLES: usize = 4;
 
 /// Traces on each side that a per-trace pick is compared with.
 const OUTLIER_HALF_WINDOW: usize = 25;
+
+/// How much `amplitude`'s fraction is scaled up and down to check how
+/// stable its pick is.
+pub const SENSITIVITY: f32 = 1.5;
 
 /// How large, relative to the direct wave's rise of the Coppens energy
 /// ratio, an earlier rise attached to it must be to count as its start.
@@ -214,6 +223,9 @@ pub struct Settings {
     pub scope: Scope,
     /// `first_break`'s threshold, in noise standard deviations.
     pub sigma: f32,
+    /// `amplitude`'s threshold, as a fraction of the direct wave's largest
+    /// value.
+    pub fraction: f32,
     pub time_zero: Reference,
     pub margin: Margin,
     /// Traces in the running median of [`Scope::Smooth`].
@@ -243,6 +255,28 @@ pub struct Picks {
     pub shift: isize,
     /// Why another method picked instead of the one asked for, when it did.
     pub substituted: Option<String>,
+    /// How far time zero lies before the sample [`Picks::time_zero`] names,
+    /// in samples, from 0 up to 1. Only `amplitude` places time zero
+    /// between samples; the same for every trace, so that they still share
+    /// one travel-time axis.
+    pub before: f32,
+    /// Where `amplitude` put time zero on the mean trace's direct wave.
+    pub landed: Option<Landing>,
+}
+
+/// Where `amplitude`'s threshold put time zero on the mean trace, and how
+/// much that depends on the threshold.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Landing {
+    /// Samples from time zero to the direct wave's largest value.
+    pub to_peak: f32,
+    /// Samples between the onsets at [`SENSITIVITY`] times and one over
+    /// [`SENSITIVITY`] times the fraction.
+    pub spread: f32,
+    /// Whether `spread` is more than a quarter period: the threshold is
+    /// close to something before the direct wave, and a slightly different
+    /// fraction would put time zero somewhere else.
+    pub unstable: bool,
 }
 
 impl Picks {
@@ -271,6 +305,7 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
         method,
         scope,
         sigma,
+        fraction,
         time_zero: reference,
         margin,
         window: smooth_window,
@@ -328,9 +363,9 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
             let stack = data
                 .mean_axis(Axis(1))
                 .ok_or("cannot pick time zero in a radargram without traces")?;
-            let at = pick_trace(stack.view(), method, &window, sigma)
+            let at = pick_trace(stack.view(), method, &window, sigma, fraction)
                 .ok_or_else(|| format!("`{method}` found no direct wave in the mean trace"))?;
-            let distance = pick_trace(stack.view(), other_method, &window, sigma)
+            let distance = pick_trace(stack.view(), other_method, &window, sigma, fraction)
                 .map(|o| o as isize - at as isize);
             (vec![at; data.shape()[1]], 0, distance)
         }
@@ -343,7 +378,7 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
                     .into_par_iter()
                     .map(|j| {
                         live[j]
-                            .then(|| pick_trace(traces[j], method, &window, sigma))
+                            .then(|| pick_trace(traces[j], method, &window, sigma, fraction))
                             .flatten()
                     })
                     .collect()
@@ -400,6 +435,12 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
         Margin::Ns(ns) => (ns / dt_ns).round() as usize,
     };
     let earliest = time_zero.iter().copied().min().unwrap_or(0);
+    let (before, landed) = match (method, reference) {
+        (Method::Amplitude, Reference::Onset) => {
+            amplitude_landing(data, scope, &window, &live, fraction)?
+        }
+        _ => (0., None),
+    };
     Ok(Some(Picks {
         margin: margin_wanted.min(earliest),
         margin_wanted,
@@ -407,7 +448,66 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
         replaced,
         shift,
         substituted,
+        before,
+        landed,
     }))
+}
+
+/// For `amplitude`: how far time zero lies before the sample it was put
+/// on, and where it landed on the mean trace.
+///
+/// The global scope picked on the mean trace, and takes its fraction of a
+/// sample. Per trace, it is the median over the live traces, so that every
+/// trace keeps the same one and they still share a travel-time axis.
+fn amplitude_landing(
+    data: &Array2<f32>,
+    scope: Scope,
+    window: &Window,
+    live: &[bool],
+    fraction: f32,
+) -> Result<(f32, Option<Landing>), String> {
+    let stack = data
+        .mean_axis(Axis(1))
+        .ok_or("cannot pick time zero in a radargram without traces")?;
+    let at = |fraction: f32| amplitude_onset(stack.view(), window, fraction);
+    let Some(onset) = at(fraction) else {
+        return Ok((0., None));
+    };
+    let before = match scope {
+        Scope::Global => onset.before,
+        Scope::Trace | Scope::Smooth => {
+            let traces: Vec<ArrayView1<f32>> = data
+                .columns()
+                .into_iter()
+                .zip(live)
+                .filter(|(_, live)| **live)
+                .map(|(trace, _)| trace)
+                .collect();
+            median(
+                traces
+                    .par_iter()
+                    .filter_map(|trace| amplitude_onset(*trace, window, fraction))
+                    .map(|onset| onset.before)
+                    .collect(),
+            )
+        }
+    };
+    let time = |onset: Option<AmplitudeOnset>| onset.map(|o| o.at as f32 - o.before);
+    let spread = match (
+        time(at(fraction / SENSITIVITY)),
+        time(at(fraction * SENSITIVITY)),
+    ) {
+        (Some(early), Some(late)) => late - early,
+        // The larger fraction is not reached before the peak, or the
+        // smaller one only in the noise: as unstable as it gets.
+        _ => f32::INFINITY,
+    };
+    let landed = Landing {
+        to_peak: onset.peak as f32 - (onset.at as f32 - onset.before),
+        spread,
+        unstable: spread > window.half_period as f32 / 2.,
+    };
+    Ok((before, Some(landed)))
 }
 
 /// Locate the direct wave from every trace's own first strong lobe, and
@@ -557,6 +657,7 @@ fn pick_trace(
     method: Method,
     window: &Window,
     sigma: f32,
+    fraction: f32,
 ) -> Option<usize> {
     let n = trace.len();
     let noise = trace.slice(ndarray::s![..window.noise_end.min(n)]);
@@ -587,6 +688,7 @@ fn pick_trace(
     match method {
         Method::Legacy => None,
         Method::MaxPeak => Some(peak),
+        Method::Amplitude => amplitude_onset(trace, window, fraction).map(|onset| onset.at),
         Method::FirstBreak => sustained_from(centred.view(), start, peak, sigma * std, run),
         Method::Aic => {
             let split = aic_onset(centred.slice(ndarray::s![..segment_end]))?;
@@ -611,6 +713,73 @@ fn pick_trace(
             sustained_from(centred.view(), rise, peak, 3. * std, run).or(Some(rise))
         }
     }
+}
+
+/// Where a trace's direct wave rises past a fraction of its largest value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AmplitudeOnset {
+    /// The first sample past the threshold.
+    at: usize,
+    /// How far before `at` the threshold is crossed, in samples, from the
+    /// straight line between `at` and the sample before it: from 0 up to 1.
+    before: f32,
+    /// The direct wave's largest absolute value.
+    peak: usize,
+}
+
+/// The first sample where the trace leaves its level before the direct
+/// wave by more than `fraction` of the direct wave's largest value, and
+/// stays out for most of a quarter period.
+///
+/// Relative to the wave rather than to the noise, because on a quiet
+/// record -- or on the stack, whose noise is smaller than any trace's by
+/// the square root of their number -- a precursor of a thousandth of the
+/// wave is already many noise standard deviations, and no one would put
+/// time zero there by eye. The level is the median of the record before
+/// the window, which removes a DC offset without being moved by a few
+/// spikes. The threshold is never under three noise standard deviations,
+/// so that on a weak trace noise does not start the wave either.
+///
+/// A clipped wave still works: the threshold is crossed on its rising
+/// edge, below the clipping.
+fn amplitude_onset(
+    trace: ArrayView1<f32>,
+    window: &Window,
+    fraction: f32,
+) -> Option<AmplitudeOnset> {
+    let n = trace.len();
+    let start = window.noise_end.min(n);
+    let end = window.end.min(n);
+    let noise = trace.slice(ndarray::s![..start]);
+    let (level, std) = if noise.len() >= MIN_NOISE_SAMPLES {
+        (median(noise.to_vec()), noise.std(1.))
+    } else {
+        (median(trace.to_vec()), 0.)
+    };
+    let centred = trace.mapv(|v| v - level);
+    let mut peak = start;
+    for i in start..end {
+        if centred[i].abs() > centred[peak].abs() {
+            peak = i;
+        }
+    }
+    let largest = centred.get(peak)?.abs();
+    if largest <= 0. {
+        return None;
+    }
+    let threshold = (fraction * largest).max(3. * std);
+    let run = (window.half_period / 2).max(3);
+    let at = sustained_from(centred.view(), start, peak, threshold, run)?;
+    let before = match at.checked_sub(1).map(|i| centred[i].abs()) {
+        // The previous sample is past the threshold when it was an
+        // isolated one: the crossing is not between the two.
+        Some(previous) if previous < threshold => {
+            let current = centred[at].abs();
+            (current - threshold) / (current - previous)
+        }
+        _ => 0.,
+    };
+    Some(AmplitudeOnset { at, before, peak })
 }
 
 /// The first sample in `from..=to` that starts a sustained excursion beyond
@@ -958,7 +1127,7 @@ pub(crate) fn run_zero_corr(
         .twtt_crop_ns()
         .iter()
         .zip(&picks.time_zero)
-        .map(|(crop, t0)| crop + *t0 as f32 * step_ns)
+        .map(|(crop, t0)| crop + (*t0 as f32 - picks.before) * step_ns)
         .collect();
     gpr.crop_samples(apply_shifts(&gpr.data, &crops), &crops)?;
     gpr.set_time_zero_ns(time_zero_ns)?;
@@ -1012,10 +1181,32 @@ pub(crate) fn run_zero_corr(
             picks.time_zero.len()
         ),
     };
-    let event = format!("Picked time zero and {removed}{placed}{kept}{outliers}{smoothed}");
-    Ok(match &picks.substituted {
-        Some(why) => StepReport::warning(name, format!("{why}. {event}")),
-        None => StepReport::new(name, event),
+    let landed = match picks.landed {
+        Some(landed) => format!(
+            "; time zero is {:.2} samples before the first row it kept, and {:.2} ns before \
+             the mean trace's largest value; at {:.2} and {:.2} times the fraction, it moves by \
+             {:.2} ns",
+            picks.before,
+            landed.to_peak * step_ns,
+            1. / SENSITIVITY,
+            SENSITIVITY,
+            landed.spread * step_ns,
+        ),
+        None => String::new(),
+    };
+    let event = format!("Picked time zero and {removed}{placed}{kept}{outliers}{smoothed}{landed}");
+    let unstable = picks
+        .landed
+        .is_some_and(|landed| landed.unstable)
+        .then_some(
+            "Time zero depends on the fraction: something before the direct wave is close to the \
+         threshold, and the onset moves by more than a quarter period between a fraction \
+         slightly smaller and slightly larger. Check where time zero landed",
+        );
+    Ok(match (&picks.substituted, unstable) {
+        (Some(why), _) => StepReport::warning(name, format!("{why}. {event}")),
+        (None, Some(why)) => StepReport::warning(name, format!("{why}. {event}")),
+        (None, None) => StepReport::new(name, event),
     })
 }
 
@@ -1124,6 +1315,7 @@ mod tests {
             method,
             scope,
             sigma,
+            fraction: 0.01,
             time_zero,
             margin,
             window: 51,
@@ -1151,7 +1343,12 @@ mod tests {
     #[test]
     fn onset_pickers_find_the_synthetic_onset() {
         let data = radargram(&[40; 20], 1000.);
-        for method in [Method::Aic, Method::FirstBreak, Method::Coppens] {
+        for method in [
+            Method::Aic,
+            Method::FirstBreak,
+            Method::Coppens,
+            Method::Amplitude,
+        ] {
             let picks = pick(
                 &data,
                 &settings(method, Scope::Trace, 5., Reference::Onset, Margin::Auto),
@@ -1211,7 +1408,12 @@ mod tests {
         let data = radargram(&onsets, 1.);
         let scaled = data.mapv(|v| v * 1000.);
         let clipped = data.mapv(|v| v.clamp(2.7, 3.3));
-        for method in [Method::Aic, Method::FirstBreak, Method::Coppens] {
+        for method in [
+            Method::Aic,
+            Method::FirstBreak,
+            Method::Coppens,
+            Method::Amplitude,
+        ] {
             let base = pick(
                 &data,
                 &settings(method, Scope::Trace, 5., Reference::Onset, Margin::Auto),
@@ -1571,7 +1773,12 @@ mod tests {
                 column[i] += 20. * 1000. * 0.01 * 0.3;
             }
         }
-        for method in [Method::Coppens, Method::Aic, Method::FirstBreak] {
+        for method in [
+            Method::Coppens,
+            Method::Aic,
+            Method::FirstBreak,
+            Method::Amplitude,
+        ] {
             let picks = pick(
                 &data,
                 &settings(method, Scope::Trace, 5., Reference::Onset, Margin::Auto),
@@ -1729,6 +1936,137 @@ mod tests {
             assert!(why.contains("samples of noise"), "{why}");
             assert!(why.contains("used `aic` instead"), "{why}");
         }
+    }
+
+    /// A quiet radargram whose direct wave at 60 has a precursor of
+    /// `size` times the wave from 48: one slow lobe, as the 100 MHz Malå
+    /// recordings that `amplitude` was made for have, at ~0.15 %.
+    fn quiet_precursor_radargram(size: f32) -> Array2<f32> {
+        let mut data = noisy_radargram(&[60; 40], 0.0001);
+        for mut column in data.columns_mut() {
+            for i in 0..12 {
+                let phase = i as f32 / 12. * std::f32::consts::PI;
+                column[48 + i] -= size * 1000. * phase.sin();
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn amplitude_starts_the_wave_after_a_precursor_too_small_to_see() {
+        // On the mean trace the noise is so small that the precursor is
+        // hundreds of standard deviations, and the noise-based methods
+        // start the wave there.
+        let data = quiet_precursor_radargram(0.002);
+        let global = |method: Method| {
+            pick(
+                &data,
+                &settings(method, Scope::Global, 5., Reference::Onset, Margin::Auto),
+                1.,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        for method in [Method::Coppens, Method::FirstBreak] {
+            let at = global(method).time_zero[0];
+            assert!(at < 57, "{method}: picked {at}, ahead of the wave at 60");
+        }
+        let picks = global(Method::Amplitude);
+        assert!(
+            (60..=61).contains(&picks.time_zero[0]),
+            "{:?}",
+            picks.time_zero
+        );
+        let landed = picks.landed.expect("amplitude says where it landed");
+        assert!(!landed.unstable, "{landed:?}");
+    }
+
+    #[test]
+    fn amplitude_puts_time_zero_where_the_threshold_is_crossed() {
+        // Noiseless, so the crossing can be checked exactly: on the
+        // straight line between the sample before and the first sample
+        // past it, time zero is where the threshold is.
+        let mut data = Array2::<f32>::from_elem((200, 3), 3000.);
+        for mut column in data.columns_mut() {
+            column += &synthetic_trace(200, 40, 1000., 0., 0);
+        }
+        for scope in [Scope::Global, Scope::Trace] {
+            let picks = pick(
+                &data,
+                &settings(Method::Amplitude, scope, 5., Reference::Onset, Margin::Auto),
+                1.,
+            )
+            .unwrap()
+            .unwrap();
+            let trace = data.column(0).mapv(|v| v - 3000.);
+            let at = picks.time_zero[0];
+            let largest = trace.iter().fold(0_f32, |a, v| a.max(v.abs()));
+            let (previous, current) = (trace[at - 1].abs(), trace[at].abs());
+            let crossing = current - picks.before * (current - previous);
+            assert!(
+                picks.before > 0. && picks.before <= 1.,
+                "{scope}: {}",
+                picks.before
+            );
+            assert!(
+                (crossing - 0.01 * largest).abs() < 1e-3 * largest,
+                "{scope}: {crossing} at the crossing, threshold {}",
+                0.01 * largest
+            );
+        }
+    }
+
+    #[test]
+    fn a_precursor_near_the_threshold_makes_amplitude_warn() {
+        // At 1 % of the wave, the precursor is right at the threshold, and
+        // a slightly smaller fraction starts the wave a period earlier.
+        let unstable = quiet_precursor_radargram(0.01);
+        let quiet = quiet_precursor_radargram(0.);
+        for (data, expected) in [(&unstable, true), (&quiet, false)] {
+            let landed = pick(
+                data,
+                &settings(
+                    Method::Amplitude,
+                    Scope::Global,
+                    5.,
+                    Reference::Onset,
+                    Margin::Auto,
+                ),
+                1.,
+            )
+            .unwrap()
+            .unwrap()
+            .landed
+            .unwrap();
+            assert_eq!(landed.unstable, expected, "{landed:?}");
+        }
+    }
+
+    #[test]
+    fn a_fractional_time_zero_is_on_the_travel_time_axis() {
+        // Time zero falls between two samples, so the first row kept is a
+        // fraction of a sample after it, and its travel time is positive.
+        let mut gpr = make_exportable_gpr(8, 200);
+        gpr.data = radargram(&[40; 8], 1000.);
+        let report = run_zero_corr(
+            &mut gpr,
+            &settings(
+                Method::Amplitude,
+                Scope::Global,
+                5.,
+                Reference::Onset,
+                Margin::Auto,
+            ),
+            1.,
+        )
+        .unwrap();
+        let first = gpr.twtt_first_sample_ns();
+        let step = gpr.vertical_resolution_ns();
+        assert!(first > 0. && first <= step, "{first} ns, step {step} ns");
+        assert!(
+            format!("{report:?}").contains("before the first row it kept"),
+            "{report:?}"
+        );
     }
 
     #[test]
