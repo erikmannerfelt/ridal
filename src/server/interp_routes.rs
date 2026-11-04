@@ -630,6 +630,7 @@ pub async fn promote_interpretation(
     audit::record(
         project.documents(),
         audit::Entry {
+            to_radargram_id: None,
             at,
             user: caller.audit_name(),
             action: audit::Action::Adopted,
@@ -691,7 +692,7 @@ pub(super) struct Promoted {
         (status = 200, description = "Saved over the one there was.", body = Saved),
         (status = 201, description = "Saved, the first.", body = Saved),
         (status = 400, description = "`invalid_interpretation` or `violation`: a line breaks its layer's rules.", body = ErrorBody),
-        (status = 404, description = "No such radargram.", body = ErrorBody),
+        (status = 404, description = "`dataset_not_found`, or `dataset_moved`: its picks were transferred to another radargram, which the message names.", body = ErrorBody),
         (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
     ),
     extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Picker)).own()))),
@@ -729,6 +730,20 @@ pub async fn put_interpretation(
     // silently creates an interpretation directory for a radargram that does
     // not exist, which nothing would ever read.
     if state.catalog().find_entry(radargram.as_str()).is_none() {
+        // A picker left open on a radargram whose id was changed under it
+        // (#500): its work is only in the browser now, and the one useful
+        // thing to say is where the saved picks went.
+        if let Some(to) = audit::moved_to(project.documents(), radargram.as_str()) {
+            return Err(ApiError::not_found(
+                "dataset_moved",
+                format!(
+                    "'{}' is no longer in the catalog: its saved picks were moved to \
+                     '{to}'. The changes on this page were not saved; open '{to}' to \
+                     continue there.",
+                    radargram.as_str()
+                ),
+            ));
+        }
         return Err(ApiError::not_found(
             "dataset_not_found",
             format!("No dataset with id '{}'", radargram.as_str()),

@@ -880,6 +880,124 @@ class Promoted:
         )
 
 
+@dataclass(frozen=True)
+class Copied:
+    """``POST …/copy``: a radargram added again under another id."""
+
+    radargram_id: str
+    revision_id: str
+    from_radargram: str
+    bytes: int
+    copied: tuple[str, ...]
+    """What came along besides the file: ``catalog_settings``,
+    ``raw_source`` and ``processing_profile``, where the original had them."""
+    warnings: tuple[str, ...]
+    """What could not be copied. The radargram is added either way."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Copied":
+        return _parse(
+            "copy",
+            data,
+            lambda d: cls(
+                radargram_id=d["radargram_id"],
+                revision_id=d["revision_id"],
+                from_radargram=d["from"],
+                bytes=d["bytes"],
+                copied=tuple(d["copied"]),
+                warnings=tuple(d["warnings"]),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class Removed:
+    """What became of a radargram that was removed (``DELETE …/datasets/…``)."""
+
+    radargram_id: str
+    outcome: str
+    """``removed`` when its file was deleted, ``ignored`` when it is in a
+    read-only root and was only dropped from the catalog."""
+    archived: int
+    """How many interpretations were archived with it."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Removed":
+        return _parse(
+            "removal",
+            data,
+            lambda d: cls(
+                radargram_id=d["radargram_id"],
+                outcome=d["outcome"],
+                archived=d["archived"],
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class MovedInterpretation:
+    """One person's picks, now on the radargram they were transferred to."""
+
+    user: str
+    lines: int
+    revision_id: str | None
+    """The revision the picks now say they were drawn on."""
+    current: bool
+    """Whether that is the radargram's current revision. When it is not, the
+    picks are carried onto it, and their owner adopts them with
+    :meth:`~ridal.client.Client.promote`."""
+    version: str
+
+    @classmethod
+    def from_json(cls, data: Any) -> "MovedInterpretation":
+        return _parse(
+            "moved interpretation",
+            data,
+            lambda d: cls(
+                user=d["user"],
+                lines=d["lines"],
+                revision_id=d["revision_id"],
+                current=d["current"],
+                version=d["version"],
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class Transferred:
+    """``POST …/transfer``: picks moved from one radargram to another."""
+
+    from_radargram: str
+    to_radargram: str
+    same_grid: bool
+    """Whether both current revisions have the same axes."""
+    moved: tuple[MovedInterpretation, ...]
+    occupied: tuple[str, ...]
+    """People who already had picks on the target, whose picks were not
+    moved: picks are never merged."""
+    unreadable: tuple[str, ...]
+    removed: Removed | None
+    """What became of the source, when its removal was asked for."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Transferred":
+        return _parse(
+            "transfer",
+            data,
+            lambda d: cls(
+                from_radargram=d["from"],
+                to_radargram=d["to"],
+                same_grid=d["same_grid"],
+                moved=tuple(MovedInterpretation.from_json(m) for m in d["moved"]),
+                occupied=tuple(d["occupied"]),
+                unreadable=tuple(d["unreadable"]),
+                removed=None
+                if d["removed"] is None
+                else Removed.from_json(d["removed"]),
+            ),
+        )
+
+
 # -- Processing on the server (#382) -------------------------------------------
 
 JobStateName: TypeAlias = Literal[

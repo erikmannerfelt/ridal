@@ -995,6 +995,7 @@ pub async fn commit_replacement(
     audit::record(
         project.documents(),
         audit::Entry {
+            to_radargram_id: None,
             at,
             user: caller.audit_name(),
             action: audit::Action::Replaced,

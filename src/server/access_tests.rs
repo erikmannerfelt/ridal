@@ -9669,3 +9669,77 @@ async fn a_bulk_download_takes_the_picks_scope() {
     let zip = post(&app, "/api/v1/interpretations/download", &body, Some(&pia)).await;
     assert_eq!(zip.status, StatusCode::OK, "{}", zip.text);
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn moving_someone_elses_picks_needs_an_administrator_and_names_are_theirs() {
+    // #500. Transferring writes documents in their owners' names, so it is
+    // the administrator's as restoring them is; an operator may move only
+    // their own. Who is working on a radargram is named to admins only.
+    let hash = password_hash();
+    let dir = new_site();
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-02.nc"), "line-02");
+    write_people(
+        dir.path(),
+        &UserSet {
+            users: vec![
+                activated("pia", Role::Picker, DownloadScope::None, hash),
+                activated("olga", Role::Operator, DownloadScope::All, hash),
+                activated("ada", Role::Admin, DownloadScope::All, hash),
+            ],
+            ..UserSet::default()
+        },
+    );
+    let app = site_router(dir.path(), AccessOptions::default());
+    let pia = sign_in(&app, "pia").await;
+    let page = get(&app, &format!("/view/{RADARGRAM}"), Some(&pia)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let mut picks = document(RADARGRAM);
+    picks["date_modified"] = json!(chrono::Utc::now().to_rfc3339());
+    let saved = put(&app, &interpretation_uri("pia"), &picks, Some(&pia)).await;
+    assert!(saved.status.is_success(), "{}", saved.text);
+
+    let olga = sign_in(&app, "olga").await;
+    let ada = sign_in(&app, "ada").await;
+    let activity = format!("/api/v1/datasets/{RADARGRAM}/activity");
+    let refused = get(&app, &activity, Some(&pia)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let unnamed = get(&app, &activity, Some(&olga)).await;
+    assert_eq!(unnamed.status, StatusCode::OK, "{}", unnamed.text);
+    assert_eq!(unnamed.body["level"], "hour", "{}", unnamed.text);
+    assert_eq!(unnamed.body["others"][0]["user"], Value::Null);
+    assert_eq!(unnamed.body["may_transfer"], false);
+    assert!(unnamed.body["others"][0]["saved_at"].is_string());
+    assert!(unnamed.body["others"][0]["opened_at"].is_string());
+    let named = get(&app, &activity, Some(&ada)).await;
+    assert_eq!(named.body["others"][0]["user"], "pia", "{}", named.text);
+    assert_eq!(named.body["may_transfer"], true);
+
+    let transfer = format!("/api/v1/datasets/{RADARGRAM}/transfer");
+    let body = json!({"to": "line-02", "remove_source": true});
+    for session in [&pia, &olga] {
+        let refused = post(&app, &transfer, &body, Some(session)).await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    }
+    // Refused before anything moved or was removed.
+    let still = get(&app, &interpretation_uri("pia"), Some(&pia)).await;
+    assert_eq!(still.status, StatusCode::OK, "{}", still.text);
+
+    let moved = post(&app, &transfer, &body, Some(&ada)).await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.text);
+    assert_eq!(moved.body["moved"][0]["user"], "pia");
+    assert_eq!(moved.body["removed"]["archived"], 1);
+    let there = get(
+        &app,
+        "/api/v1/datasets/line-02/interpretations/pia",
+        Some(&pia),
+    )
+    .await;
+    assert_eq!(there.status, StatusCode::OK, "{}", there.text);
+    assert_eq!(
+        there.body["meta"]["ridal_transferred_from"]["by"], "ada",
+        "{}",
+        there.text
+    );
+}

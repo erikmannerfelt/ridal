@@ -46,6 +46,7 @@ NOT_WRAPPED: Final[dict[str, str]] = {
     "put_settings": "the settings page's",
     "remove_dataset": "removing a radargram is done on the catalog page",
     "restore_dataset": "the catalog page's",
+    "get_activity": "the catalog page's confirmation before a removal",
     "list_ignored": "the catalog page's",
     "dataset_attributes": "the viewer's metadata dialog",
     "dataset_trace": "the viewer's trace panel",
@@ -402,6 +403,8 @@ CALLS: Final[dict[str, Callable[[Any, Files], Any]]] = {
     ),
     "carried": lambda c, f: c.carried("line-01"),
     "promote": lambda c, f: c.promote("line-01"),
+    "copy_radargram": lambda c, f: c.copy_radargram("line-01", "line-02"),
+    "transfer_picks": lambda c, f: c.transfer_picks("line-01", "line-02"),
     "layers": lambda c, f: c.layers(),
     "save_layers": lambda c, f: c.save_layers(
         {

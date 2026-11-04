@@ -402,7 +402,7 @@ fn apply(
 /// The render services are carried over untouched, for the same reason: an
 /// override never changes a file's contents, so reopening them would throw
 /// away every warm cache for nothing.
-fn refresh_catalog(state: &AppState) -> Result<(), ApiError> {
+pub(super) fn refresh_catalog(state: &AppState) -> Result<(), ApiError> {
     let project = state
         .project
         .as_ref()

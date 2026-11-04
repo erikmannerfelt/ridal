@@ -187,6 +187,39 @@ def test_a_personal_render_profile_is_shared_with_the_project(
         assert client.personal_render_profiles().profiles == ()
 
 
+def test_a_radargram_gets_a_new_id_with_its_picks(
+    own_gui: Server, radargram: Path
+) -> None:
+    # #500: copy under the new id, then move the picks and remove the old.
+    (local,) = ridal.info(radargram)
+    old = local["radargram_id"]
+    with ridal_client.Client(own_gui.url) as client:
+        document = client.interpretation_template(old)
+        document["features"] = [
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": [[1, 5], [9, 6]]},
+                "properties": {"id": "f-0001", "label": "bed"},
+            }
+        ]
+        client.save_interpretation(old, document)
+
+        copied = client.copy_radargram(old, "renamed-line")
+        assert copied.from_radargram == old
+        with pytest.raises(errors.Conflict):
+            client.copy_radargram(old, "renamed-line")
+        moved = client.transfer_picks(old, "renamed-line", remove_source=True)
+        assert moved.same_grid
+        assert [m.user for m in moved.moved] == ["default"]
+        assert moved.moved[0].current
+        assert moved.removed is not None and moved.removed.archived == 1
+
+        assert set(client.catalog().by_id()) == {"renamed-line"}
+        picks = client.interpretation("renamed-line", "default")
+        assert picks.document["key"] == "renamed-line"
+        assert picks.document["source"]["revision_id"] == copied.revision_id
+
+
 def test_a_token_reaches_its_projects_on_a_site(site: Site) -> None:
     with ridal_client.Client(site.url, project="glac", token=site.token) as client:
         me = client.me()

@@ -187,6 +187,19 @@ After a radargram is replaced, picks drawn on the earlier revision are shown
 carried onto the new one. `client.carried("line-07")` shows how, and
 `client.promote("line-07")` adopts them as picks on the new revision.
 
+A radargram's id cannot change, because its picks and revisions are keyed by
+it. To give one a new id, add it again under that id, move the picks, and
+remove the old one:
+
+```python
+client.copy_radargram("dat_0130_a1", "kroppbreen-2024-0130")
+client.transfer_picks("dat_0130_a1", "kroppbreen-2024-0130", remove_source=True)
+```
+
+The copy is the same processed file with only its id changed, so the picks
+arrive on it as drawn. Moving anyone's picks but your own needs the `admin`
+role.
+
 ## Processing raw data on the server
 
 A project can keep the raw recordings its radargrams are made from, and the

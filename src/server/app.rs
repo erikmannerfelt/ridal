@@ -186,6 +186,9 @@ pub struct AppState {
     project_render_profiles: RwLock<Arc<Vec<crate::render::profile::RenderProfile>>>,
     /// The render profile previews in flight, one per person (#183).
     pub previews: super::profile_preview_routes::Previews,
+    /// Who opened which radargram's viewer in the last day (#500), for the
+    /// confirmation before it is removed or renamed.
+    pub recently_opened: super::rename_routes::RecentlyOpened,
 }
 
 /// Record a project's catalog size after a scan, for the site landing
@@ -471,6 +474,7 @@ impl AppState {
             uploads: Default::default(),
             project_render_profiles: RwLock::new(project_render_profiles),
             previews: Default::default(),
+            recently_opened: Default::default(),
         };
         // At startup too, not only on rediscovery. Most projects never
         // add or remove anything through the GUI, and those are exactly
@@ -1240,6 +1244,9 @@ pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
             super::replace_routes::discard_replacement
         ))
         .routes(routes!(super::lifecycle_routes::restore_dataset))
+        .routes(routes!(super::rename_routes::copy_dataset))
+        .routes(routes!(super::rename_routes::transfer_interpretations))
+        .routes(routes!(super::rename_routes::get_activity))
         .routes(routes!(super::lifecycle_routes::list_ignored))
         // Groups.
         .routes(routes!(super::routes::group_tracks))

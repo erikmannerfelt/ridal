@@ -1703,6 +1703,90 @@
         }
       }
     },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/activity": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Who has saved picks on this radargram or opened its viewer recently, for\na confirmation before it is removed or renamed. Names are given to\nadministrators only.",
+        "operationId": "get_activity",
+        "responses": {
+          "200": {
+            "description": "Recent activity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Activity"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
     "/api/v1/projects/{key}/datasets/{radargram_id}/attributes": {
       "parameters": [
         {
@@ -1946,6 +2030,120 @@
         },
         "x-ridal-needs": {
           "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/copy": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Add a copy of this radargram under another id: the same processed file\nwith only its id changed, with its catalog settings, raw data and\nprocessing profile. Its picks stay where they are; see `transfer`.",
+        "operationId": "copy_dataset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CopyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The copy is in the project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Copied"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_radargram_id`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`radargram_exists` or `radargram_ignored`: the new id is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`project_full`: the project's size limit would be exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
         }
       }
     },
@@ -2684,7 +2882,7 @@
             }
           },
           "404": {
-            "description": "No such radargram.",
+            "description": "`dataset_not_found`, or `dataset_moved`: its picks were transferred to another radargram, which the message names.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4298,6 +4496,110 @@
         "x-ridal-needs": {
           "who": "anyone",
           "download": "all"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/transfer": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Copy every saved interpretation of this radargram onto another one, and\noptionally remove this one in the same step. Moving anyone else's picks\nneeds an administrator.",
+        "operationId": "transfer_interpretations",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Transferred.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Transferred"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_radargram_id`, or `same_radargram`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either radargram is not in the catalog.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
         }
       }
     },
@@ -12185,6 +12487,63 @@
         },
         "additionalProperties": {}
       },
+      "Copied": {
+        "type": "object",
+        "description": "`POST /api/v1/datasets/{radargram_id}/copy`: the new radargram.",
+        "required": [
+          "radargram_id",
+          "revision_id",
+          "from",
+          "bytes",
+          "copied",
+          "warnings"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "description": "The radargram it is a copy of."
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The size of the new file.",
+            "minimum": 0
+          },
+          "copied": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What was copied besides the file: `catalog_settings` (display name,\ngroup and the rest of the catalog dialog), `raw_source` and\n`processing_profile`, where the original had them."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What could not be copied. The radargram is added either way."
+          }
+        }
+      },
+      "CopyRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/datasets/{radargram_id}/copy`.",
+        "required": [
+          "to"
+        ],
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "The new radargram's id. It must not be in use or ignored."
+          }
+        }
+      },
       "CorrectionSummary": {
         "type": "object",
         "required": [
@@ -15510,6 +15869,41 @@
           }
         }
       },
+      "MovedInterpretation": {
+        "type": "object",
+        "description": "One interpretation now on the new radargram.",
+        "required": [
+          "user",
+          "lines",
+          "revision_id",
+          "current",
+          "version"
+        ],
+        "properties": {
+          "user": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "revision_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The revision the document now names, if it names one."
+          },
+          "current": {
+            "type": "boolean",
+            "description": "Whether that is the new radargram's current revision. When it is\nnot, the picks are carried onto it and their owner adopts them, as\nafter a reprocess."
+          },
+          "version": {
+            "type": "string",
+            "description": "The document's version, for `If-Match`."
+          }
+        }
+      },
       "MyPreferences": {
         "type": "object",
         "description": "The caller's own preferences, as `GET` and `PUT /api/v1/preferences`\nreturn them. `null` is \"not chosen\", which defers to the project.",
@@ -15925,6 +16319,38 @@
             "format": "int32",
             "description": "The channel of a GSSI file, from 1 as GSSI numbers them.",
             "minimum": 0
+          }
+        }
+      },
+      "PersonActivity": {
+        "type": "object",
+        "description": "One person's recent work on a radargram.",
+        "required": [
+          "user",
+          "saved_at",
+          "opened_at"
+        ],
+        "properties": {
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who, for an administrator; `null` for anyone else, who is told how\nmany but not who."
+          },
+          "saved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When their picks were last saved, RFC 3339."
+          },
+          "opened_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When they last opened the viewer, RFC 3339. Kept in memory since the\nserver started."
           }
         }
       },
@@ -19703,6 +20129,79 @@
           "lat": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "TransferRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/datasets/{radargram_id}/transfer`.",
+        "required": [
+          "to"
+        ],
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "The radargram to move the picks onto. It must be in the catalog."
+          },
+          "remove_source": {
+            "type": "boolean",
+            "description": "Also remove this radargram, or stop serving it when it is in a\nread-only root, in the same step. Picks that were not moved are\narchived, as with any removal."
+          }
+        }
+      },
+      "Transferred": {
+        "type": "object",
+        "description": "`POST /api/v1/datasets/{radargram_id}/transfer`: what was moved.",
+        "required": [
+          "from",
+          "to",
+          "same_grid",
+          "moved",
+          "occupied",
+          "unreadable",
+          "removed"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "same_grid": {
+            "type": "boolean",
+            "description": "Whether the two current revisions have the same axes. When they do,\npicks drawn on the old one's current revision are current on the new\none at once."
+          },
+          "moved": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MovedInterpretation"
+            }
+          },
+          "occupied": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Users who already had picks on `to`. Theirs on `from` were not moved\nand are never merged."
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Files under `from` whose names are not a valid user id, left where\nthey are."
+          },
+          "removed": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Removed",
+                "description": "What became of `from`, when `remove_source` asked for its removal."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

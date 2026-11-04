@@ -25,7 +25,8 @@
 //!
 //! Not a revision ledger either. A ledger records what a radargram *is*
 //! across revisions and is what re-anchoring reads (#148); this records what
-//! people *did*, and nothing reads it back.
+//! people *did*. The one thing that reads it back is [`moved_to`], which
+//! answers a save on a radargram whose picks were transferred away (#500).
 
 #![cfg_attr(
     not(feature = "server"),
@@ -68,6 +69,9 @@ pub enum Action {
     /// An archived interpretation was moved back onto its radargram by an
     /// administrator (#435).
     Restored,
+    /// A radargram's interpretations were copied onto another radargram,
+    /// named in `to_radargram_id` (#500). The one record of an id change.
+    Transferred,
 }
 
 /// One thing that happened.
@@ -89,12 +93,35 @@ pub struct Entry {
     /// file arrived under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The other radargram, for a transfer: where the picks went.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_radargram_id: Option<String>,
 }
 
 /// Every entry, oldest first. Only tests read the log back.
 #[cfg(test)]
 pub fn read(store: &DocumentStore) -> std::io::Result<Vec<Entry>> {
     jsonl::read(store)
+}
+
+/// Where the picks of `radargram` were last transferred to (#500), unless
+/// the id has been added again since.
+///
+/// For the one message that must name the new id: a save from a picker
+/// still open on a radargram renamed under it. The log is read whole, which
+/// is fine for something that happens only when such a save is refused.
+pub fn moved_to(store: &DocumentStore, radargram: &str) -> Option<String> {
+    let entries: Vec<Entry> = jsonl::read(store).ok()?;
+    let mut to = None;
+    for entry in entries.iter().filter(|e| e.radargram_id == radargram) {
+        match entry.action {
+            Action::Transferred => to = entry.to_radargram_id.clone(),
+            // A file under the id again is a different radargram.
+            Action::Added | Action::Unignored => to = None,
+            _ => {}
+        }
+    }
+    to
 }
 
 /// Append without failing the operation it describes.
@@ -116,6 +143,7 @@ mod tests {
 
     fn entry(id: &str, action: Action) -> Entry {
         Entry {
+            to_radargram_id: None,
             at: "2026-09-13T12:00:00Z".to_string(),
             user: "erik".to_string(),
             action,
@@ -137,6 +165,25 @@ mod tests {
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].radargram_id, "line-01");
         assert_eq!(entries[2].action, Action::Removed);
+    }
+
+    #[test]
+    fn a_transfer_is_where_the_picks_went_until_the_id_comes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = DocumentStore::new(dir.path().to_path_buf());
+        assert_eq!(moved_to(&store, "line-01"), None);
+        record(
+            &store,
+            Entry {
+                to_radargram_id: Some("line-02".to_string()),
+                ..entry("line-01", Action::Transferred)
+            },
+        );
+        record(&store, entry("line-01", Action::Removed));
+        assert_eq!(moved_to(&store, "line-01").as_deref(), Some("line-02"));
+        assert_eq!(moved_to(&store, "line-02"), None);
+        record(&store, entry("line-01", Action::Added));
+        assert_eq!(moved_to(&store, "line-01"), None);
     }
 
     #[test]

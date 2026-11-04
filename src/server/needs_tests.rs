@@ -617,6 +617,11 @@ const CASES: &[Case] = &[
     Case::new("commit_replacement").setup(stage),
     Case::new("discard_replacement").setup(stage),
     Case::new("restore_dataset").prepare(ignore_radargram),
+    Case::new("copy_dataset").body(|_, _| Payload::Json(json!({"to": "line-03"}))),
+    Case::new("transfer_interpretations")
+        .prepare(second_radargram)
+        .body(|_, _| Payload::Json(json!({"to": "line-02"}))),
+    Case::new("get_activity"),
     Case::new("list_ignored"),
     // Groups.
     Case::new("group_tracks"),
@@ -1024,6 +1029,15 @@ fn radargram_bytes(dir: &StdPath, name: &str, radargram_id: &str, processed: &st
 }
 
 /// Stop serving [`RADARGRAM`], for restoring.
+/// A second radargram, `line-02`, to move picks onto.
+fn second_radargram(root: &StdPath) {
+    write_radargram(
+        &radargrams(root).join("line-02.nc"),
+        "line-02",
+        "2020-01-01T00:00:00Z",
+    );
+}
+
 fn ignore_radargram(root: &StdPath) {
     let project = Site::open(root).unwrap().project(&project_key()).unwrap();
     crate::project::overrides::update(project.documents(), |stored| {
