@@ -1,3 +1,20 @@
+coverage:
+  status:
+    project:
+      # Fail only on a real drop: an ordinary PR moves the total by a few
+      # hundredths of a point either way.
+      default:
+        target: auto
+        threshold: 0.5%
+      # Backstop so that many small drops cannot add up unnoticed.
+      floor:
+        target: 90%
+    patch:
+      # A small diff with a few untested error branches falls below the
+      # project average without anything being wrong. Report it, never fail.
+      default:
+        informational: true
+
 comment:
   layout: condensed_header, condensed_files, condensed_footer
   hide_project_coverage: false
