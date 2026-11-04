@@ -230,6 +230,56 @@ jobs:
     - uses: codecov/codecov-action@v6
       with:
         files: lcov.info
+        flags: rust
+        token: ${{ secrets.CODECOV_TOKEN }}
+        fail_ci_if_error: true
+
+  # The `python` feature (the #[pymodule] in src/lib.rs) is compiled into the
+  # job above but only the Python tests call it (#526). This runs them
+  # against an instrumented debug build of the extension and uploads a second
+  # report, which Codecov merges with the first for the same commit.
+  coverage-python:
+    name: Coverage (python bindings)
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install dependencies
+      run: |
+        sudo apt update -y
+        sudo apt install -y gdal-bin proj-bin
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
+
+    - uses: Swatinem/rust-cache@v2
+
+    - uses: taiki-e/install-action@cargo-llvm-cov
+
+    # `maturin develop`, not `maturin build --release`: show-env's RUSTFLAGS
+    # must reach the build, and `report` reads the objects and .profraw files
+    # it leaves in target/.
+    - name: Test with an instrumented extension
+      run: |
+        source <(cargo llvm-cov show-env --sh)
+        cargo llvm-cov clean --workspace
+        python -m venv .venv
+        source .venv/bin/activate
+        pip install maturin pytest pandas geopandas netCDF4 impdar
+        maturin develop --features python --no-default-features --extras client
+        python -m pytest
+        cargo llvm-cov report --lcov --output-path lcov-python.info
+
+    - uses: codecov/codecov-action@v6
+      with:
+        files: lcov-python.info
+        flags: python
         token: ${{ secrets.CODECOV_TOKEN }}
         fail_ci_if_error: true
 

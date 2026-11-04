@@ -1,3 +1,10 @@
+codecov:
+  notify:
+    # Two reports per commit, from rust.yml's `coverage` and
+    # `coverage-python` jobs (#526). Without this, statuses can be posted
+    # from the Rust report alone, which leaves the bindings uncovered.
+    after_n_builds: 2
+
 coverage:
   status:
     project:
