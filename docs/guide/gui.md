@@ -65,6 +65,16 @@ clicking a radargram opens it in the viewer.
   out of listings and merged downloads (although it can still be opened by
   anyone who knows its address), and sets its horizontal scale and the
   bounds of its topographic correction. **Edit group** renames a group.
+- **Edit → Change id…** gives a radargram a new id. An id cannot be
+  changed in place, because picks and revisions are keyed by it, so the
+  radargram is copied under the new id with its settings, raw data and
+  processing profile, everyone's saved picks are moved onto the copy, and
+  the old radargram is removed, which archives anything left behind.
+  Unsaved picks are not moved: the dialog says who has saved picks on the
+  radargram or opened it in the last day, and asks you to retype its id
+  when anyone else has. Someone who saves on the old id afterwards is told
+  the new one. Moving other people's picks needs the `admin` role, and
+  links, downloads and scripts that use the old id keep it.
 - **Add data**, for an `operator`, uploads a processed radargram, makes a new
   one from raw data, or adds the raw data of a whole survey at once (see
   [below](#adding-raw-data-in-bulk)).

@@ -59,6 +59,14 @@
                     data-process-radargram="{{ e.radargram_id }}">Process&hellip;</button>
           </li>
           {% endif %}
+          {#- A new id is a copy, a transfer of the picks and a removal
+              (#500): an id is never changed in place. -#}
+          <li>
+            <button type="button"
+                    data-rename-radargram="{{ e.radargram_id }}"
+                    data-rename-label="{{ e.effective_label }}"
+                    data-rename-in-project="{% if e.in_project %}1{% else %}0{% endif %}">Change id&hellip;</button>
+          </li>
           {#- Two different words for two different things. A radargram in
               the project is a file Ridal can delete; one in an external
               root is not, and calling both "Remove" would promise
@@ -382,6 +390,37 @@
     <p>
       <button type="button" id="remove-confirm" class="danger">Remove</button>
       <button type="button" id="remove-close">Cancel</button>
+    </p>
+  </dialog>
+
+  {#- Changing an id (#500). The confirmation is scaled to who is working on
+      the radargram now, which index.js asks the server when it opens. -#}
+  <dialog id="rename-dialog">
+    <h2 id="rename-title">Change id</h2>
+    <p class="hint">
+      The radargram is copied under the new id with its settings and raw data,
+      everyone's saved picks are moved onto the copy, and the old one is
+      <span id="rename-fate">removed</span>, so its picks are archived as with
+      any removal. Links, downloads and scripts that use the old id keep it.
+    </p>
+    <div class="properties-fields">
+      <label>New id
+        <input type="text" id="rename-to" autocomplete="off" spellcheck="false"
+               pattern="[a-z0-9]([a-z0-9_\-]*[a-z0-9])?">
+      </label>
+      <p class="hint">Lowercase letters, digits, <code>-</code> and <code>_</code>.</p>
+    </div>
+    <div id="rename-activity" class="hint" aria-live="polite">Checking who is working on it&hellip;</div>
+    <div id="rename-retype-field" class="properties-fields" hidden>
+      <label>Type the current id, <code id="rename-current"></code>, to confirm
+        <input type="text" id="rename-retype" autocomplete="off" spellcheck="false">
+      </label>
+    </div>
+    <div id="rename-error" class="warning" hidden></div>
+    <div id="rename-result" hidden></div>
+    <p>
+      <button type="button" id="rename-confirm" class="danger" disabled>Change id</button>
+      <button type="button" id="rename-close">Cancel</button>
     </p>
   </dialog>
   {% endif %}
