@@ -32,7 +32,9 @@ a coordinate CSV, either beside the recording as `<stem>.coords.csv` or with
 Ridal reads but does not yet write these formats (see
 {doc}`../background/scope`). A GSSI file of several channels is read one
 channel at a time (see [below](#gssi)), and one whose last trace was cut
-short is read without it.
+short is read without it. So is a pulseEKKO file whose header counts one
+trace more than its data file holds, as an interrupted recording can leave
+it, with a warning saying so.
 
 ### What is read from the header
 

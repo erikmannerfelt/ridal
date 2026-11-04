@@ -326,7 +326,7 @@ impl GPR {
 
     pub fn from_meta_and_loc(
         location: GPRLocation,
-        metadata: GPRMeta,
+        mut metadata: GPRMeta,
     ) -> Result<GPR, Box<dyn Error>> {
         let data = match metadata.data_filepath.extension().and_then(|s| s.to_str()) {
             Some(ext) if ext.eq_ignore_ascii_case("rd3") => Ok(io::load_rd3(
@@ -340,6 +340,9 @@ impl GPR {
             )?),
             _ => Err(format!("Unknown filetype: {:?}", metadata.data_filepath)),
         }?;
+        // A pulseEKKO file can hold one trace fewer than its header says
+        // (#505); the count is what was read.
+        metadata.last_trace = data.shape()[1] as u32;
         Self::from_meta_loc_and_data(location, metadata, data)
     }
 
