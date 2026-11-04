@@ -75,6 +75,14 @@ RECORDS: Final[dict[type, tuple[str, dict[str, str]]]] = {
     models.PlanProblem: ("PlanProblem", {}),
     models.PlannedAntenna: ("PlannedAntenna", {}),
     models.IngestPlan: ("IngestPlan", {}),
+    # Changing a radargram's id (#500).
+    models.Copied: ("Copied", {"from_radargram": "from"}),
+    models.Removed: ("Removed", {}),
+    models.MovedInterpretation: ("MovedInterpretation", {}),
+    models.Transferred: (
+        "Transferred",
+        {"from_radargram": "from", "to_radargram": "to"},
+    ),
 }
 
 #: Fields a record has that the server does not send in the body: the

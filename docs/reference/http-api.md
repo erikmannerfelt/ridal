@@ -102,6 +102,13 @@ or started with `--allow-insecure-login`; see {doc}`../deploy/reverse-proxy`.
 
 ## Radargrams
 
+A radargram's id cannot be changed in place. To give one a new id, `copy` it
+under the new id, then `transfer` its picks with `remove_source` set, which
+removes the original in the same step so that no save can land in between. A
+save on the old id after that is refused with `dataset_moved`, naming the
+new one. `activity` says who is working on a radargram, for a confirmation
+before either.
+
 :::{http-endpoints} Radargrams
 :::
 

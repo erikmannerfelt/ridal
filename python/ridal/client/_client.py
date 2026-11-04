@@ -828,6 +828,46 @@ class Client:
             )
         )
 
+    def copy_radargram(self, radargram_id: str, to: str) -> models.Copied:
+        """Add a radargram again under another id. Needs ``operator``.
+
+        The processed file is copied with only its id changed, so its grid
+        is the original's, and its catalog settings, raw data and processing
+        profile come along. The picks stay on the original; move them with
+        :meth:`transfer_picks`.
+        """
+        return models.Copied.from_json(
+            self._http.json(
+                "POST",
+                self._dataset_path(radargram_id, "copy"),
+                json={"to": to},
+            )
+        )
+
+    def transfer_picks(
+        self, radargram_id: str, to: str, *, remove_source: bool = False
+    ) -> models.Transferred:
+        """Move every saved interpretation of a radargram onto another one.
+
+        How a radargram gets a new id: add it again under the new id (see
+        :meth:`copy_radargram`), move the picks, and remove the old one,
+        which ``remove_source`` does in the same step so that no save can
+        land in between. Picks are written only where their owner has none
+        on ``to`` yet. When the two radargrams' grids differ, the picks keep
+        the revision they were drawn on and are carried, for each owner to
+        adopt with :meth:`promote`.
+
+        Needs ``operator`` when every picks file is the caller's own, and
+        ``admin`` otherwise.
+        """
+        return models.Transferred.from_json(
+            self._http.json(
+                "POST",
+                self._dataset_path(radargram_id, "transfer"),
+                json={"to": to, "remove_source": remove_source},
+            )
+        )
+
     # -- Project documents ----------------------------------------------------
 
     def layers(self) -> models.Document:

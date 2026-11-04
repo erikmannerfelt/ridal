@@ -449,7 +449,7 @@ pub fn put(
 /// the one that only had the first. The values are compared with a
 /// tolerance because they are round-tripped through a delta encoding,
 /// where a sum of differences need not reproduce the original bit for bit.
-fn describes_same_mapping(a: &AxisSnapshot, b: &AxisSnapshot) -> bool {
+pub fn describes_same_mapping(a: &AxisSnapshot, b: &AxisSnapshot) -> bool {
     fn close(a: &[f64], b: &[f64]) -> bool {
         a.len() == b.len()
             && a.iter().zip(b).all(|(x, y)| {

@@ -113,6 +113,22 @@ def gui(tmp_path_factory: pytest.TempPathFactory, radargram: Path) -> Iterator[S
         stop(process)
 
 
+@pytest.fixture
+def own_gui(tmp_path: Path, radargram: Path) -> Iterator[Server]:
+    """A ``ridal gui`` of the test's own, for a test that changes its catalog."""
+    binary = ridal_binary()
+    root = tmp_path / "project"
+    subprocess.run(
+        [binary, "project", "init", str(root)], check=True, capture_output=True
+    )
+    shutil.copy(radargram, root / radargram.name)
+    process, url = start([binary, "gui", str(root)])
+    try:
+        yield Server(url, root)
+    finally:
+        stop(process)
+
+
 def free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))

@@ -352,6 +352,52 @@ also what `/layers/usage` counts from.
   Archiving, restoring and purging are audited (`Archived`, `Restored`,
   `Purged`) with whose picks they were.
 
+## Changing a radargram's id (#500)
+
+An id is never changed in place. It is hashed into the revision id, and it
+keys `interpretations/<id>/`, `raw/sources/<id>.json`, the profile
+assignment and `overrides.json`, so a rename in place would be a migration
+across many files that cannot be atomic, and every pick would read it as a
+reprocess. "Change id" in the catalog is three requests instead, each of
+which stands alone (`server::rename_routes`):
+
+- **`POST …/copy`** installs the same processed file under the new id:
+  copied, `ridal_radargram_id` rewritten (the only place a file names its
+  id; the recipe does not), and installed through
+  `lifecycle_routes::install_locked`, the upload's own path, so the
+  collision, ignore and size checks, the ledger record and the audit entry
+  are the upload's. Catalog overrides, the raw source and the profile
+  assignment are copied after it; a failure there is a warning, since the
+  radargram is installed and each can be set by hand. Operator.
+- **`POST …/transfer`** (`project::transfer`) writes each user's document
+  onto the new id with `key` and `source.id` rewritten and a
+  `ridal_transferred_from` note in `meta`, only where that user has none
+  (`Expectation::Absent`, as a restore from the archive is), so it never
+  replaces picks and can be retried. Whether the picks line up is checked:
+  when the two current revisions' kept axes describe the same mapping, a
+  document drawn on the old current revision is pointed at the new one.
+  Otherwise each document keeps its revision, and that revision's snapshot
+  and ledger record are copied under the new id, marked as ended by the new
+  id's current revision. Carry looks a revision up by `(radargram,
+  revision)` and never asks which id it was declared for, so the copies are
+  all it needs: the owner adopts the picks as after a reprocess. Operator
+  when every document is the caller's own (the only way a `ridal gui`
+  user, who is never an admin, can rename), admin otherwise.
+- **`remove_source: true`** removes the old radargram through
+  `lifecycle_routes::remove_locked` in the same hold of the lifecycle lock,
+  so a save on the old id lands either before the transfer, and is moved,
+  or after the removal. Then `audit::moved_to` finds the `Transferred`
+  entry (the one audit read outside tests) and the save is refused with
+  `dataset_moved`, naming the new id. The id is not redirected: the old one
+  is often reused.
+
+**Unsaved work** cannot be moved, so `GET …/activity` says who saved
+(`date_modified`, which the picker stamps and a transfer keeps; the file's
+time is renewed by the transfer itself) or opened the viewer
+(`RecentlyOpened`, in memory, for anyone who may pick) in the last day,
+naming them only to admins, and the dialog asks for the id to be retyped
+when anyone but the caller was active.
+
 ## Raw data and sources (#382)
 
 `project::raw` keeps raw files under `ridal_data/raw/files/<aa>/<blake3>`,

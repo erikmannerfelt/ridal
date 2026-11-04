@@ -148,6 +148,10 @@ What the server answers. Each mirrors a schema in
 .. autoclass:: ridal.client.Replaced
 .. autoclass:: ridal.client.CarriedView
 .. autoclass:: ridal.client.Promoted
+.. autoclass:: ridal.client.Copied
+.. autoclass:: ridal.client.Transferred
+.. autoclass:: ridal.client.MovedInterpretation
+.. autoclass:: ridal.client.Removed
 ```
 
 ### Processing records

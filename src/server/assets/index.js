@@ -613,6 +613,248 @@ document.querySelectorAll('.group-map:not([hidden])').forEach(showMap);
   });
 })();
 
+/* --- Change a radargram's id (#500) ---------------------------------------
+ *
+ * Three requests, each of which stands alone: copy the radargram under the
+ * new id, then move the picks onto it and remove the old one, which the
+ * server does under one lock so that no save can land in between. A copy
+ * that succeeded is remembered while the dialog is open, so retrying after
+ * a failed transfer does not try to copy again.
+ *
+ * Only saved picks move, so the confirmation is scaled to who is working
+ * on the radargram: nobody else in the last day is an ordinary
+ * confirmation; anyone else means retyping the id, more insistently when
+ * it was in the last hour.
+ */
+(function setupRenameRadargram() {
+  const dialog = document.getElementById('rename-dialog');
+  const buttons = [...document.querySelectorAll('button[data-rename-radargram]')];
+  if (!dialog || buttons.length === 0) return;
+
+  const title = document.getElementById('rename-title');
+  const fate = document.getElementById('rename-fate');
+  const toInput = document.getElementById('rename-to');
+  const activityBox = document.getElementById('rename-activity');
+  const retypeField = document.getElementById('rename-retype-field');
+  const retypeInput = document.getElementById('rename-retype');
+  const current = document.getElementById('rename-current');
+  const errorBox = document.getElementById('rename-error');
+  const resultBox = document.getElementById('rename-result');
+  const confirm = document.getElementById('rename-confirm');
+  const close = document.getElementById('rename-close');
+  const ID = /^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$/;
+
+  let radargramId = null;
+  let activity = null;
+  let copiedTo = null;
+  let done = false;
+
+  function ago(iso) {
+    const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.round(minutes / 60);
+    return `${hours} h ago`;
+  }
+
+  function what(person) {
+    const parts = [];
+    if (person.saved_at) parts.push(`saved ${ago(person.saved_at)}`);
+    if (person.opened_at) parts.push(`opened the viewer ${ago(person.opened_at)}`);
+    return parts.join(', ');
+  }
+
+  function line(text, strong) {
+    const p = document.createElement('p');
+    if (strong) {
+      const b = document.createElement('strong');
+      b.textContent = text;
+      p.append(b);
+    } else {
+      p.textContent = text;
+    }
+    return p;
+  }
+
+  function describe() {
+    activityBox.replaceChildren();
+    if (!activity) return;
+    const others = activity.others;
+    if (!activity.may_transfer) {
+      activityBox.append(line(
+        'Others have picks on this radargram, and moving them needs an administrator.',
+        true,
+      ));
+    }
+    if (others.length === 0) {
+      activityBox.append(line(
+        'Only saved picks are moved. Save your own work first.',
+      ));
+    } else {
+      const named = others.every((p) => p.user);
+      const intro = activity.level === 'hour'
+        ? `${others.length === 1 ? 'Someone is' : `${others.length} people are`} working on this radargram right now. ` +
+          'Anything they have not saved will not be moved, and their next save will fail.'
+        : `${others.length === 1 ? 'Someone else has' : `${others.length} others have`} saved picks on it or ` +
+          'opened it in the last 24 hours. Only saved picks are moved.';
+      activityBox.append(line(intro, activity.level === 'hour'));
+      if (named) {
+        const list = document.createElement('ul');
+        for (const person of others) {
+          const item = document.createElement('li');
+          item.textContent = `${person.user}: ${what(person)}`;
+          list.append(item);
+        }
+        activityBox.append(list);
+      }
+    }
+    if (activity.you.saved_at || activity.you.opened_at) {
+      activityBox.append(line(`You ${what(activity.you)}.`));
+    }
+    if (activity.undated > 0) {
+      activityBox.append(line(
+        `${activity.undated} picks file${activity.undated === 1 ? ' has' : 's have'} ` +
+        'no save time, so how recent it is cannot be told.',
+      ));
+    }
+  }
+
+  function needsRetype() {
+    return activity !== null && activity.level !== 'none';
+  }
+
+  function update() {
+    if (done) return;
+    const to = toInput.value.trim();
+    const ready = activity !== null
+      && activity.may_transfer
+      && ID.test(to)
+      && to !== radargramId
+      && (!needsRetype() || retypeInput.value.trim() === radargramId);
+    confirm.disabled = !ready;
+  }
+
+  function showError(message) {
+    RIDAL.setMessage(errorBox, message);
+    errorBox.hidden = false;
+  }
+
+  async function post(segments, body) {
+    const response = await fetch(RIDAL.apiPath(...segments), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const envelope = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(envelope?.error?.message || RIDAL.upstreamMessage(response.status));
+    }
+    return envelope;
+  }
+
+  for (const button of buttons) {
+    button.addEventListener('click', async () => {
+      const menu = button.closest('details.site-menu');
+      if (menu) menu.open = false;
+      radargramId = button.dataset.renameRadargram;
+      const label = button.dataset.renameLabel || radargramId;
+      const inProject = button.dataset.renameInProject === '1';
+      title.textContent = `Change the id of ${label}`;
+      fate.textContent = inProject ? 'removed' : 'no longer served (its file outside the project is left alone)';
+      current.textContent = radargramId;
+      toInput.value = '';
+      toInput.disabled = false;
+      retypeInput.value = '';
+      retypeField.hidden = true;
+      errorBox.hidden = true;
+      resultBox.hidden = true;
+      resultBox.replaceChildren();
+      confirm.hidden = false;
+      confirm.disabled = true;
+      close.textContent = 'Cancel';
+      activity = null;
+      copiedTo = null;
+      done = false;
+      activityBox.textContent = 'Checking who is working on it…';
+      dialog.showModal();
+      toInput.focus();
+      try {
+        const response = await fetch(RIDAL.apiPath('datasets', radargramId, 'activity'));
+        const body = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(body?.error?.message || RIDAL.upstreamMessage(response.status));
+        }
+        activity = body;
+        describe();
+        retypeField.hidden = !needsRetype();
+      } catch (error) {
+        activityBox.textContent = '';
+        showError(`Could not tell who is working on it (${error.message}).`);
+      }
+      update();
+    });
+  }
+
+  toInput.addEventListener('input', update);
+  retypeInput.addEventListener('input', update);
+
+  close.addEventListener('click', () => {
+    dialog.close();
+    if (done || copiedTo) reloadKeepingGroups();
+  });
+
+  confirm.addEventListener('click', async () => {
+    const to = toInput.value.trim();
+    if (!radargramId || confirm.disabled) return;
+    confirm.disabled = true;
+    toInput.disabled = true;
+    errorBox.hidden = true;
+    try {
+      if (copiedTo !== to) {
+        await post(['datasets', radargramId, 'copy'], { to });
+        copiedTo = to;
+      }
+      const moved = await post(['datasets', radargramId, 'transfer'], {
+        to,
+        remove_source: true,
+      });
+      done = true;
+      const carried = moved.moved.filter((m) => !m.current);
+      const lines = [
+        `${radargramId} is now ${to}. ` +
+        `${moved.moved.length} picks file${moved.moved.length === 1 ? ' was' : 's were'} moved.`,
+      ];
+      if (carried.length > 0) {
+        lines.push(
+          `The new radargram's grid differs, so ${carried.length === 1 ? 'one person’s picks are' : `${carried.length} people’s picks are`} ` +
+          'shown carried, for their owners to check and adopt, as after a reprocess.',
+        );
+      }
+      if (moved.occupied.length > 0) {
+        lines.push(
+          `Picks by ${moved.occupied.join(', ')} were already on ${to} and were not ` +
+          `merged; theirs on ${radargramId} are in the archive.`,
+        );
+      }
+      resultBox.replaceChildren(...lines.map((text) => line(text)));
+      resultBox.hidden = false;
+      confirm.hidden = true;
+      close.textContent = 'Done';
+    } catch (error) {
+      // Before the copy nothing has changed, and the server's message says
+      // what to do. After it, say where things stand.
+      showError(
+        copiedTo === to
+          ? `The copy ${to} was made, but moving the picks stopped: ${error.message} ` +
+            'Trying again goes on from the copy.'
+          : error.message,
+      );
+      toInput.disabled = copiedTo === to;
+      update();
+    }
+  });
+})();
+
 /* --- Where each radargram stands against its processing profile (#382) ----
  *
  * One request for the whole catalog, not one per card: the status route

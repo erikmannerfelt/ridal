@@ -1944,6 +1944,17 @@ pub async fn viewer_page(
 ) -> Result<impl IntoResponse, PageError> {
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id).map_err(PageError)?;
+    // Someone who may pick has the picker open: what a removal or a change
+    // of id asks about before it leaves their unsaved work behind (#500).
+    if let Some(user) = caller
+        .user
+        .as_ref()
+        .filter(|_| state.project.is_some() && caller.may(crate::project::roles::Role::Picker))
+    {
+        state
+            .recently_opened
+            .note(entry.radargram_id.as_str(), user);
+    }
     let active_profile = resolve_profile(&state, &caller, query.profile);
     lookup_profile(&state, &caller, &active_profile).map_err(PageError)?;
 

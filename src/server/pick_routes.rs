@@ -615,6 +615,7 @@ pub async fn archive_interpretation(
     audit::record(
         project.documents(),
         audit::Entry {
+            to_radargram_id: None,
             at,
             user: caller.audit_name(),
             action: audit::Action::Archived,
@@ -810,6 +811,7 @@ fn purge(
     audit::record(
         project.documents(),
         audit::Entry {
+            to_radargram_id: None,
             at: chrono::Utc::now().to_rfc3339(),
             user: caller.audit_name(),
             action: audit::Action::Purged,
@@ -928,6 +930,7 @@ pub async fn restore_archived(
     audit::record(
         project.documents(),
         audit::Entry {
+            to_radargram_id: None,
             at: chrono::Utc::now().to_rfc3339(),
             user: caller.audit_name(),
             action: audit::Action::Restored,

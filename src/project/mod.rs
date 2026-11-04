@@ -99,6 +99,7 @@ pub mod render_profiles;
 pub mod revisions;
 pub mod roles;
 pub mod store;
+pub mod transfer;
 pub mod uploads;
 
 use std::path::{Path, PathBuf};

@@ -83,6 +83,16 @@ pub struct Added {
     archived_interpretations: usize,
 }
 
+impl Added {
+    pub(super) fn radargram_id(&self) -> &str {
+        &self.radargram_id
+    }
+
+    pub(super) fn revision_id(&self) -> &str {
+        &self.revision_id
+    }
+}
+
 /// `DELETE /api/v1/datasets/{radargram_id}`: what became of it.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Removed {
@@ -257,6 +267,36 @@ pub async fn upload_dataset(
         return Err(too_large(bytes, room, cap));
     }
 
+    let added = install_locked(
+        &state,
+        project,
+        &caller,
+        &temporary,
+        meta,
+        bytes,
+        query.filename.as_deref(),
+    )?;
+    cleanup.installed();
+    Ok((StatusCode::CREATED, Json(added)))
+}
+
+/// Install the validated radargram at `temporary`, which `meta` describes,
+/// as a new radargram in the project: refused when its id is taken or
+/// ignored, then renamed into place, recorded in the ledger and the audit
+/// log, and discovered. `origin` is what the audit log says it came from.
+///
+/// The caller holds the lifecycle lock, has checked the project's room for
+/// `bytes`, and removes `temporary` if this fails.
+pub(super) fn install_locked(
+    state: &AppState,
+    project: &crate::project::Project,
+    caller: &Caller,
+    temporary: &std::path::Path,
+    meta: crate::io::RidalNetcdfMetadata,
+    bytes: u64,
+    origin: Option<&str>,
+) -> Result<Added, ApiError> {
+    let destination = writable_destination(project)?;
     // Refused here rather than left to become a duplicate-id warning after
     // the fact. The operator is standing right there and can rename it.
     if state
@@ -318,13 +358,12 @@ pub async fn upload_dataset(
             ),
         ));
     }
-    std::fs::rename(&temporary, &installed).map_err(|e| {
+    std::fs::rename(temporary, &installed).map_err(|e| {
         ApiError::internal(
             "install_failed",
             format!("Could not install {}: {e}", installed.display()),
         )
     })?;
-    cleanup.installed();
 
     // The id now has a current revision, and the ledger has to say so. Two
     // things depend on it: `/revisions` can only report what is current if
@@ -389,13 +428,14 @@ pub async fn upload_dataset(
     audit::record(
         project.documents(),
         audit::Entry {
+            to_radargram_id: None,
             at: now(),
             user: caller.audit_name(),
             action: audit::Action::Added,
             radargram_id: meta.radargram_id.to_string(),
             revision_id: Some(meta.revision_id().to_string()),
-            note: match (&query.filename, archived_interpretations) {
-                (name, 0) => name.clone(),
+            note: match (origin, archived_interpretations) {
+                (name, 0) => name.map(str::to_string),
                 (Some(name), n) => Some(format!(
                     "{name}; {n} archived interpretation(s) already under this id"
                 )),
@@ -406,17 +446,14 @@ pub async fn upload_dataset(
         },
     );
 
-    Ok((
-        StatusCode::CREATED,
-        Json(Added {
-            radargram_id: meta.radargram_id.to_string(),
-            revision_id: meta.revision_id().to_string(),
-            display_name: meta.display_name.map(|n| n.to_string()),
-            group_name: meta.group_name.map(|n| n.to_string()),
-            bytes,
-            archived_interpretations,
-        }),
-    ))
+    Ok(Added {
+        radargram_id: meta.radargram_id.to_string(),
+        revision_id: meta.revision_id().to_string(),
+        display_name: meta.display_name.map(|n| n.to_string()),
+        group_name: meta.group_name.map(|n| n.to_string()),
+        bytes,
+        archived_interpretations,
+    })
 }
 
 /// Take `id` out of its processing profile, if it is in one. Not fatal:
@@ -462,12 +499,29 @@ pub async fn remove_dataset(
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, "remove a radargram")?;
     let _lifecycle = state.lifecycle_lock().await;
+    Ok(Json(remove_locked(
+        &state,
+        project,
+        &caller,
+        &radargram_id,
+    )?))
+}
+
+/// Remove `radargram_id` from the project, or stop serving it, as
+/// [`remove_dataset`] does. The caller holds the lifecycle lock, so a
+/// transfer (#500) can archive what it left behind in the same hold.
+pub(super) fn remove_locked(
+    state: &AppState,
+    project: &crate::project::Project,
+    caller: &Caller,
+    radargram_id: &str,
+) -> Result<Removed, ApiError> {
     let catalog = state.catalog();
-    let entry = super::routes::lookup_dataset(&catalog, &radargram_id)?;
+    let entry = super::routes::lookup_dataset(&catalog, radargram_id)?;
     let id = entry.radargram_id.clone();
     let revision = entry.revision_id.to_string();
     let in_project = state.is_writable(entry);
-    let path = entry_path(&state, entry)?;
+    let path = entry_path(state, entry)?;
     drop(catalog);
 
     let at = now();
@@ -533,7 +587,7 @@ pub async fn remove_dataset(
             &id,
             &crate::project::store::Expectation::Any,
         ) {
-            Ok(true) => super::raw_routes::sweep(&state, project),
+            Ok(true) => super::raw_routes::sweep(state, project),
             Ok(false) => {}
             Err(e) => tracing::warn!(
                 radargram = id.as_str(),
@@ -585,6 +639,7 @@ pub async fn remove_dataset(
     audit::record(
         project.documents(),
         audit::Entry {
+            to_radargram_id: None,
             at,
             user: caller.audit_name(),
             action: if in_project {
@@ -598,11 +653,11 @@ pub async fn remove_dataset(
         },
     );
 
-    Ok(Json(Removed {
+    Ok(Removed {
         radargram_id: id.to_string(),
         outcome,
         archived,
-    }))
+    })
 }
 
 /// Serve a radargram that was previously ignored.
@@ -662,6 +717,7 @@ pub async fn restore_dataset(
     audit::record(
         project.documents(),
         audit::Entry {
+            to_radargram_id: None,
             at: now(),
             user: caller.audit_name(),
             action: audit::Action::Unignored,
@@ -734,7 +790,9 @@ pub async fn list_ignored(
 /// join-then-canonicalize sequence, in the same function as the sink, is
 /// what it recognises as validated — see `AppState::resolve_absolute_path`,
 /// which documents the same thing for the same reason.
-fn writable_destination(project: &crate::project::Project) -> Result<std::path::PathBuf, ApiError> {
+pub(super) fn writable_destination(
+    project: &crate::project::Project,
+) -> Result<std::path::PathBuf, ApiError> {
     let root = project.root().canonicalize().map_err(|e| {
         ApiError::internal(
             "upload_failed",
@@ -783,7 +841,7 @@ fn writable_destination(project: &crate::project::Project) -> Result<std::path::
 /// So this reports which happened, and the caller decides. A removal that
 /// deletes the file aborts; an ignore, which leaves the file where it is
 /// and can be lifted again, does not.
-fn snapshot_axes(
+pub(super) fn snapshot_axes(
     project: &crate::project::Project,
     id: &RadargramId,
     path: &std::path::Path,

@@ -96,6 +96,9 @@ pub mod processing;
 pub mod processing_routes;
 pub mod profile_preview_routes;
 pub mod raw_routes;
+pub mod rename_routes;
+#[cfg(test)]
+mod rename_routes_tests;
 pub mod render_profile_routes;
 #[cfg(test)]
 mod render_profile_routes_tests;
