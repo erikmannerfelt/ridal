@@ -93,7 +93,11 @@ The families are listed roughly in the order they are usually run.
   and scope (`global`, i.e. one time zero for the whole radargram) suit most
   data. When time zero drifts along the profile, `scope=trace` or
   `scope=smooth` finds one time zero per trace, and `max_peak` copes best
-  with noisy or corrupted first samples.
+  with noisy or corrupted first samples. On a nearly noise-free record, the
+  default can start the wave at a precursor far too small to see;
+  `zero_corr(amplitude)` puts time zero where the record first leaves its
+  level by 1 % of the direct wave (`fraction=0.01`), and says in the
+  processing log when a slightly different fraction would move it.
 
 ### Geometry
 

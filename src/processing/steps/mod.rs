@@ -50,6 +50,7 @@ pub use report::StepReport;
 
 pub(crate) const DEFAULT_ZERO_CORR_FACTOR: f32 = 1.0;
 pub(crate) const DEFAULT_ZERO_CORR_SIGMA: f32 = 5.0;
+pub(crate) const DEFAULT_ZERO_CORR_FRACTION: f32 = 0.01;
 pub(crate) const DEFAULT_ZERO_CORR_SMOOTH_WINDOW: u32 = 51;
 pub(crate) const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
 pub(crate) const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
@@ -205,10 +206,17 @@ pub enum Step {
     /// noise and signal, which puts it at the start of a gradual rise, often
     /// a sample earlier. `max_peak` takes the direct wave's largest value
     /// with the sign that most traces' largest value has, and survives
-    /// noisy or corrupted first samples best. `legacy` is the
+    /// noisy or corrupted first samples best. `amplitude` takes where the
+    /// record first leaves its level by more than `fraction` of the direct
+    /// wave's largest value, between samples, and so ignores a precursor
+    /// smaller than that however quiet the record is; the others measure
+    /// against the noise, and on a quiet record or on the mean trace can
+    /// start the wave at such a precursor. `legacy` is the
     /// pre-0.7 threshold on the mean trace, and also subtracts the mean of
     /// what it crops. All but `legacy` look for the direct wave around the
     /// first strong arrival, and none of them depend on the amplitude scale.
+    /// `amplitude` reports how far time zero moves at a slightly smaller and
+    /// larger fraction, and warns when it is more than a quarter period.
     /// The onset methods only accept an onset where the signal stays out of
     /// the noise for most of the next quarter period, so isolated early
     /// samples do not start the direct wave.
@@ -236,10 +244,11 @@ pub enum Step {
     /// `zero_corr(coppens, smooth, window=101)`,
     /// `zero_corr(max_peak, trace, peak)`,
     /// `zero_corr(coppens, margin=5)`, `zero_corr(first_break, sigma=4)`,
-    /// `zero_corr(legacy, factor=0.9)`.
+    /// `zero_corr(amplitude, fraction=0.02)`, `zero_corr(legacy, factor=0.9)`.
     #[command(rename_all = "snake_case")]
     ZeroCorr {
-        /// `coppens`, `first_break`, `aic`, `max_peak` or `legacy`.
+        /// `coppens`, `first_break`, `aic`, `max_peak`, `amplitude` or
+        /// `legacy`.
         #[arg(long, default_value = "coppens")]
         method: zero_corr::Method,
         /// `global`, `trace` or `smooth`.
@@ -260,6 +269,11 @@ pub enum Step {
         /// signal.
         #[arg(long, default_value_t = crate::processing::steps::DEFAULT_ZERO_CORR_SIGMA)]
         sigma: f32,
+        /// `amplitude` only: how large a fraction of the direct wave's
+        /// largest value counts as signal, above 0 and below 1.
+        #[arg(long, default_value_t = crate::processing::steps::DEFAULT_ZERO_CORR_FRACTION,
+              value_parser = unit_fraction)]
+        fraction: f32,
         /// `smooth` only: how many traces the running median of the picks
         /// spans.
         #[arg(long, default_value_t = crate::processing::steps::DEFAULT_ZERO_CORR_SMOOTH_WINDOW,
@@ -698,6 +712,15 @@ fn finite_positive(s: &str) -> Result<f32, String> {
         Err("must be finite".into())
     } else if value <= 0. {
         Err("must be above 0".into())
+    } else {
+        Ok(value)
+    }
+}
+
+fn unit_fraction(s: &str) -> Result<f32, String> {
+    let value = finite_positive(s)?;
+    if value >= 1. {
+        Err("must be below 1".into())
     } else {
         Ok(value)
     }
@@ -1167,9 +1190,10 @@ impl Step {
         match self {
             Step::ZeroCorr { method, scope, .. } => {
                 let by_method: &[&'static str] = match method {
-                    zero_corr::Method::Legacy => &["sigma", "time_zero", "margin"],
-                    zero_corr::Method::FirstBreak => &["factor"],
-                    _ => &["factor", "sigma"],
+                    zero_corr::Method::Legacy => &["sigma", "fraction", "time_zero", "margin"],
+                    zero_corr::Method::FirstBreak => &["factor", "fraction"],
+                    zero_corr::Method::Amplitude => &["factor", "sigma"],
+                    _ => &["factor", "sigma", "fraction"],
                 };
                 let mut unused: Vec<(&'static str, String)> = by_method
                     .iter()
@@ -1232,6 +1256,7 @@ impl Step {
                 scope,
                 factor,
                 sigma,
+                fraction,
                 time_zero,
                 margin,
                 window,
@@ -1241,6 +1266,7 @@ impl Step {
                     method: *method,
                     scope: *scope,
                     sigma: *sigma,
+                    fraction: *fraction,
                     time_zero: *time_zero,
                     margin: *margin,
                     window: *window as usize,
@@ -1986,6 +2012,11 @@ mod tests {
                 "zero_corr(first_break, trace, sigma=3)",
                 "zero_corr(method=first_break, scope=trace, time_zero=onset, margin=auto, sigma=3)",
             ),
+            (
+                "zero_corr(amplitude, fraction=0.02)",
+                "zero_corr(method=amplitude, scope=global, time_zero=onset, margin=auto, \
+                 fraction=0.02)",
+            ),
         ] {
             let parsed = one(source).unwrap();
             assert_eq!(parsed.canonical, canonical, "{source}");
@@ -2028,6 +2059,18 @@ mod tests {
                 "both",
             ),
             ("zero_corr(margin=-1)", "non-negative", "margin=-1"),
+            (
+                "zero_corr(coppens, fraction=0.02)",
+                "`fraction` has no effect with `method=coppens`",
+                "fraction=0.02",
+            ),
+            (
+                "zero_corr(amplitude, sigma=5)",
+                "`sigma` has no effect with `method=amplitude`",
+                "sigma=5",
+            ),
+            ("zero_corr(amplitude, fraction=1)", "below 1", "fraction=1"),
+            ("zero_corr(amplitude, fraction=0)", "above 0", "fraction=0"),
             (
                 "zero_corr(aic, trace, window=11)",
                 "`window` has no effect with `scope=trace`",
