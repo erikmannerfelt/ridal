@@ -377,7 +377,26 @@ async fn a_copy_under_a_new_id_takes_the_picks_as_current() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_copy_never_takes_an_id_in_use() {
-    let (_dir, app) = project_app(false);
+    let (dir, app) = project_app(false);
+    // An ignored id is not a free one either.
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    crate::project::overrides::update(project.documents(), |stored| {
+        stored.ignored.insert(
+            crate::identity::RadargramId::new("hidden-line").unwrap(),
+            Default::default(),
+        );
+        Ok(())
+    })
+    .unwrap();
+    let ignored = send_json(
+        &app,
+        "POST",
+        "/api/v1/datasets/line-01/copy",
+        &json!({"to": "hidden-line"}),
+    )
+    .await;
+    assert_eq!(ignored.status, StatusCode::CONFLICT, "{}", ignored.text);
+    assert_eq!(ignored.body["error"]["code"], "radargram_ignored");
     let taken = send_json(
         &app,
         "POST",
@@ -387,6 +406,11 @@ async fn a_copy_never_takes_an_id_in_use() {
     .await;
     assert_eq!(taken.status, StatusCode::CONFLICT, "{}", taken.text);
     assert_eq!(taken.body["error"]["code"], "radargram_exists");
+    assert!(
+        !taken.text.contains("ridal process"),
+        "the upload's advice does not fit a dialog: {}",
+        taken.text
+    );
     let invalid = send_json(
         &app,
         "POST",

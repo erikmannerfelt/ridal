@@ -166,6 +166,26 @@ pub(super) async fn copy_dataset(
         let entry = super::routes::lookup_dataset(&catalog, &radargram_id)?;
         (entry.radargram_id.clone(), entry_path(&state, entry)?)
     };
+    // Checked before a byte is copied, and in words about a new id rather
+    // than the upload's advice on `ridal process`, which `install_locked`
+    // would give: the person is typing an id into a dialog.
+    if state.catalog().find_entry(to.as_str()).is_some() {
+        return Err(ApiError::conflict(
+            "radargram_exists",
+            format!("'{to}' is already the id of another radargram here. Choose another id."),
+        ));
+    }
+    let (stored, _) = crate::project::overrides::read(project.documents())
+        .map_err(|e| ApiError::internal("overrides_read_failed", e.to_string()))?;
+    if stored.ignored.contains_key(&to) {
+        return Err(ApiError::conflict(
+            "radargram_ignored",
+            format!(
+                "'{to}' belongs to a radargram this project no longer serves (see Ignored \
+                 radargrams). Choose another id, or restore that radargram and remove it first."
+            ),
+        ));
+    }
     let bytes = std::fs::metadata(&source)
         .map_err(|e| ApiError::internal("read_failed", format!("Could not read the file: {e}")))?
         .len();

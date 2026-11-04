@@ -841,10 +841,13 @@ document.querySelectorAll('.group-map:not([hidden])').forEach(showMap);
       confirm.hidden = true;
       close.textContent = 'Done';
     } catch (error) {
-      const step = copiedTo === to ? 'moving the picks' : 'copying the radargram';
+      // Before the copy nothing has changed, and the server's message says
+      // what to do. After it, say where things stand.
       showError(
-        `Stopped while ${step}: ${error.message}` +
-        (copiedTo === to ? ` The copy ${to} exists; trying again goes on from there.` : ''),
+        copiedTo === to
+          ? `The copy ${to} was made, but moving the picks stopped: ${error.message} ` +
+            'Trying again goes on from the copy.'
+          : error.message,
       );
       toInput.disabled = copiedTo === to;
       update();
