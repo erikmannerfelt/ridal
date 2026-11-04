@@ -3,6 +3,32 @@
 What to do when moving an existing project, server or script to a new
 version. {doc}`changelog` lists everything that changed.
 
+## From 0.11 to 0.12
+
+Projects, sites and processed files from 0.11 open as they are. Revision
+ids do not change, but every radargram is listed as processed by older
+processing.
+
+- **Reprocessing** changes only **GSSI radargrams whose GPS dates were a
+  week-number rollover early** (#531): their trace times move forward by
+  1024 weeks, to when they were recorded. The core processing version goes
+  from 5 to 6, which is why every radargram shows as older processing;
+  others give the same output when reprocessed.
+- **GSSI files of several channels** are read with `--channel N` rather
+  than refused, and a file of one channel reads as before (#533).
+- **A `<stem>.ridal.toml` beside a recording is now read** (#528). A file
+  of that name that is not a Ridal sidecar makes the recording fail with
+  an error naming it; rename it, or pass `--no-sidecar`.
+- **Warnings.** GSSI files now warn that the antenna separation is taken
+  as 0 m (#525). Set it with `--override-antenna-separation` or a
+  sidecar.
+- **HTTP API.** A source whose antenna frequency is unknown is refused
+  with `antenna_frequency_unknown`, where it was `source_unreadable`
+  (#541); `sampling_frequency_unknown` and `date_unknown` are new. Each
+  bundle of a recipe gains `part` and `overrides` (`null` for a whole
+  file without a sidecar), and a source gains `sampling_mhz` and `date`.
+  Older Python clients keep working.
+
 ## From 0.10 to 0.11
 
 Projects, sites and processed files from 0.10 open as they are, but every

@@ -3,6 +3,91 @@
 What changed in each release. {doc}`upgrading` says what to do about the
 changes that affect existing data, scripts or servers.
 
+## 0.12.0
+
+### New formats
+
+- **Blue System Integration IceRadar** files (`.h5`, `.hdf5`) (#525).
+  A file of several lines needs `--lines` (`lines=` in Python) to choose
+  one, several merged in order, or `all`; one line is written as
+  `<stem>_line_<N>.nc`. The antenna frequency must be given, and the date
+  comes from the acquisition PC's clock with a warning unless
+  `--override-date` gives it. In `batch-process` each line is a recording
+  of its own, with a `{line}` id placeholder (#536).
+- **Multi-channel GSSI** files, which were refused, are read one channel
+  at a time with `--channel N` (`channel=`), numbered from 1 (#533).
+  Channels are never merged; each is written as `<stem>_ch_<N>.nc`, and
+  `batch-process` makes one output per channel, with a `{channel}` id
+  placeholder. `300/800D` dual-frequency antennas read as 800 MHz on
+  channel 1 and 300 MHz on channel 2.
+- **VIRL-7** `.DSR` files (`virl`) (#540). They record neither the
+  sampling frequency, the date nor the antenna, so those come from a
+  sidecar (below) or `--override-date`/`--override-antenna-mhz`. A
+  warning is given when the GPS gave one fix for every trace.
+- **The GUI reads all three** (#541): the Process dialog lists the lines
+  or channels of an uploaded file and lets one be chosen, and has
+  Sampling frequency and Date boxes for files that do not record them.
+  Bulk ingest makes each line and channel a recording. The raw file
+  pickers accept `.h5`, `.hdf5` and `.dsr`.
+
+### Recording sidecars
+
+- **A `<stem>.ridal.toml` beside a recording** overrides its header's
+  antenna frequency and separation (#527, #528), so recordings of one
+  survey can differ without `--override-*` options. `[lines.<N>]` and
+  `[channels.<N>]` tables set values per IceRadar line or GSSI channel.
+  Arguments take precedence, with a warning when they disagree.
+  `--sidecar PATH` and `--no-sidecar` (`sidecar=`) choose another or
+  none, and `ridal info` shows what a sidecar overrode.
+- **`sampling_mhz` and `date`** keys (#539) give the digitizer's sampling
+  frequency, for any format, and the date of an IceRadar, pulseEKKO or
+  VIRL recording.
+- **`ridal override`** (`ridal.override()`) writes sidecars for many
+  recordings at once, keeping comments and layout of hand-written ones,
+  checking every one before writing any; `--unset` removes a value and
+  `--template` writes a commented sidecar listing every key (#530).
+- **On a server**, a sidecar uploaded with a recording belongs to it, and
+  its values are kept with the source and included in its raw-data zip
+  (#529).
+- See {doc}`../reference/sidecar`.
+
+### Processing
+
+- **`zero_corr(amplitude)`** puts time zero where the record first leaves
+  its level by a fraction of the direct wave (`fraction=0.01`),
+  interpolated between samples, and warns when the result is sensitive to
+  the fraction (#546). The default method stays `coppens`.
+- **GSSI GPS dates off by a GPS week-number rollover** (1024 weeks) are
+  corrected from the file's creation date, with a warning (#531).
+- **A pulseEKKO file whose last trace is missing**, as an interrupted
+  recording leaves it, is read without that trace, with a warning, where
+  it was refused as "File too short" (#505, #552).
+- `--override-date` also applies to pulseEKKO, whose older `.gp2` dates
+  were typed by hand (#525).
+- GSSI files, which do not record the antenna separation, now warn that
+  it is taken as 0 m, as other such formats do (#525).
+
+### Server and GUI
+
+- **Change a radargram's id** (#500, #551): Edit → Change id… on a
+  catalog card copies the radargram under the new id, transfers the picks
+  and removes the old one, with a confirmation that is stronger when
+  someone has been active on it recently. Each step is also its own route
+  (`POST …/copy`, `POST …/transfer`, `GET …/activity`) and Python client
+  method (`copy_radargram()`, `transfer_picks()`). A save to a radargram
+  whose picks were moved is refused with `dataset_moved`, naming the new
+  id.
+- The viewer's cursor readout shows the sample (#542), the metadata
+  dialog shows the effective antenna separation in its row (#497), the
+  pattern help on the ingest page lists `{channel}`, `{line}` and their
+  `per=` forms (#544), and the steps box no longer paints over the
+  Process dialog's buttons (#543) (#545).
+
+### Platforms
+
+- **Windows**: external tools no longer inherit open NetCDF files, which
+  could make a rename fail with os error 32 (#534, #538).
+
 ## 0.11.0
 
 ### Positions and coordinates
