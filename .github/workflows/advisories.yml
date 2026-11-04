@@ -1,0 +1,51 @@
+name: Dependency advisories
+
+# What this checks depends on Cargo.lock and on the RustSec database, not on
+# the code: a change elsewhere cannot make it fail, and a new advisory can
+# appear while the repository is quiet. So it runs when the dependencies
+# change, and weekly against main for advisories published in between.
+on:
+  push:
+    branches: [main]
+    paths:
+    - Cargo.toml
+    - Cargo.lock
+    - deny.toml
+    - .github/workflows/advisories.yml
+  pull_request:
+    branches: [main]
+    paths:
+    - Cargo.toml
+    - Cargo.lock
+    - deny.toml
+    - .github/workflows/advisories.yml
+  schedule:
+  - cron: 23 5 * * 1
+  workflow_dispatch:
+
+concurrency:
+  # A new push to a pull request cancels the run for its previous commit.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: Dependency advisories
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@v6
+
+    # cargo-deny reads Cargo.lock and the RustSec advisory database; it does
+    # not build the crate, so no GDAL/PROJ/HDF5 and no compilation here.
+    - uses: dtolnay/rust-toolchain@stable
+
+    - uses: taiki-e/install-action@cargo-deny
+
+    # Only advisories: a RustSec advisory against any locked crate fails the
+    # build. Exceptions with no fix available are listed, with reasons, in
+    # deny.toml. Bans, licenses and sources are out of scope for this job.
+    - run: cargo deny check advisories

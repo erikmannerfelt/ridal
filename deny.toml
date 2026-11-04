@@ -1,4 +1,4 @@
-# cargo-deny configuration for the dependency-advisory audit (rust.yml).
+# cargo-deny configuration for the dependency-advisory audit (advisories.yml).
 #
 # CI runs `cargo deny check advisories`, which fails on any RustSec advisory
 # against the crates in Cargo.lock. This is a blocking check: a new advisory
