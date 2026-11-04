@@ -42,7 +42,7 @@ pub use iceradar::{
     IceRadarDate,
 };
 pub use mala::{load_cor, load_rad, load_rd3};
-pub use pulseekko::{load_pe_dt1, load_pe_gp2, load_pe_hd};
+pub use pulseekko::{load_pe_dt1, load_pe_gp2, load_pe_hd, pe_missing_last_trace};
 #[cfg(test)]
 pub(crate) use virl::test_dsr;
 pub use virl::{load_virl_data, load_virl_meta, load_virl_positions, virl_fix_count};

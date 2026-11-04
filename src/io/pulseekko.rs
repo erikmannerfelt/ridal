@@ -6,6 +6,32 @@ use ndarray::Array2;
 
 use crate::{formats, gpr};
 
+/// The bytes of one trace's header in a `.dt1`.
+const TRACE_HEADER_BYTES: usize = 25 * 4 + 28; // 128
+
+/// How many traces to read from a `.dt1` of `len` bytes whose header
+/// promises `promised` traces of `height` samples (#505).
+///
+/// A recording that was interrupted can end without its last trace: the
+/// header counts it, but the data file has only its 128-byte trace header,
+/// part of it, or nothing of it at all (all three are in old pulseEKKO
+/// data). That trace is dropped. A file shorter than that is refused, as
+/// before: more than one trace missing is not an interrupted last trace.
+pub(crate) fn readable_traces(len: usize, height: usize, promised: usize) -> Result<usize, String> {
+    let bytes_per_trace = TRACE_HEADER_BYTES + height * 2;
+    let whole = len / bytes_per_trace;
+    if whole >= promised {
+        return Ok(promised);
+    }
+    if whole + 1 == promised && whole > 0 {
+        return Ok(whole);
+    }
+    Err(format!(
+        "File too short: got {len} bytes, expected at least {} bytes for {promised} traces",
+        promised * bytes_per_trace
+    ))
+}
+
 pub fn load_pe_dt1(
     filepath: &Path,
     height: usize,
@@ -13,23 +39,11 @@ pub fn load_pe_dt1(
 ) -> Result<Array2<f32>, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(filepath)?;
 
-    const TRACE_HEADER_BYTES: usize = 25 * 4 + 28; // 128
-
     // Based on one header. Should probably be set from the header itself.
     // Also, it's a bit unclear if it should be halved or not...
     let bits_to_millivolt = 104.12 / i16::MAX as f32;
 
-    let bytes_per_trace = TRACE_HEADER_BYTES + height * 2;
-    let expected_len = width * bytes_per_trace;
-
-    if bytes.len() < expected_len {
-        return Err(format!(
-            "File too short: got {} bytes, expected at least {} bytes",
-            bytes.len(),
-            expected_len
-        )
-        .into());
-    }
+    let width = readable_traces(bytes.len(), height, width)?;
 
     let mut data: Vec<f32> = Vec::with_capacity(height * width);
     let mut offset: usize = 0;
@@ -50,6 +64,33 @@ pub fn load_pe_dt1(
     }
 
     Ok(Array2::from_shape_vec((width, height), data)?.reversed_axes())
+}
+
+/// The traces a pulseEKKO `.hd` promises and those its `.dt1` holds, when
+/// the last one is missing (#505), for the warning that it was dropped.
+/// `None` when the file is whole, or too short to read at all, which
+/// reading it then says.
+pub fn pe_missing_last_trace(header: &Path) -> Result<Option<(usize, usize)>, Box<dyn Error>> {
+    let content = std::fs::read_to_string(header)?;
+    let field = |key: &str| -> Option<usize> {
+        content
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .find(|(k, _)| k.trim() == key)
+            .and_then(|(_, v)| v.trim().parse().ok())
+    };
+    let (Some(height), Some(promised)) = (field("NUMBER OF PTS/TRC"), field("NUMBER OF TRACES"))
+    else {
+        return Ok(None);
+    };
+    let Some(dt1) = formats::find_neighbor_case_insensitive(header, "dt1") else {
+        return Ok(None);
+    };
+    let len = std::fs::metadata(&dt1)?.len() as usize;
+    Ok(match readable_traces(len, height, promised) {
+        Ok(held) if held < promised => Some((promised, held)),
+        _ => None,
+    })
 }
 
 pub fn load_pe_hd(
@@ -208,7 +249,72 @@ pub fn load_pe_gp2(
 
 #[cfg(test)]
 mod tests {
-    use super::{load_pe_gp2, load_pe_hd};
+    use super::{load_pe_dt1, load_pe_gp2, load_pe_hd, pe_missing_last_trace, readable_traces};
+
+    /// A `.dt1` of `traces` traces of `height` samples, each trace's samples
+    /// all its 1-based number, followed by `tail` bytes of a trace that was
+    /// not finished.
+    fn dt1_bytes(height: usize, traces: usize, tail: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for trace in 1..=traces {
+            let mut header = [0u8; super::TRACE_HEADER_BYTES];
+            header[..4].copy_from_slice(&(trace as f32).to_le_bytes());
+            bytes.extend_from_slice(&header);
+            for _ in 0..height {
+                bytes.extend_from_slice(&(trace as i16).to_le_bytes());
+            }
+        }
+        bytes.extend(std::iter::repeat_n(0u8, tail));
+        bytes
+    }
+
+    #[test]
+    fn a_missing_last_trace_is_dropped_and_no_more() {
+        // #505: interrupted recordings whose header counts one trace more
+        // than the data file holds, with nothing of the last trace, its
+        // header only, or part of its samples.
+        let (height, per) = (4, super::TRACE_HEADER_BYTES + 8);
+        assert_eq!(readable_traces(3 * per, height, 3), Ok(3));
+        assert_eq!(readable_traces(3 * per + 5, height, 3), Ok(3));
+        for tail in [0, super::TRACE_HEADER_BYTES, super::TRACE_HEADER_BYTES + 6] {
+            assert_eq!(readable_traces(2 * per + tail, height, 3), Ok(2), "{tail}");
+        }
+        // Two missing is not an interrupted last trace, and a file with no
+        // whole trace is nothing to read.
+        assert!(readable_traces(per, height, 3).is_err());
+        assert!(readable_traces(per - 1, height, 1).is_err());
+    }
+
+    #[test]
+    fn a_dt1_without_its_last_trace_reads_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let dt1 = dir.path().join("line.DT1");
+        std::fs::write(&dt1, dt1_bytes(4, 2, super::TRACE_HEADER_BYTES)).unwrap();
+        let data = load_pe_dt1(&dt1, 4, 3).unwrap();
+        assert_eq!(data.shape(), &[4, 2]);
+        let scale = 104.12 / i16::MAX as f32;
+        assert_eq!(data[[0, 0]], scale);
+        assert_eq!(data[[3, 1]], 2. * scale);
+
+        std::fs::write(&dt1, dt1_bytes(4, 1, 0)).unwrap();
+        let error = load_pe_dt1(&dt1, 4, 3).unwrap_err().to_string();
+        assert!(error.contains("File too short"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_last_trace_is_reported_from_the_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let hd = dir.path().join("line.HD");
+        std::fs::write(&hd, "NUMBER OF TRACES   = 3\r\nNUMBER OF PTS/TRC  = 4\r\n").unwrap();
+        let dt1 = dir.path().join("line.DT1");
+        std::fs::write(&dt1, dt1_bytes(4, 3, 0)).unwrap();
+        assert_eq!(pe_missing_last_trace(&hd).unwrap(), None);
+        std::fs::write(&dt1, dt1_bytes(4, 2, 0)).unwrap();
+        assert_eq!(pe_missing_last_trace(&hd).unwrap(), Some((3, 2)));
+        // Too short to read at all is the reader's to say.
+        std::fs::write(&dt1, dt1_bytes(4, 1, 0)).unwrap();
+        assert_eq!(pe_missing_last_trace(&hd).unwrap(), None);
+    }
 
     /// Malformed `.gp2` lines used to panic rather than error: a short data
     /// line indexed `data[4]` out of bounds, a data line before any `Date=`

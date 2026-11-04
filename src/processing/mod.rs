@@ -233,6 +233,19 @@ pub(crate) fn assumptions(
             ));
         }
     }
+    for r in resolved
+        .iter()
+        .filter(|r| r.kind == formats::FormatKind::PulseEkko)
+    {
+        if let Some((promised, held)) = crate::io::pe_missing_last_trace(&r.header)? {
+            warnings.push(format!(
+                "Warning: {} says it has {promised} traces, but its data file ends before \
+                 the last one, as an interrupted recording does; the {held} whole traces \
+                 are read.",
+                describe_input(r)
+            ));
+        }
+    }
     if options.override_date.is_none() {
         for r in resolved
             .iter()
