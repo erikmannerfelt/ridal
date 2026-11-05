@@ -632,7 +632,7 @@
         "tags": [
           "Server"
         ],
-        "summary": "The server is up, and the Ridal version it runs. Never requires a login,\nso a client can check what it is talking to before signing in.",
+        "summary": "The server is up, the Ridal version it runs and, when the build recorded\nit, the commit it was built from. Never requires a login, so a client can\ncheck what it is talking to before signing in.",
         "operationId": "health",
         "responses": {
           "200": {
@@ -14545,6 +14545,13 @@
           "version": {
             "type": "string",
             "description": "The Ridal version the server runs, such as `0.7.1`. Health needs no\nlogin, so a client can check what it is talking to before signing in."
+          },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The full hash of the commit the server was built from, with `-dirty`\nappended if the tree had uncommitted changes, or `null` when the build\ndid not record it (`RIDAL_GIT_COMMIT`). Between releases `version`\nnames the last release, so this is what says exactly which code runs."
           }
         }
       },

@@ -1525,6 +1525,10 @@ mod tests {
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "ok");
         assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            json["commit"],
+            serde_json::to_value(option_env!("RIDAL_GIT_COMMIT")).unwrap()
+        );
     }
 
     #[test]
