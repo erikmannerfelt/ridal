@@ -14535,7 +14535,8 @@
         "description": "`GET /api/v1/health`.",
         "required": [
           "status",
-          "version"
+          "version",
+          "commit"
         ],
         "properties": {
           "status": {

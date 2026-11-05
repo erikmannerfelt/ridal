@@ -208,6 +208,7 @@ pub(super) struct Health {
     /// appended if the tree had uncommitted changes, or `null` when the build
     /// did not record it (`RIDAL_GIT_COMMIT`). Between releases `version`
     /// names the last release, so this is what says exactly which code runs.
+    #[schema(required = true)]
     commit: Option<&'static str>,
 }
 
