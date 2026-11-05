@@ -12,6 +12,12 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, fenix }:
+    let
+      # `rev` is set when the tree is clean, as it always is when building
+      # `github:erikmannerfelt/ridal/<commit>`; a local build of a modified
+      # tree has `dirtyRev` (`<commit>-dirty`) instead.
+      rev = self.rev or self.dirtyRev or null;
+    in
     flake-utils.lib.eachDefaultSystem
       (system:
         let
@@ -30,7 +36,7 @@
           ];
 
           ridal = import ./default.nix {
-            inherit pkgs rustToolchain;
+            inherit pkgs rustToolchain rev;
           };
         in
         {
@@ -48,6 +54,7 @@
         ridal = import ./default.nix {
           pkgs = final;
           rustToolchain = null;
+          inherit rev;
         };
       };
     };

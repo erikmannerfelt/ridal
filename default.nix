@@ -1,4 +1,10 @@
-{ pkgs ? import <nixpkgs> { }, gdal ? null, rustToolchain ? null }:
+{ pkgs ? import <nixpkgs> { }
+, gdal ? null
+, rustToolchain ? null
+  # The commit being built, reported by the server's health check. The flake
+  # passes its own revision; a build that does not know it leaves it out.
+, rev ? null
+}:
 
 let
   # The rust gdal system is a bit hard to compile without precompiled bindings.
@@ -21,7 +27,7 @@ let
 
 in
 
-rustPlatform.buildRustPackage {
+rustPlatform.buildRustPackage ({
   pname = manifest.name;
   version = manifest.version;
 
@@ -46,4 +52,6 @@ rustPlatform.buildRustPackage {
 
   # libz-sys fails when compiling, so testing is disabled for now
   doCheck = false;
-}
+} // pkgs.lib.optionalAttrs (rev != null) {
+  RIDAL_GIT_COMMIT = rev;
+})

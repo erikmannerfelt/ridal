@@ -204,10 +204,17 @@ pub(super) struct Health {
     /// The Ridal version the server runs, such as `0.7.1`. Health needs no
     /// login, so a client can check what it is talking to before signing in.
     version: &'static str,
+    /// The full hash of the commit the server was built from, with `-dirty`
+    /// appended if the tree had uncommitted changes, or `null` when the build
+    /// did not record it (`RIDAL_GIT_COMMIT`). Between releases `version`
+    /// names the last release, so this is what says exactly which code runs.
+    #[schema(required = true)]
+    commit: Option<&'static str>,
 }
 
-/// The server is up, and the Ridal version it runs. Never requires a login,
-/// so a client can check what it is talking to before signing in.
+/// The server is up, the Ridal version it runs and, when the build recorded
+/// it, the commit it was built from. Never requires a login, so a client can
+/// check what it is talking to before signing in.
 #[utoipa::path(
     get,
     path = "/api/v1/health",
@@ -219,6 +226,9 @@ pub async fn health() -> impl IntoResponse {
     Json(Health {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
+        // Set by the Nix flake from the commit it builds; a plain `cargo
+        // build` sets nothing, so it is `null` there rather than a guess.
+        commit: option_env!("RIDAL_GIT_COMMIT"),
     })
 }
 

@@ -226,6 +226,22 @@ Reading the page does not reset the heartbeat's counts, so the log stays
 the same whether anyone looks or not. With `--heartbeat-seconds 0`, the
 counts there are since the server started.
 
+## Which code it runs
+
+`GET /api/v1/health` needs no login and reports the Ridal `version` a server
+runs and the `commit` it was built from. Between releases, `version` still
+names the last release, so a server built from a later commit reports that
+release's version, and only `commit` tells the two apart.
+
+A Nix build of the flake records the commit itself, such as
+`nix build github:erikmannerfelt/ridal/<commit>`; a build of a tree with
+uncommitted changes reports it with `-dirty` appended. Other builds report
+`null` unless `RIDAL_GIT_COMMIT` is set when Ridal is compiled:
+
+```console
+$ RIDAL_GIT_COMMIT=$(git rev-parse HEAD) cargo build --release
+```
+
 ## Keeping it running
 
 Ridal is a foreground process; stopping it stops the server. On Ctrl+C or

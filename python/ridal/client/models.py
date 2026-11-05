@@ -42,11 +42,19 @@ class Health:
 
     status: str
     version: str
+    #: The commit the server was built from (``-dirty`` if its tree had
+    #: uncommitted changes), or ``None`` if its build did not record it.
+    #: Older servers do not send it.
+    commit: str | None
 
     @classmethod
     def from_json(cls, data: Any) -> "Health":
         return _parse(
-            "health", data, lambda d: cls(status=d["status"], version=d["version"])
+            "health",
+            data,
+            lambda d: cls(
+                status=d["status"], version=d["version"], commit=d.get("commit")
+            ),
         )
 
 
