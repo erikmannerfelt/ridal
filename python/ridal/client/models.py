@@ -1107,6 +1107,8 @@ class SidecarOverrides:
     date: str | None = None
     """The UTC date of a recording whose file records only a time of day,
     ``YYYY-MM-DD``."""
+    altitude_offset_m: float | None = None
+    """m, added to every altitude of the recording's own positions."""
 
     @classmethod
     def from_json(cls, data: Any) -> "SidecarOverrides":
@@ -1118,6 +1120,7 @@ class SidecarOverrides:
                 antenna_separation_m=d.get("antenna_separation_m"),
                 sampling_mhz=d.get("sampling_mhz"),
                 date=d.get("date"),
+                altitude_offset_m=d.get("altitude_offset_m"),
             ),
         )
 
@@ -1208,6 +1211,9 @@ class Source:
     """The UTC date, ``YYYY-MM-DD``, of recordings whose positions record
     only a time of day (IceRadar, pulseEKKO and VIRL), overriding the date
     their files give: VIRL files give none. ``None`` takes it from them."""
+    altitude_offset_m: float | None = None
+    """m added to every altitude of the recordings' own positions, in
+    place of their sidecars'. ``None`` takes it from the sidecars."""
 
     @classmethod
     def from_json(cls, data: Any) -> "Source":
@@ -1223,6 +1229,7 @@ class Source:
                 names=None if d["names"] is None else SourceNames.from_json(d["names"]),
                 sampling_mhz=d.get("sampling_mhz"),
                 date=d.get("date"),
+                altitude_offset_m=d.get("altitude_offset_m"),
             ),
         )
 

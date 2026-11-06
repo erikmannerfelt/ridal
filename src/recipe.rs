@@ -161,6 +161,9 @@ pub struct Recipe {
     /// MHz: the digitizer's, given for the run (#559).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sampling_mhz_override: Option<f32>,
+    /// m, added to the recorded altitudes, given for the run (#558).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub altitude_offset_m_override: Option<f32>,
     pub steps: Vec<RecipeStep>,
 }
 
@@ -192,9 +195,9 @@ impl Recipe {
             dem: inputs.dem.clone(),
             dem_resampling: match &gpr.location.correction {
                 LocationCorrection::Dem { resampling, .. } => *resampling,
-                LocationCorrection::None | LocationCorrection::InCoordinates { .. } => {
-                    crate::dem::Resampling::default()
-                }
+                LocationCorrection::None
+                | LocationCorrection::InCoordinates { .. }
+                | LocationCorrection::AltitudeOffset { .. } => crate::dem::Resampling::default(),
             },
             crs: gpr.location.crs.clone(),
             medium_velocity: gpr.metadata.medium_velocity,
@@ -205,6 +208,7 @@ impl Recipe {
                 .date
                 .map(|date| date.format("%Y-%m-%d").to_string()),
             sampling_mhz_override: inputs.arguments.sampling_mhz,
+            altitude_offset_m_override: inputs.arguments.altitude_offset_m,
             steps,
         }))
     }
@@ -283,6 +287,10 @@ impl Recipe {
             put(&mut hasher, b"sampling_mhz_override");
             put(&mut hasher, &mhz.to_le_bytes());
         }
+        if let Some(m) = self.altitude_offset_m_override {
+            put(&mut hasher, b"altitude_offset_m_override");
+            put(&mut hasher, &m.to_le_bytes());
+        }
         // Hashed by value, not by the sidecar's bytes, so a comment or a
         // reformatted file is the same revision.
         if self.bundles.iter().any(|b| b.overrides.is_some()) {
@@ -315,6 +323,10 @@ impl Recipe {
                 if let Some(date) = overrides.date {
                     put(&mut hasher, b"date");
                     put(&mut hasher, date.format("%Y-%m-%d").to_string().as_bytes());
+                }
+                if let Some(m) = overrides.altitude_offset_m {
+                    put(&mut hasher, b"altitude_offset_m");
+                    put(&mut hasher, &m.to_le_bytes());
                 }
             }
         }
@@ -432,6 +444,7 @@ mod tests {
             antenna_separation_override: None,
             date_override: None,
             sampling_mhz_override: None,
+            altitude_offset_m_override: None,
             steps: vec![RecipeStep {
                 step: "dewow(window=auto method=median)".to_string(),
                 version: 1,
@@ -541,6 +554,23 @@ mod tests {
         assert!(!recipe().to_json().contains("sampling_mhz_override"));
         let read: Recipe = serde_json::from_str(&sampling_argument.to_json()).unwrap();
         assert_eq!(read, sampling_argument);
+        // An altitude offset, from the sidecar or for the run (#558), is
+        // each its own recipe, and the same value as a sampling frequency
+        // is not.
+        let mut offset = recipe();
+        offset.bundles[0].overrides = Some(crate::sidecar::Overrides {
+            altitude_offset_m: Some(4.),
+            ..Default::default()
+        });
+        assert_ne!(offset.hash(), sampling.hash());
+        assert_ne!(offset.hash(), recipe().hash());
+        let mut offset_argument = recipe();
+        offset_argument.altitude_offset_m_override = Some(4.);
+        assert_ne!(offset_argument.hash(), offset.hash());
+        assert_ne!(offset_argument.hash(), sampling_argument.hash());
+        assert!(!recipe().to_json().contains("altitude_offset_m_override"));
+        let read: Recipe = serde_json::from_str(&offset_argument.to_json()).unwrap();
+        assert_eq!(read, offset_argument);
         let read: Recipe = serde_json::from_str(&dated.to_json()).unwrap();
         assert_eq!(read, dated);
         assert!(dated.to_json().contains(r#""date":"2014-04-05""#));
@@ -549,7 +579,7 @@ mod tests {
         assert_eq!(read, overridden);
         assert!(overridden
             .to_json()
-            .contains(r#""overrides":{"antenna_mhz":null,"antenna_separation_m":4.0,"sampling_mhz":null,"date":null}"#));
+            .contains(r#""overrides":{"antenna_mhz":null,"antenna_separation_m":4.0,"sampling_mhz":null,"date":null,"altitude_offset_m":null}"#));
     }
 
     #[test]

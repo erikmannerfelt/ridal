@@ -3141,6 +3141,7 @@ mod tests {
                     antenna_separation_m: Some(2.5),
                     sampling_mhz: Some(200.),
                     date: None,
+                    altitude_offset_m: None,
                 },
                 "{command}"
             );

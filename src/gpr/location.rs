@@ -39,6 +39,39 @@ pub enum LocationCorrection {
     InCoordinates {
         path: PathBuf,
     },
+    /// Altitudes from the recording's own positions with a constant added
+    /// (`altitude_offset_m`, #558): the distinct offsets of the recordings
+    /// merged, in order, with 0 for one without, so a radargram of
+    /// recordings with different offsets says so.
+    AltitudeOffset {
+        metres: Vec<f32>,
+    },
+}
+
+impl LocationCorrection {
+    /// The correction of a radargram merged from one with `self` and one
+    /// with `other`. Only altitude offsets combine; a DEM is given for the
+    /// whole run, so the two have the same one.
+    pub fn merged(&self, other: &LocationCorrection) -> LocationCorrection {
+        let offsets = |correction: &LocationCorrection| match correction {
+            LocationCorrection::None => Some(vec![0.]),
+            LocationCorrection::AltitudeOffset { metres } => Some(metres.clone()),
+            LocationCorrection::Dem { .. } | LocationCorrection::InCoordinates { .. } => None,
+        };
+        let (Some(mut metres), Some(more)) = (offsets(self), offsets(other)) else {
+            return self.clone();
+        };
+        for m in more {
+            if !metres.contains(&m) {
+                metres.push(m);
+            }
+        }
+        if metres == [0.] {
+            LocationCorrection::None
+        } else {
+            LocationCorrection::AltitudeOffset { metres }
+        }
+    }
 }
 
 /// How many fixes at an end of a track set the rate its times are
@@ -79,6 +112,21 @@ impl TimeSource {
 }
 
 impl GPRLocation {
+    /// Add `metres` to every altitude, as `altitude_offset_m` asks (#558).
+    /// Positions read from the recording's own files only, which start
+    /// without a correction; 0 changes nothing.
+    pub(crate) fn offset_altitudes(&mut self, metres: f32) {
+        if metres == 0. {
+            return;
+        }
+        for point in &mut self.cor_points {
+            point.altitude += f64::from(metres);
+        }
+        self.correction = LocationCorrection::AltitudeOffset {
+            metres: vec![metres],
+        };
+    }
+
     /// Get a coordinate of a trace by interp- or extrapolation
     ///
     /// If the trace_n is lower than or equal to the first trace, the first coordinate is given

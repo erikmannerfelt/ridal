@@ -9675,7 +9675,7 @@
             }
           },
           "400": {
-            "description": "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz` or `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates).",
+            "description": "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz`, `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates) or `invalid_altitude_offset` (not a number, or for recordings whose positions are a `.coords.csv`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -16264,7 +16264,8 @@
           "antenna_mhz",
           "antenna_separation_m",
           "sampling_mhz",
-          "date"
+          "date",
+          "altitude_offset_m"
         ],
         "properties": {
           "antenna_mhz": {
@@ -16298,6 +16299,14 @@
             ],
             "format": "date",
             "description": "The UTC date of a recording whose file records only a time of day,\nas `YYYY-MM-DD`."
+          },
+          "altitude_offset_m": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "m, added to every altitude read from the recording's own positions\n(#558)."
           }
         },
         "additionalProperties": false
@@ -18201,6 +18210,7 @@
           "antenna_separation",
           "sampling_mhz",
           "date",
+          "altitude_offset_m",
           "names"
         ],
         "properties": {
@@ -18260,6 +18270,14 @@
             ],
             "format": "date",
             "description": "The UTC date of the recordings whose positions record only a time\nof day (IceRadar, pulseEKKO and VIRL, but not one with a\n`.coords.csv`), in place of the date their files give; `None` takes\nit from the files, or a recording's sidecar."
+          },
+          "altitude_offset_m": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "m added to every altitude of the recordings' own positions (#558),\nin place of their sidecars'; `None` takes it from the sidecars. Not\nfor a recording whose positions are a `.coords.csv`."
           },
           "names": {
             "oneOf": [
@@ -19552,6 +19570,14 @@
               "null"
             ],
             "description": "The UTC date, `YYYY-MM-DD`, of recordings whose positions record\nonly a time of day (IceRadar, pulseEKKO and VIRL), overriding the\ndate their files give: needed for VIRL files, which give none."
+          },
+          "altitude_offset_m": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "m added to every altitude of the recordings' own positions, in place\nof their sidecars' `altitude_offset_m`: the take-off point's\nelevation for altitudes relative to take-off, for example. Not for\nrecordings whose positions are a `.coords.csv`."
           },
           "names": {
             "oneOf": [

@@ -92,6 +92,12 @@ pub struct Source {
         schema(value_type = Option<String>, format = Date, required = true)
     )]
     pub date: Option<chrono::NaiveDate>,
+    /// m added to every altitude of the recordings' own positions (#558),
+    /// in place of their sidecars'; `None` takes it from the sidecars. Not
+    /// for a recording whose positions are a `.coords.csv`.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub altitude_offset_m: Option<f32>,
     /// What to call the radargram while it has none of its own: an id
     /// with raw data and no processed file yet (#382 phase 7). Once it is
     /// served, the catalog's names win and renaming is an override.
@@ -125,8 +131,10 @@ impl Source {
     }
 
     /// The bundles as they are read: each recording's sidecar values, with
-    /// the source's sampling frequency and date in place of its own (#537),
-    /// the date only for a recording whose positions are read with one.
+    /// the source's sampling frequency, date and altitude offset in place
+    /// of its own (#537, #558), the date only for a recording whose
+    /// positions are read with one, and the offset only for one whose
+    /// positions are its own.
     /// What [`materialize_bundles`] is given, so that every read of the
     /// source (a draft, a batch, its raw data's zip) is of the same thing.
     pub fn bundles_to_read(&self) -> Vec<Bundle> {
@@ -137,6 +145,10 @@ impl Source {
                 overrides.sampling_mhz = self.sampling_mhz.or(overrides.sampling_mhz);
                 if bundle_takes_date(bundle) {
                     overrides.date = self.date.or(overrides.date);
+                }
+                if !bundle_has_coords_csv(bundle) {
+                    overrides.altitude_offset_m =
+                        self.altitude_offset_m.or(overrides.altitude_offset_m);
                 }
                 Bundle {
                     overrides: Some(overrides).filter(|o| !o.is_empty()),
@@ -174,10 +186,16 @@ impl Source {
 /// `input::load_positions` decides: by its format, unless a `.coords.csv`
 /// gives its positions, with dates of their own.
 pub fn bundle_takes_date(bundle: &Bundle) -> bool {
-    let csv = bundle.files.iter().any(|f| {
+    !bundle_has_coords_csv(bundle)
+        && crate::formats::kind_named(&bundle.format).is_some_and(crate::formats::takes_date)
+}
+
+/// Whether a recording's positions are a `.coords.csv` rather than its
+/// own, whose altitudes take no `altitude_offset_m` (#558).
+pub fn bundle_has_coords_csv(bundle: &Bundle) -> bool {
+    bundle.files.iter().any(|f| {
         f.role == FileRole::Coordinates && crate::formats::is_coords_csv(Path::new(&f.file.name))
-    });
-    !csv && crate::formats::kind_named(&bundle.format).is_some_and(crate::formats::takes_date)
+    })
 }
 
 /// A source's link to one of the project's [`Dem`]s: which, and its file
@@ -1045,6 +1063,7 @@ mod tests {
             antenna_separation: None,
             sampling_mhz: Some(200.),
             date,
+            altitude_offset_m: Some(-1.5),
             names: None,
         };
         let read: Vec<_> = source
@@ -1057,6 +1076,11 @@ mod tests {
             read.iter().map(|o| o.date).collect::<Vec<_>>(),
             [date, None, None],
             "a .coords.csv and a RAMAC file give their own dates"
+        );
+        assert_eq!(
+            read.iter().map(|o| o.altitude_offset_m).collect::<Vec<_>>(),
+            [Some(-1.5), None, Some(-1.5)],
+            "a .coords.csv's altitudes are used as they are (#558)"
         );
         // As a recipe of it records them, so changing them makes it stale.
         assert_eq!(source.expected_bundles()[0].overrides, Some(read[0]));
@@ -1088,6 +1112,7 @@ mod tests {
             antenna_separation: separation,
             sampling_mhz: None,
             date: None,
+            altitude_offset_m: None,
             names: None,
         };
         assert_eq!(source(None, None).expected_bundles(), bundles);
@@ -1181,6 +1206,7 @@ mod tests {
             antenna_separation: None,
             sampling_mhz: None,
             date: None,
+            altitude_offset_m: None,
             names: None,
         };
         write_source(&store, &id, &source, &Expectation::Absent).unwrap();
@@ -1253,6 +1279,7 @@ mod tests {
             antenna_separation: None,
             sampling_mhz: None,
             date: None,
+            altitude_offset_m: None,
             names: None,
         };
         write_source(&store, &line, &source, &Expectation::Absent).unwrap();

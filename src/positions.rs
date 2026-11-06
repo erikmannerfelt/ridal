@@ -196,7 +196,7 @@ pub fn build(request: &Request) -> Result<Built, String> {
             &resolved,
             &own_path,
             working_crs.as_ref(),
-            None,
+            &crate::sidecar::Overrides::default(),
         ) {
             Ok(own) => Some(own),
             Err(e) if given.is_some() || request.track.is_some() => {
@@ -360,7 +360,22 @@ pub fn build(request: &Request) -> Result<Built, String> {
         comments.push("Altitudes from the given positions.".to_string());
         Some(alt_origins(&fill(location), &traces_of(location)))
     } else if let Some(own) = &own {
-        comments.push(format!("Altitudes from {}.", file_name(&own_path)));
+        match &own.correction {
+            // Its sidecar's (#558), which a CSV is not given again.
+            crate::gpr::LocationCorrection::AltitudeOffset { metres } => {
+                let offset = metres[0];
+                comments.push(format!(
+                    "Altitudes from {}, plus its sidecar's altitude_offset_m = {offset}.",
+                    file_name(&own_path)
+                ));
+                warnings.push(format!(
+                    "the altitudes include the sidecar's altitude_offset_m = {offset}, which \
+                     is refused with a coordinate CSV; remove it with ridal override --unset \
+                     altitude_offset_m before processing with this CSV"
+                ));
+            }
+            _ => comments.push(format!("Altitudes from {}.", file_name(&own_path))),
+        }
         Some(alt_origins(&fill(own), &traces_of(own)))
     } else {
         warnings.push(
@@ -906,7 +921,7 @@ mod tests {
             &resolved,
             &formats::own_positions(&resolved),
             None,
-            None,
+            &crate::sidecar::Overrides::default(),
         )
         .unwrap()
         .range_fill(0, TRACES as u32, 0.2);
@@ -922,6 +937,31 @@ mod tests {
             assert!((a.northing - b.northing).abs() < 1e-3);
             assert!((a.altitude - b.altitude).abs() <= 0.0005);
         }
+
+        // A sidecar's altitude offset (#558) is in the CSV's altitudes,
+        // and the CSV and a warning say so, since it is refused beside one.
+        std::fs::write(
+            rad.with_extension("ridal.toml"),
+            "[overrides]\naltitude_offset_m = 10\n",
+        )
+        .unwrap();
+        let offset = build(&request(rad.clone())).unwrap();
+        for (a, b) in offset.rows.iter().zip(&built.rows) {
+            let (a, b) = (a.alt.unwrap().0, b.alt.unwrap().0);
+            assert!((a - b - 10.).abs() <= 0.0005, "{a} {b}");
+        }
+        assert!(
+            offset
+                .comments
+                .iter()
+                .any(|c| c.contains("altitude_offset_m = 10")),
+            "{:?}",
+            offset.comments
+        );
+        let [warning] = &offset.warnings[..] else {
+            panic!("expected one warning: {:?}", offset.warnings);
+        };
+        assert!(warning.contains("--unset altitude_offset_m"), "{warning}");
     }
 
     #[test]

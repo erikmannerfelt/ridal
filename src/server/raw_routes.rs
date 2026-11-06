@@ -610,6 +610,12 @@ pub struct SourceBody {
     /// date their files give: needed for VIRL files, which give none.
     #[serde(default)]
     pub date: Option<String>,
+    /// m added to every altitude of the recordings' own positions, in place
+    /// of their sidecars' `altitude_offset_m`: the take-off point's
+    /// elevation for altitudes relative to take-off, for example. Not for
+    /// recordings whose positions are a `.coords.csv`.
+    #[serde(default)]
+    pub altitude_offset_m: Option<f32>,
     /// What to call the radargram until it is served (#382 phase 7).
     /// Absent keeps what the source had; `null` removes it.
     #[serde(default, deserialize_with = "super::preference_routes::present")]
@@ -693,7 +699,7 @@ fn source_crs(text: &str) -> Result<String, ApiError> {
     request_body = SourceBody,
     responses(
         (status = 200, description = "The source as saved, with its `ETag`.", body = SourceView),
-        (status = 400, description = "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz` or `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates).", body = ErrorBody),
+        (status = 400, description = "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz`, `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates) or `invalid_altitude_offset` (not a number, or for recordings whose positions are a `.coords.csv`).", body = ErrorBody),
         (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
     ),
     extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
@@ -732,6 +738,13 @@ pub async fn put_source(
         "sampling frequency (MHz)",
     )?;
     let date = body.date.as_deref().map(source_date).transpose()?;
+    let altitude_offset_m = body.altitude_offset_m;
+    if altitude_offset_m.is_some_and(|m| !m.is_finite()) {
+        return Err(ApiError::bad_request(
+            "invalid_altitude_offset",
+            "The altitude offset (m) must be a number, or empty to use the recorded altitudes.",
+        ));
+    }
     // Compared against `expected` with the rest when the new one is written.
     let previous = raw::read_source(project.documents(), &id)
         .or_internal("source_read_failed")?
@@ -772,6 +785,20 @@ pub async fn put_source(
                     ),
                 });
             }
+            if let (Some(_), Some(bundle)) = (
+                altitude_offset_m,
+                bundles.iter().find(|b| raw::bundle_has_coords_csv(b)),
+            ) {
+                return Err(Unreadable {
+                    code: "invalid_altitude_offset",
+                    message: format!(
+                        "An altitude offset is added to the altitudes of a recording's own \
+                         positions, but {}'s are a coordinate CSV, whose altitudes are used as \
+                         they are. Leave the altitude offset empty.",
+                        bundle.files[0].file.name
+                    ),
+                });
+            }
             let source = Source {
                 bundles,
                 crs: crs.clone(),
@@ -780,6 +807,7 @@ pub async fn put_source(
                 antenna_separation,
                 sampling_mhz,
                 date,
+                altitude_offset_m,
                 names,
             };
             let records = read_recordings(&data_dir, &source, &work.join("read"))?;

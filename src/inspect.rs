@@ -268,6 +268,12 @@ fn correction_summary(location: &GPRLocation) -> CorrectionSummary {
             kind: "dem_in_coordinates".to_string(),
             source: Some(path.to_string_lossy().to_string()),
         },
+        // The offset itself is the sidecar's or the run's, which `info`
+        // shows as such.
+        LocationCorrection::AltitudeOffset { .. } => CorrectionSummary {
+            kind: "altitude_offset".to_string(),
+            source: None,
+        },
     }
 }
 
@@ -377,6 +383,7 @@ fn sidecar_summary(
                 .filter(|_| applied.antenna_separation_m.is_some()),
             sampling_mhz: header_sampling.filter(|_| applied.sampling_mhz.is_some()),
             date: None,
+            altitude_offset_m: None,
         },
     }))
 }

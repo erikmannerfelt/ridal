@@ -79,12 +79,19 @@
     <label>Date (UTC)
       <input type="date" id="process-date" autocomplete="off">
     </label>
+    {#- A constant for every recorded altitude (#558). -#}
+    <label>Altitude offset (m)
+      <input type="number" id="process-altitude-offset" step="any"
+             placeholder="None" autocomplete="off">
+    </label>
     <p class="hint">
       Only where the files do not say it, or say it wrongly. Empty reads it
       from the files. VIRL files record none of the antenna frequency, the
       sampling frequency and the date, so they need all three. The date is
       for IceRadar, pulseEKKO and VIRL recordings, whose positions record
-      only the time of day.
+      only the time of day. The altitude offset is added to every recorded
+      altitude: the take-off elevation for altitudes relative to take-off,
+      or minus the height of a GNSS antenna above the radar antenna.
     </p>
   </div>
   {#- In both stages: a new radargram can start in a profile, and one being

@@ -17,6 +17,7 @@ class Overrides(TypedDict, total=False):
     antenna_separation_m: float | None
     sampling_mhz: float | None
     date: datetime.date | str | None
+    altitude_offset_m: float | None
 
 version: str
 __version__: str
