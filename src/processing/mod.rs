@@ -31,11 +31,9 @@ pub struct ProcessingOptions {
     pub render_width: Option<usize>,
     /// Render the topographically corrected view (#289).
     pub render_topo: bool,
-    pub override_antenna_mhz: Option<f32>,
-    pub override_antenna_separation: Option<f32>,
-    /// The UTC date of recordings whose files give only a time of day, or a
-    /// date that is wrong: IceRadar, pulseEKKO and VIRL.
-    pub override_date: Option<chrono::NaiveDate>,
+    /// Values given for the run that take precedence over every
+    /// recording's sidecar and header (`--override`, #559).
+    pub overrides: crate::sidecar::Overrides,
     /// Which lines of a multi-line file (IceRadar) to merge, in order.
     pub lines: Option<formats::LineSelection>,
     /// Which channel of multi-channel files (GSSI) to read, from 1.
@@ -67,9 +65,7 @@ impl Default for ProcessingOptions {
             render_profile: None,
             render_width: None,
             render_topo: false,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            override_date: None,
+            overrides: crate::sidecar::Overrides::default(),
             lines: None,
             channel: None,
             parts: None,
@@ -146,12 +142,7 @@ pub(crate) fn assumptions(
     options: &ProcessingOptions,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut warnings = Vec::new();
-    let given = crate::sidecar::Overrides {
-        antenna_mhz: options.override_antenna_mhz,
-        antenna_separation_m: options.override_antenna_separation,
-        sampling_mhz: None,
-        date: options.override_date,
-    };
+    let given = options.overrides;
     for r in resolved {
         let sidecar = crate::sidecar::overrides_of(r)?;
         for ((key, given), (_, beside)) in given.entries().into_iter().zip(sidecar.entries()) {
@@ -159,14 +150,9 @@ pub(crate) fn assumptions(
                 continue;
             };
             if given != beside {
-                let argument = crate::sidecar::OVERRIDE_KEYS
-                    .iter()
-                    .find(|k| k.name == key)
-                    .expect("every key is listed")
-                    .argument
-                    .expect("a key given as an argument has one");
                 warnings.push(format!(
-                    "Warning: {argument} {given} takes precedence over {key} = {beside} in {}.",
+                    "Warning: {key} = {given}, given for the run, takes precedence over \
+                     {key} = {beside} in {}.",
                     r.sidecar
                         .as_ref()
                         .map(|path| path.display().to_string())
@@ -175,7 +161,7 @@ pub(crate) fn assumptions(
             }
         }
     }
-    if options.override_antenna_separation.is_none() {
+    if options.overrides.antenna_separation_m.is_none() {
         let mut unrecorded = Vec::new();
         for r in resolved {
             if !formats::records_antenna_separation(r.kind)
@@ -195,9 +181,9 @@ pub(crate) fn assumptions(
                 .join(" and ");
             warnings.push(format!(
                 "Warning: {names} files do not record the antenna separation, so it is taken \
-                 as 0 m. Give it with --override-antenna-separation \
-                 (override_antenna_separation= in Python), or as antenna_separation_m in a \
-                 <stem>{} beside each recording.",
+                 as 0 m. Give it with --override antenna_separation_m=M \
+                 (overrides= in Python), or as antenna_separation_m in a <stem>{} beside \
+                 each recording.",
                 crate::sidecar::SIDECAR_SUFFIX
             ));
         }
@@ -246,7 +232,7 @@ pub(crate) fn assumptions(
             ));
         }
     }
-    if options.override_date.is_none() {
+    if options.overrides.date.is_none() {
         for r in resolved
             .iter()
             .filter(|r| r.kind == formats::FormatKind::IceRadar)
@@ -261,8 +247,8 @@ pub(crate) fn assumptions(
                 warnings.push(format!(
                     "Warning: {} is dated {date} by the acquisition PC's clock, which is local \
                      time and may be wrong; the GPS records only the time of day. Give the UTC \
-                     date with --override-date (override_date= in Python), or as date in its \
-                     sidecar, if it is not {date}.",
+                     date with --override date=YYYY-MM-DD (overrides= in Python), or as date \
+                     in its sidecar, if it is not {date}.",
                     describe_input(r)
                 ));
             }
@@ -363,14 +349,7 @@ pub fn build_processed_gpr_with_progress(
     // What each recording's sidecar decides, which the recipe records.
     let applied = resolved_inputs
         .iter()
-        .map(|resolved| {
-            crate::sidecar::applied(
-                resolved,
-                options.override_antenna_mhz,
-                options.override_antenna_separation,
-                options.override_date,
-            )
-        })
+        .map(|resolved| crate::sidecar::applied(resolved, &options.overrides))
         .collect::<Result<Vec<_>, String>>()?;
     if !options.quiet {
         for (resolved, applied) in resolved_inputs.iter().zip(&applied) {
@@ -408,9 +387,7 @@ pub fn build_processed_gpr_with_progress(
             .as_deref()
             .map(crate::recipe::hash_file)
             .transpose()?,
-        antenna_mhz_override: options.override_antenna_mhz,
-        antenna_separation_override: options.override_antenna_separation,
-        date_override: options.override_date,
+        arguments: options.overrides,
     };
     let first_resolved = resolved_inputs.remove(0);
     let (first_meta, first_location) = input::load_meta_and_location(
@@ -418,16 +395,13 @@ pub fn build_processed_gpr_with_progress(
         options.medium_velocity,
         options.crs.as_ref(),
         options.dem_path.as_ref(),
-        options.override_antenna_mhz,
-        options.override_antenna_separation,
-        options.override_date,
-        None,
+        &options.overrides,
     )?;
     let mut gpr = input::load_gpr(
         &first_resolved,
         first_meta,
         first_location,
-        options.override_date,
+        options.overrides.date,
     )?;
     gpr.user_metadata = options.user_metadata.clone();
     gpr.inputs = Some(inputs);
@@ -438,12 +412,9 @@ pub fn build_processed_gpr_with_progress(
             options.medium_velocity,
             options.crs.as_ref(),
             options.dem_path.as_ref(),
-            options.override_antenna_mhz,
-            options.override_antenna_separation,
-            options.override_date,
-            None,
+            &options.overrides,
         )?;
-        let other = input::load_gpr(&resolved, meta, location, options.override_date)?;
+        let other = input::load_gpr(&resolved, meta, location, options.overrides.date)?;
         if !options.quiet {
             println!(
                 "Merging {} -> {}",
@@ -634,7 +605,10 @@ mod tests {
         };
         let warnings = |inputs: &[_], separation| {
             let options = super::ProcessingOptions {
-                override_antenna_separation: separation,
+                overrides: crate::sidecar::Overrides {
+                    antenna_separation_m: separation,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
             super::assumptions(inputs, &options).unwrap()
@@ -680,7 +654,8 @@ mod tests {
         };
         assert!(
             warning.contains(
-                "--override-antenna-separation 0.5 takes precedence over antenna_separation_m = 2"
+                "antenna_separation_m = 0.5, given for the run, takes precedence over \
+                 antenna_separation_m = 2"
             ),
             "{warning}"
         );

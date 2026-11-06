@@ -196,7 +196,7 @@ pub fn load_virl_meta(
             antenna.as_str(),
             format!(
                 "VIRL files do not record the sampling frequency. Give it as sampling_mhz in a \
-                 <stem>.ridal.toml beside {}, with ridal override {} --sampling-mhz MHZ",
+                 <stem>.ridal.toml beside {}, with ridal override {} --set sampling_mhz=MHZ",
                 path.display(),
                 path.display()
             ),
@@ -206,8 +206,8 @@ pub fn load_virl_meta(
         super::UnknownAntennaFrequency::new(
             antenna.as_str(),
             "VIRL files do not record the antenna frequency. Give it with \
-             --override-antenna-mhz (override_antenna_mhz= in Python), or as antenna_mhz \
-             in a <stem>.ridal.toml beside the file"
+             --override antenna_mhz=MHZ (overrides= in Python), or as antenna_mhz in a \
+             <stem>.ridal.toml beside the file"
                 .to_string(),
         )
     })?;
@@ -244,8 +244,8 @@ pub fn load_virl_positions(
     let date = date.ok_or_else(|| {
         super::UnknownDate::new(format!(
             "{}'s positions record only the time of day. Give the UTC date as date in a \
-             <stem>.ridal.toml beside it (ridal override {} --date YYYY-MM-DD), or with \
-             --override-date YYYY-MM-DD (override_date= in Python)",
+             <stem>.ridal.toml beside it (ridal override {} --set date=YYYY-MM-DD), or with \
+             --override date=YYYY-MM-DD (overrides= in Python)",
             path.display(),
             path.display()
         ))
@@ -404,7 +404,7 @@ mod tests {
         let error = load_virl_positions(&path, None, None)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("--date YYYY-MM-DD"), "{error}");
+        assert!(error.contains("--set date=YYYY-MM-DD"), "{error}");
 
         let date = chrono::NaiveDate::from_ymd_opt(2014, 4, 5).unwrap();
         let location = load_virl_positions(&path, Some(date), None).unwrap();
@@ -434,11 +434,11 @@ mod tests {
         let error = load_virl_meta(&path, 0.168, Some(25.), None, None, date)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("--sampling-mhz"), "{error}");
+        assert!(error.contains("--set sampling_mhz=MHZ"), "{error}");
         let error = load_virl_meta(&path, 0.168, None, None, Some(200.), date)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("--override-antenna-mhz"), "{error}");
+        assert!(error.contains("--override antenna_mhz=MHZ"), "{error}");
 
         let meta = load_virl_meta(&path, 0.168, Some(25.), None, Some(200.), date).unwrap();
         assert_eq!(meta.samples, SAMPLES as u32);
@@ -485,7 +485,7 @@ mod tests {
         )
         .unwrap();
         let error = run(&path).err().unwrap();
-        assert!(error.contains("--date YYYY-MM-DD"), "{error}");
+        assert!(error.contains("--set date=YYYY-MM-DD"), "{error}");
 
         std::fs::write(
             &sidecar,
@@ -517,7 +517,10 @@ mod tests {
             let warnings = crate::processing::assumptions(
                 &[resolved],
                 &crate::processing::ProcessingOptions {
-                    override_antenna_separation: Some(0.),
+                    overrides: crate::sidecar::Overrides {
+                        antenna_separation_m: Some(0.),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             )

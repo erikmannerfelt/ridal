@@ -205,7 +205,7 @@ pub fn records_antenna_separation(kind: FormatKind) -> bool {
     }
 }
 
-/// Whether a recording of `kind` is dated by `--override-date` or a
+/// Whether a recording of `kind` is dated by `--override date=` or a
 /// sidecar's `date`: its positions record a time of day without a
 /// trustworthy date.
 pub fn takes_date(kind: FormatKind) -> bool {

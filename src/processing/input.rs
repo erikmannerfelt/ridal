@@ -38,25 +38,14 @@ pub fn expand_input_paths(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
 /// A recording's header and its positions, read from the positions file
 /// `resolved` names: the format's own, or a Ridal coordinate CSV for any
 /// format (#13). Apply `--cor` with [`formats::with_coordinates`] first.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_meta_and_location(
     resolved: &ResolvedInput,
     medium_velocity: f32,
     crs: Option<&String>,
     dem_path: Option<&PathBuf>,
-    override_antenna_mhz: Option<f32>,
-    override_antenna_separation: Option<f32>,
-    override_date: Option<chrono::NaiveDate>,
-    override_sampling_mhz: Option<f32>,
+    arguments: &crate::sidecar::Overrides,
 ) -> Result<(GPRMeta, GPRLocation), Box<dyn Error>> {
-    let gpr_meta = load_meta(
-        resolved,
-        medium_velocity,
-        override_antenna_mhz,
-        override_antenna_separation,
-        override_date,
-        override_sampling_mhz,
-    )?;
+    let gpr_meta = load_meta(resolved, medium_velocity, arguments)?;
 
     let positions = &resolved.coordinates;
     if !positions.is_file() {
@@ -73,7 +62,7 @@ pub(crate) fn load_meta_and_location(
         )
         .into());
     }
-    let mut gpr_location = load_positions(resolved, positions, crs, override_date)?;
+    let mut gpr_location = load_positions(resolved, positions, crs, arguments.date)?;
 
     if let Some(dem_path) = dem_path {
         gpr_location.get_dem_elevations(dem_path)?;
@@ -94,25 +83,22 @@ pub(crate) fn load_meta_and_location(
 }
 
 /// A recording's header alone, with its sidecar's overrides (#527) where
-/// the arguments give none. `override_sampling_mhz` has no option of its
-/// own on the command line, where only a sidecar gives it; the ingest
-/// planner gives it for an antenna (#537).
+/// the `arguments` give none.
 pub(crate) fn load_meta(
     resolved: &ResolvedInput,
     medium_velocity: f32,
-    override_antenna_mhz: Option<f32>,
-    override_antenna_separation: Option<f32>,
-    override_date: Option<chrono::NaiveDate>,
-    override_sampling_mhz: Option<f32>,
+    arguments: &crate::sidecar::Overrides,
 ) -> Result<GPRMeta, Box<dyn Error>> {
     if !resolved.header.is_file() {
         return Err(format!("File not found: {:?}", resolved.header).into());
     }
     let sidecar = crate::sidecar::overrides_of(resolved)?;
-    let override_antenna_mhz = override_antenna_mhz.or(sidecar.antenna_mhz);
-    let override_antenna_separation = override_antenna_separation.or(sidecar.antenna_separation_m);
-    let override_date = override_date.or(sidecar.date);
-    let sampling_mhz = override_sampling_mhz.or(sidecar.sampling_mhz);
+    let override_antenna_mhz = arguments.antenna_mhz.or(sidecar.antenna_mhz);
+    let override_antenna_separation = arguments
+        .antenna_separation_m
+        .or(sidecar.antenna_separation_m);
+    let override_date = arguments.date.or(sidecar.date);
+    let sampling_mhz = arguments.sampling_mhz.or(sidecar.sampling_mhz);
     let mut meta = match resolved.kind {
         FormatKind::Ramac => io::load_rad(
             &resolved.header,
@@ -237,9 +223,8 @@ pub(crate) fn load_positions(
         !formats::is_coords_csv(positions) && formats::takes_date(resolved.kind);
     if override_date.is_some() && !dated_by_override {
         return Err(format!(
-            "--override-date (override_date= in Python) applies to positions read from IceRadar, \
-             pulseEKKO and VIRL files; \
-             {} gives its own dates",
+            "A date given for the run (--override date=, overrides= in Python) applies to \
+             positions read from IceRadar, pulseEKKO and VIRL files; {} gives its own dates",
             positions.display()
         )
         .into());
@@ -378,7 +363,7 @@ mod tests {
         };
 
         let error = refused(&resolved(FormatKind::Ramac, "a.rad"), "a.cor");
-        assert!(error.contains("--override-date"), "{error}");
+        assert!(error.contains("--override date="), "{error}");
         assert!(error.contains("a.cor gives its own dates"), "{error}");
 
         // Formats the date applies to, but not to positions from a CSV.

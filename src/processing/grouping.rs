@@ -22,10 +22,12 @@ pub fn read_header_and_positions(
         0.168,
         crs,
         dem,
-        given.antenna_mhz,
-        None,
-        given.date,
-        given.sampling_mhz,
+        &crate::sidecar::Overrides {
+            antenna_mhz: given.antenna_mhz,
+            antenna_separation_m: None,
+            sampling_mhz: given.sampling_mhz,
+            date: given.date,
+        },
     )
     .map_err(|e| {
         let e = match e.downcast::<crate::io::UnknownAntennaFrequency>() {

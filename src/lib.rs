@@ -103,7 +103,7 @@ pub mod ridal {
     use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError};
     use pyo3::ffi::c_str;
     use pyo3::prelude::*;
-    use pyo3::types::{PyAny, PyBool, PyDict, PyList, PyTuple};
+    use pyo3::types::{PyAny, PyBool, PyDict, PyList, PyMapping, PyTuple};
 
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -262,6 +262,123 @@ pub mod ridal {
             })
     }
 
+    /// `overrides=` (#559): a mapping of sidecar keys to values, read as a
+    /// sidecar would read them, with the per-key arguments it replaces.
+    /// `per_key` holds each of those as its name, its key and its value; a
+    /// value given there warns that the argument is deprecated.
+    fn overrides_arg(
+        py: Python<'_>,
+        overrides: Option<Py<PyAny>>,
+        per_key: &[(&str, &str, Option<toml::Value>)],
+    ) -> PyResult<crate::sidecar::Overrides> {
+        use pyo3::exceptions::{PyDeprecationWarning, PyTypeError, PyValueError};
+        let mut assignments = Vec::new();
+        for (name, key, value) in per_key {
+            let Some(value) = value else {
+                continue;
+            };
+            let message = std::ffi::CString::new(format!(
+                "{name}= is deprecated; give overrides={{\"{key}\": ...}} instead"
+            ))?;
+            PyErr::warn(py, &py.get_type::<PyDeprecationWarning>(), &message, 1)?;
+            assignments.push(crate::sidecar::Assignment {
+                key: key.to_string(),
+                value: value.clone(),
+                given_as: format!("{name}="),
+            });
+        }
+        if let Some(overrides) = overrides {
+            let mapping = overrides.bind(py).cast::<PyMapping>().map_err(|_| {
+                PyTypeError::new_err(
+                    "overrides must be a mapping of sidecar keys to values, such as \
+                     {\"antenna_mhz\": 50}",
+                )
+            })?;
+            for item in mapping.items()?.iter() {
+                let (key, value): (Bound<'_, PyAny>, Bound<'_, PyAny>) = item.extract()?;
+                let key = key.extract::<String>().map_err(|_| {
+                    PyTypeError::new_err(format!(
+                        "the keys of overrides must be strings, not {key}"
+                    ))
+                })?;
+                let given_as = format!("overrides[{key:?}]");
+                if let Some(value) = override_value(py, &value, &given_as)? {
+                    assignments.push(crate::sidecar::Assignment {
+                        key,
+                        value,
+                        given_as,
+                    });
+                }
+            }
+        }
+        crate::sidecar::from_assignments(&assignments).map_err(PyValueError::new_err)
+    }
+
+    /// One value of `overrides=`, called `given_as`, as a sidecar would hold
+    /// it, or `None` for `None`, which gives nothing. Whether it suits its
+    /// key is [`crate::sidecar::from_assignments`]'s to say.
+    fn override_value(
+        py: Python<'_>,
+        value: &Bound<'_, PyAny>,
+        given_as: &str,
+    ) -> PyResult<Option<toml::Value>> {
+        use pyo3::exceptions::PyTypeError;
+        if value.is_none() {
+            return Ok(None);
+        }
+        let datetime = py.import("datetime")?;
+        // A bool before the numbers, as it is an int, and a datetime before
+        // a date, as it is one.
+        let value = if let Ok(flag) = value.cast::<PyBool>() {
+            toml::Value::Boolean(flag.is_true())
+        } else if let Ok(number) = value.extract::<i64>() {
+            toml::Value::Integer(number)
+        } else if let Ok(number) = value.extract::<f64>() {
+            toml::Value::Float(number)
+        } else if value.is_instance(&datetime.getattr("datetime")?)? {
+            return Err(PyTypeError::new_err(format!(
+                "{given_as} must be a date, not a datetime: give the UTC date, \
+                 for example dt.date() after converting it to UTC"
+            )));
+        } else if value.is_instance(&datetime.getattr("date")?)? {
+            toml::Value::String(value.call_method0("isoformat")?.extract::<String>()?)
+        } else if let Ok(text) = value.extract::<String>() {
+            toml::Value::String(text)
+        } else {
+            return Err(PyTypeError::new_err(format!(
+                "{given_as} must be a number, a datetime.date or a string, not {}",
+                value.get_type().name()?
+            )));
+        };
+        Ok(Some(value))
+    }
+
+    /// `overrides=` of a run, with the `override_*=` arguments it replaces.
+    fn run_overrides(
+        py: Python<'_>,
+        overrides: Option<Py<PyAny>>,
+        antenna_mhz: Option<f32>,
+        antenna_separation: Option<f32>,
+        date: Option<Py<PyAny>>,
+    ) -> PyResult<crate::sidecar::Overrides> {
+        let number = |value: Option<f32>| value.map(|v| toml::Value::Float(v.into()));
+        let date = date_arg(py, "override_date", date)?
+            .map(|date| toml::Value::String(date.format("%Y-%m-%d").to_string()));
+        overrides_arg(
+            py,
+            overrides,
+            &[
+                ("override_antenna_mhz", "antenna_mhz", number(antenna_mhz)),
+                (
+                    "override_antenna_separation",
+                    "antenna_separation_m",
+                    number(antenna_separation),
+                ),
+                ("override_date", "date", date),
+            ],
+        )
+    }
+
     /// `lines=`: an int, a sequence of ints, or a string as `--lines` takes
     /// it (`"all"`, `"0,2-4"`).
     fn lines_arg(
@@ -326,6 +443,7 @@ pub mod ridal {
         render_width: Option<usize>,
         render_topo: bool,
         no_export: bool,
+        overrides: Option<Py<PyAny>>,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
@@ -353,9 +471,13 @@ pub mod ridal {
             render_profile,
             render_width,
             render_topo,
-            override_antenna_mhz,
-            override_antenna_separation,
-            override_date: date_arg(py, "override_date", override_date)?,
+            overrides: run_overrides(
+                py,
+                overrides,
+                override_antenna_mhz,
+                override_antenna_separation,
+                override_date,
+            )?,
             lines: lines_arg(py, lines)?,
             channel: channel_arg(channel)?,
             parts: None,
@@ -521,21 +643,25 @@ pub mod ridal {
     /// no_export : bool, default False
     ///     Run processing without writing the main dataset output. Side outputs such
     ///     as rendered figures or exported tracks may still be produced.
-    /// override_antenna_mhz : float, optional
-    ///     Override the antenna center frequency inferred from the input data.
-    /// override_antenna_separation : float, optional
-    ///     Override the antenna separation inferred from the input data.
-    /// override_date : datetime.date or str, optional
-    ///     The UTC date of recordings whose files record only a time of day,
-    ///     or a date that may be wrong: IceRadar, whose date is the
-    ///     acquisition PC's clock, pulseEKKO and VIRL. A ``datetime.date`` or a
-    ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
+    /// overrides : dict, optional
+    ///     Values that take precedence over every recording's sidecar and
+    ///     header, by the key a sidecar's ``[overrides]`` gives them:
+    ///     ``{"antenna_mhz": 50, "date": datetime.date(2024, 4, 5)}``. The
+    ///     keys are listed in the sidecar reference; a date is a
+    ///     ``datetime.date`` or a ``"YYYY-MM-DD"`` string, and a value of
+    ///     ``None`` gives nothing. A value applies to every recording given;
+    ///     one that differs between them belongs in each one's sidecar. This
+    ///     is ``--override`` on the command line.
+    /// override_antenna_mhz, override_antenna_separation, override_date : optional
+    ///     Deprecated, with a ``DeprecationWarning``: ``overrides`` with
+    ///     ``"antenna_mhz"``, ``"antenna_separation_m"`` or ``"date"`` gives
+    ///     the same.
     /// sidecar : path-like or bool, optional
     ///     Where to read overrides from (a ``.ridal.toml``). By default
     ///     (``None`` or ``True``), the ``<stem>.ridal.toml`` beside each
     ///     recording, if there is one; a path, for one recording or the lines
-    ///     of one IceRadar file; or ``False`` for none. The ``override_*``
-    ///     arguments take precedence over it.
+    ///     of one IceRadar file; or ``False`` for none. ``overrides`` takes
+    ///     precedence over it.
     /// lines : int, sequence of int or str, optional
     ///     Which lines of a file holding several (IceRadar) to read: one
     ///     (``3``), several merged in the order given (``[0, 2, 3]`` or
@@ -628,6 +754,7 @@ pub mod ridal {
         render_width=None,
         render_topo=false,
         no_export=false,
+        overrides=None,
         override_antenna_mhz=None,
         override_antenna_separation=None,
         override_date=None,
@@ -660,6 +787,7 @@ pub mod ridal {
         render_width: Option<usize>,
         render_topo: bool,
         no_export: bool,
+        overrides: Option<Py<PyAny>>,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
@@ -716,6 +844,7 @@ pub mod ridal {
             render_topo,
             // A returned dataset is built but not written.
             no_export || return_dataset,
+            overrides,
             override_antenna_mhz,
             override_antenna_separation,
             override_date,
@@ -783,21 +912,25 @@ pub mod ridal {
     /// crs : str, optional
     ///     Coordinate reference system for interpreting or transforming coordinates.
     ///     If omitted, the most appropriate WGS84 UTM zone is used.
-    /// override_antenna_mhz : float, optional
-    ///     Override the antenna center frequency inferred from the input data.
-    /// override_antenna_separation : float, optional
-    ///     Override the antenna separation inferred from the input data.
-    /// override_date : datetime.date or str, optional
-    ///     The UTC date of recordings whose files record only a time of day,
-    ///     or a date that may be wrong: IceRadar, whose date is the
-    ///     acquisition PC's clock, pulseEKKO and VIRL. A ``datetime.date`` or a
-    ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
+    /// overrides : dict, optional
+    ///     Values that take precedence over every recording's sidecar and
+    ///     header, by the key a sidecar's ``[overrides]`` gives them:
+    ///     ``{"antenna_mhz": 50, "date": datetime.date(2024, 4, 5)}``. The
+    ///     keys are listed in the sidecar reference; a date is a
+    ///     ``datetime.date`` or a ``"YYYY-MM-DD"`` string, and a value of
+    ///     ``None`` gives nothing. A value applies to every recording given;
+    ///     one that differs between them belongs in each one's sidecar. This
+    ///     is ``--override`` on the command line.
+    /// override_antenna_mhz, override_antenna_separation, override_date : optional
+    ///     Deprecated, with a ``DeprecationWarning``: ``overrides`` with
+    ///     ``"antenna_mhz"``, ``"antenna_separation_m"`` or ``"date"`` gives
+    ///     the same.
     /// sidecar : path-like or bool, optional
     ///     Where to read overrides from (a ``.ridal.toml``). By default
     ///     (``None`` or ``True``), the ``<stem>.ridal.toml`` beside each
     ///     recording, if there is one; a path, for one recording or the lines
-    ///     of one IceRadar file; or ``False`` for none. The ``override_*``
-    ///     arguments take precedence over it.
+    ///     of one IceRadar file; or ``False`` for none. ``overrides`` takes
+    ///     precedence over it.
     /// lines : int, sequence of int or str, optional
     ///     Which lines of a file holding several (IceRadar) to read: one
     ///     (``3``), several merged in the order given (``[0, 2, 3]`` or
@@ -850,6 +983,7 @@ pub mod ridal {
         cor=None,
         dem=None,
         crs=None,
+        overrides=None,
         override_antenna_mhz=None,
         override_antenna_separation=None,
         override_date=None,
@@ -866,6 +1000,7 @@ pub mod ridal {
         cor: Option<Py<PyAny>>,
         dem: Option<Py<PyAny>>,
         crs: Option<String>,
+        overrides: Option<Py<PyAny>>,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
@@ -894,6 +1029,7 @@ pub mod ridal {
             None,
             false,
             false,
+            overrides,
             override_antenna_mhz,
             override_antenna_separation,
             override_date,
@@ -982,21 +1118,25 @@ pub mod ridal {
     ///     unit order does not matter. See the full syntax and accepted
     ///     abbreviations at:
     ///     https://docs.rs/parse_duration/latest/parse_duration/#syntax
-    /// override_antenna_mhz : float, optional
-    ///     Override the antenna center frequency inferred from the input data.
-    /// override_antenna_separation : float, optional
-    ///     Override the antenna separation inferred from the input data.
-    /// override_date : datetime.date or str, optional
-    ///     The UTC date of recordings whose files record only a time of day,
-    ///     or a date that may be wrong: IceRadar, whose date is the
-    ///     acquisition PC's clock, pulseEKKO and VIRL. A ``datetime.date`` or a
-    ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
+    /// overrides : dict, optional
+    ///     Values that take precedence over every recording's sidecar and
+    ///     header, by the key a sidecar's ``[overrides]`` gives them:
+    ///     ``{"antenna_mhz": 50, "date": datetime.date(2024, 4, 5)}``. The
+    ///     keys are listed in the sidecar reference; a date is a
+    ///     ``datetime.date`` or a ``"YYYY-MM-DD"`` string, and a value of
+    ///     ``None`` gives nothing. A value applies to every recording given;
+    ///     one that differs between them belongs in each one's sidecar. This
+    ///     is ``--override`` on the command line.
+    /// override_antenna_mhz, override_antenna_separation, override_date : optional
+    ///     Deprecated, with a ``DeprecationWarning``: ``overrides`` with
+    ///     ``"antenna_mhz"``, ``"antenna_separation_m"`` or ``"date"`` gives
+    ///     the same.
     /// sidecar : path-like or bool, optional
     ///     Where to read overrides from (a ``.ridal.toml``). By default
     ///     (``None`` or ``True``), the ``<stem>.ridal.toml`` beside each
     ///     recording, if there is one; a path, for one recording or the lines
-    ///     of one IceRadar file; or ``False`` for none. The ``override_*``
-    ///     arguments take precedence over it.
+    ///     of one IceRadar file; or ``False`` for none. ``overrides`` takes
+    ///     precedence over it.
     /// channel : int, optional
     ///     Which channel of GSSI files to read, from 1 as GSSI numbers them.
     ///     Without it, each channel of a GSSI file recorded with several is
@@ -1080,6 +1220,7 @@ pub mod ridal {
     render_topo=false,
         no_export=false,
         merge=None,
+        overrides=None,
         override_antenna_mhz=None,
         override_antenna_separation=None,
         override_date=None,
@@ -1110,6 +1251,7 @@ pub mod ridal {
         render_topo: bool,
         no_export: bool,
         merge: Option<String>,
+        overrides: Option<Py<PyAny>>,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
@@ -1152,6 +1294,7 @@ pub mod ridal {
                 render_width,
                 render_topo,
                 no_export,
+                overrides,
                 override_antenna_mhz,
                 override_antenna_separation,
                 override_date,
@@ -1516,21 +1659,25 @@ pub mod ridal {
     /// crs : str, optional
     ///     Coordinate reference system for interpreting or transforming coordinates.
     ///     If omitted, the most appropriate WGS84 UTM zone is used.
-    /// override_antenna_mhz : float, optional
-    ///     Override the antenna center frequency inferred from the input data.
-    /// override_antenna_separation : float, optional
-    ///     Override the antenna separation inferred from the input data.
-    /// override_date : datetime.date or str, optional
-    ///     The UTC date of recordings whose files record only a time of day,
-    ///     or a date that may be wrong: IceRadar, whose date is the
-    ///     acquisition PC's clock, pulseEKKO and VIRL. A ``datetime.date`` or a
-    ///     ``"YYYY-MM-DD"`` string; a ``datetime.datetime`` is refused.
+    /// overrides : dict, optional
+    ///     Values that take precedence over every recording's sidecar and
+    ///     header, by the key a sidecar's ``[overrides]`` gives them:
+    ///     ``{"antenna_mhz": 50, "date": datetime.date(2024, 4, 5)}``. The
+    ///     keys are listed in the sidecar reference; a date is a
+    ///     ``datetime.date`` or a ``"YYYY-MM-DD"`` string, and a value of
+    ///     ``None`` gives nothing. A value applies to every recording given;
+    ///     one that differs between them belongs in each one's sidecar. This
+    ///     is ``--override`` on the command line.
+    /// override_antenna_mhz, override_antenna_separation, override_date : optional
+    ///     Deprecated, with a ``DeprecationWarning``: ``overrides`` with
+    ///     ``"antenna_mhz"``, ``"antenna_separation_m"`` or ``"date"`` gives
+    ///     the same.
     /// sidecar : path-like or bool, optional
     ///     Where to read overrides from (a ``.ridal.toml``). By default
     ///     (``None`` or ``True``), the ``<stem>.ridal.toml`` beside each
     ///     recording, if there is one; a path, for one recording or the lines
-    ///     of one IceRadar file; or ``False`` for none. The ``override_*``
-    ///     arguments take precedence over it.
+    ///     of one IceRadar file; or ``False`` for none. ``overrides`` takes
+    ///     precedence over it.
     /// channel : int, optional
     ///     Which channel of a GSSI file recorded with several to describe,
     ///     from 1. Required for a file of more than one channel.
@@ -1573,6 +1720,7 @@ pub mod ridal {
         cor=None,
         dem=None,
         crs=None,
+        overrides=None,
         override_antenna_mhz=None,
         override_antenna_separation=None,
         override_date=None,
@@ -1586,6 +1734,7 @@ pub mod ridal {
         cor: Option<Py<PyAny>>,
         dem: Option<Py<PyAny>>,
         crs: Option<String>,
+        overrides: Option<Py<PyAny>>,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         override_date: Option<Py<PyAny>>,
@@ -1602,9 +1751,13 @@ pub mod ridal {
             cor_path,
             medium_velocity: velocity,
             crs,
-            override_antenna_mhz,
-            override_antenna_separation,
-            override_date: date_arg(py, "override_date", override_date)?,
+            overrides: run_overrides(
+                py,
+                overrides,
+                override_antenna_mhz,
+                override_antenna_separation,
+                override_date,
+            )?,
             channel: channel_arg(channel)?,
             parts: None,
             sidecar: sidecar_arg(py, sidecar)?,
@@ -1629,8 +1782,8 @@ pub mod ridal {
     /// there is none and edited in place otherwise, keeping its comments and
     /// anything else in it. Every sidecar is checked before any is written,
     /// so a mistake leaves them all as they were. Its values take precedence
-    /// over the header's when the recording is read, and the ``override_*``
-    /// arguments of a run take precedence over them. This is
+    /// over the header's when the recording is read, and the ``overrides``
+    /// of a run take precedence over them. This is
     /// ``ridal override`` on the command line.
     ///
     /// Parameters
@@ -1638,17 +1791,14 @@ pub mod ridal {
     /// inputs : path-like or sequence of path-like
     ///     Recordings, by any of their files, or glob patterns. A recording
     ///     named by several of its files is changed once.
-    /// antenna_mhz : float, optional
-    ///     The antenna's center frequency, in MHz.
-    /// antenna_separation_m : float, optional
-    ///     The horizontal distance between the transmitter and the receiver,
-    ///     in m.
-    /// sampling_mhz : float, optional
-    ///     The digitizer's sampling frequency, in MHz: not the antenna's. The
-    ///     time between samples is ``1000 / sampling_mhz`` ns.
-    /// date : datetime.date or str, optional
-    ///     The UTC date of an IceRadar, pulseEKKO or VIRL recording, whose
-    ///     positions record only a time of day, as a date or ``"YYYY-MM-DD"``.
+    /// overrides : dict, optional
+    ///     The values to set, by key: ``{"antenna_separation_m": 4.5,
+    ///     "date": datetime.date(2024, 4, 5)}``. The keys are listed in the
+    ///     sidecar reference; a date is a ``datetime.date`` or a
+    ///     ``"YYYY-MM-DD"`` string, and a value of ``None`` sets nothing.
+    /// antenna_mhz, antenna_separation_m, sampling_mhz, date : optional
+    ///     Deprecated, with a ``DeprecationWarning``: ``overrides`` with the
+    ///     same key gives the same.
     /// unset : str or sequence of str, optional
     ///     Keys to remove: ``"antenna_mhz"``, ``"antenna_separation_m"``,
     ///     ``"sampling_mhz"``, ``"date"``.
@@ -1686,6 +1836,7 @@ pub mod ridal {
     #[allow(clippy::too_many_arguments)]
     #[pyo3(name = "override", signature = (
         inputs,
+        overrides=None,
         *,
         antenna_mhz=None,
         antenna_separation_m=None,
@@ -1699,6 +1850,7 @@ pub mod ridal {
     fn override_(
         py: Python<'_>,
         inputs: Py<PyAny>,
+        overrides: Option<Py<PyAny>>,
         antenna_mhz: Option<f32>,
         antenna_separation_m: Option<f32>,
         sampling_mhz: Option<f32>,
@@ -1722,12 +1874,23 @@ pub mod ridal {
         };
         let lines = lines_arg(py, lines)?;
         let channel = channel_arg(channel)?;
-        let set = crate::sidecar::Overrides {
-            antenna_mhz,
-            antenna_separation_m,
-            sampling_mhz,
-            date: date_arg(py, "date", date)?,
-        };
+        let number = |value: Option<f32>| value.map(|v| toml::Value::Float(v.into()));
+        let date = date_arg(py, "date", date)?
+            .map(|date| toml::Value::String(date.format("%Y-%m-%d").to_string()));
+        let set = overrides_arg(
+            py,
+            overrides,
+            &[
+                ("antenna_mhz", "antenna_mhz", number(antenna_mhz)),
+                (
+                    "antenna_separation_m",
+                    "antenna_separation_m",
+                    number(antenna_separation_m),
+                ),
+                ("sampling_mhz", "sampling_mhz", number(sampling_mhz)),
+                ("date", "date", date),
+            ],
+        )?;
         let outcomes = if template {
             if !set.is_empty() || !unset.is_empty() || lines.is_some() || channel.is_some() {
                 return Err(PyValueError::new_err(
@@ -1738,8 +1901,7 @@ pub mod ridal {
         } else {
             if set.is_empty() && unset.is_empty() {
                 return Err(PyValueError::new_err(
-                    "nothing to change: give antenna_mhz, antenna_separation_m, \
-                     sampling_mhz, date, unset or template=True",
+                    "nothing to change: give overrides, unset or template=True",
                 ));
             }
             crate::sidecar::edit::apply(

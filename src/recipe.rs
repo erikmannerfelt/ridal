@@ -119,9 +119,9 @@ pub struct Inputs {
     /// In the order they were merged.
     pub bundles: Vec<Bundle>,
     pub dem: Option<HashedFile>,
-    pub antenna_mhz_override: Option<f32>,
-    pub antenna_separation_override: Option<f32>,
-    pub date_override: Option<chrono::NaiveDate>,
+    /// The overrides given for the run (`--override`), which take
+    /// precedence over every recording's sidecar.
+    pub arguments: crate::sidecar::Overrides,
 }
 
 /// One step as it ran: its canonical form, with defaults filled in, and the
@@ -158,6 +158,9 @@ pub struct Recipe {
     /// trustworthy one, as `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_override: Option<String>,
+    /// MHz: the digitizer's, given for the run (#559).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_mhz_override: Option<f32>,
     pub steps: Vec<RecipeStep>,
 }
 
@@ -195,11 +198,13 @@ impl Recipe {
             },
             crs: gpr.location.crs.clone(),
             medium_velocity: gpr.metadata.medium_velocity,
-            antenna_mhz_override: inputs.antenna_mhz_override,
-            antenna_separation_override: inputs.antenna_separation_override,
+            antenna_mhz_override: inputs.arguments.antenna_mhz,
+            antenna_separation_override: inputs.arguments.antenna_separation_m,
             date_override: inputs
-                .date_override
+                .arguments
+                .date
                 .map(|date| date.format("%Y-%m-%d").to_string()),
+            sampling_mhz_override: inputs.arguments.sampling_mhz,
             steps,
         }))
     }
@@ -273,6 +278,10 @@ impl Recipe {
         if let Some(date) = &self.date_override {
             put(&mut hasher, b"date_override");
             put(&mut hasher, date.as_bytes());
+        }
+        if let Some(mhz) = self.sampling_mhz_override {
+            put(&mut hasher, b"sampling_mhz_override");
+            put(&mut hasher, &mhz.to_le_bytes());
         }
         // Hashed by value, not by the sidecar's bytes, so a comment or a
         // reformatted file is the same revision.
@@ -422,6 +431,7 @@ mod tests {
             antenna_mhz_override: None,
             antenna_separation_override: None,
             date_override: None,
+            sampling_mhz_override: None,
             steps: vec![RecipeStep {
                 step: "dewow(window=auto method=median)".to_string(),
                 version: 1,
@@ -523,6 +533,14 @@ mod tests {
         let mut date_argument = overridden.clone();
         date_argument.date_override = Some("2014-04-05".to_string());
         assert_ne!(date_argument.hash(), dated.hash());
+        // Nor is its sampling frequency (#559).
+        let mut sampling_argument = recipe();
+        sampling_argument.sampling_mhz_override = Some(4.);
+        assert_ne!(sampling_argument.hash(), sampling.hash());
+        assert_ne!(sampling_argument.hash(), recipe().hash());
+        assert!(!recipe().to_json().contains("sampling_mhz_override"));
+        let read: Recipe = serde_json::from_str(&sampling_argument.to_json()).unwrap();
+        assert_eq!(read, sampling_argument);
         let read: Recipe = serde_json::from_str(&dated.to_json()).unwrap();
         assert_eq!(read, dated);
         assert!(dated.to_json().contains(r#""date":"2014-04-05""#));

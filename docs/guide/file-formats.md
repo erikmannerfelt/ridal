@@ -41,23 +41,24 @@ it, with a warning saying so.
 The header gives the number of samples, the time window, the sampling
 frequency, the antenna and its separation, and the interval between traces.
 Two of these are sometimes missing or wrong, and can then be given
-explicitly, either for a whole run with an `--override-*` option, or for
+explicitly, either for a whole run with `--override KEY=VALUE`, or for
 one recording in a sidecar beside it, `<stem>.ridal.toml`, which
-`ridal override` writes (see {doc}`../reference/sidecar`). The option takes
-precedence over the sidecar, and the sidecar over the header.
+`ridal override` writes (see {doc}`../reference/sidecar`). The keys are the
+same in both. The option takes precedence over the sidecar, and the sidecar
+over the header.
 
 Antenna frequency
 : Read from the antenna's name in the header, so that `25 MHz RTA=11` is
   read as 25 MHz. When the name contains no frequency, reading fails with
   "Could not read frequency from the antenna field" until
-  `--override-antenna-mhz` or a sidecar's `antenna_mhz` gives one. The frequency is used by `dewow` for
+  `--override antenna_mhz=MHZ` or a sidecar's `antenna_mhz` gives one. The frequency is used by `dewow` for
   its default window, among other things.
 
 Antenna separation
 : The distance between the transmitter and the receiver (in meters), read
   from the RAMAC and pulseEKKO headers. GSSI, IceRadar and VIRL files do not
   record it, so it is 0 for them, with a warning, unless
-  `--override-antenna-separation` or a sidecar's `antenna_separation_m`
+  `--override antenna_separation_m=M` or a sidecar's `antenna_separation_m`
   gives it. A sidecar is the way to give recordings of one survey different
   separations. The separation matters for
   `correct_antenna_separation` and for depths near the surface (see
@@ -68,7 +69,7 @@ Date
   and the date comes from elsewhere: a pulseEKKO file's header, where in
   older files it was typed by hand, and an IceRadar line's acquisition PC
   clock, which is local time. Either can be wrong.
-  `--override-date YYYY-MM-DD` gives the UTC date instead, for a run, and
+  `--override date=YYYY-MM-DD` gives the UTC date instead, for a run, and
   `date` in a recording's {doc}`sidecar <../reference/sidecar>` for that
   recording. Both are refused for formats whose positions carry their own
   dates, and for positions from a coordinate CSV.
@@ -143,17 +144,17 @@ Lines
 
 Antenna
 : IceRadar files record neither the antenna frequency nor the antenna
-  separation. `--override-antenna-mhz` (or a sidecar's `antenna_mhz`) is
-  required, and the separation is 0 m with a warning unless
-  `--override-antenna-separation` (or a sidecar's `antenna_separation_m`)
-  gives it. A sidecar can give a line of a multi-line file its own values
+  separation. `--override antenna_mhz=MHZ` (or a sidecar's `antenna_mhz`)
+  is required, and the separation is 0 m with a warning unless
+  `--override antenna_separation_m=M` (or a sidecar's
+  `antenna_separation_m`) gives it. A sidecar can give a line of a multi-line file its own values
   (`[lines.<N>]`).
 
 Date
 : The GPS gives the time of day in UTC. The date is the acquisition PC's,
   which is local time and may be off by hours, so Ridal warns that it used
   it. A file whose PC clock was at its reset value (1 January 2000) is
-  refused until `--override-date` or the sidecar's `date` gives the date. A line that runs past
+  refused until `--override date=YYYY-MM-DD` or the sidecar's `date` gives the date. A line that runs past
   midnight UTC continues into the next day.
 
 Positions
@@ -197,16 +198,16 @@ What must be given
   antenna frequency, nor the antenna separation. A recording is refused
   until the first three are given in its sidecar (see
   {doc}`../reference/sidecar`), as `sampling_mhz`, `date` and
-  `antenna_mhz`. The date and the antenna frequency can instead be given
-  for a whole run, with `--override-date` and `--override-antenna-mhz`;
-  the sampling frequency cannot. The separation is 0 m with a warning
+  `antenna_mhz`. Any of them can instead be given for a whole run, with
+  `--override` (`--override sampling_mhz=200`), but the date at least
+  usually differs between recordings. The separation is 0 m with a warning
   unless given. For a survey whose settings did not
   change, one command writes them all, a day at a time since the date
   differs:
 
   ```bash
-  ridal override day1/*.DSR --sampling-mhz 200 --date 2014-04-05 \
-      --antenna-mhz 25 --antenna-separation-m 11.8
+  ridal override day1/*.DSR --set sampling_mhz=200 --set date=2014-04-05 \
+      --set antenna_mhz=25 --set antenna_separation_m=11.8
   ```
 
   In the GUI, **New radargram from raw data…** asks for the antenna

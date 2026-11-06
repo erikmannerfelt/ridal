@@ -905,8 +905,12 @@ mod tests {
             crate::sidecar::overrides_of(&resolved[0]).unwrap(),
             separation
         );
-        let meta = crate::processing::input::load_meta(&resolved[0], 0.168, None, None, None, None)
-            .unwrap();
+        let meta = crate::processing::input::load_meta(
+            &resolved[0],
+            0.168,
+            &crate::sidecar::Overrides::default(),
+        )
+        .unwrap();
         assert_eq!(meta.antenna_separation, 4.5);
         // Without values, none is read, even one a layout before left there.
         // A fresh directory, as every layout has: Windows will not replace

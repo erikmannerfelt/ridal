@@ -14,8 +14,10 @@
 //! the same shape as the top level: a line of an IceRadar file under
 //! `[lines.<N>]`, and a channel of a GSSI file under `[channels.<N>]`. A
 //! line's or channel's value takes precedence over the file's: line or
-//! channel > file > header. A value given as an argument (`--override-*`,
-//! `override_*=` in Python) takes precedence over both.
+//! channel > file > header. A value given as an argument (`--override
+//! KEY=VALUE`, `overrides=` in Python) takes precedence over both, and is
+//! read by [`from_assignments`] into the same [`Overrides`], so the two
+//! cannot disagree about what is valid (#559).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -112,8 +114,6 @@ pub struct OverrideKey {
     pub name: &'static str,
     pub unit: &'static str,
     pub description: &'static str,
-    /// The argument that takes precedence over it, if there is one.
-    pub argument: Option<&'static str>,
 }
 
 /// Every key of `[overrides]`. `every_override_key_is_listed` checks this
@@ -125,7 +125,6 @@ pub const OVERRIDE_KEYS: &[OverrideKey] = &[
         unit: "MHz",
         description: "The antenna's center frequency. Needed for an IceRadar or VIRL file, \
                       which does not record it.",
-        argument: Some("--override-antenna-mhz"),
     },
     OverrideKey {
         name: "antenna_separation_m",
@@ -133,7 +132,6 @@ pub const OVERRIDE_KEYS: &[OverrideKey] = &[
         description: "The horizontal distance between the transmitter and the receiver. GSSI, \
                       IceRadar and VIRL files do not record it, and it is taken as 0 m without \
                       one.",
-        argument: Some("--override-antenna-separation"),
     },
     OverrideKey {
         name: "sampling_mhz",
@@ -141,7 +139,6 @@ pub const OVERRIDE_KEYS: &[OverrideKey] = &[
         description: "The digitizer's sampling frequency, not the antenna's: the time between \
                       samples is 1000 / sampling_mhz ns. Needed for a VIRL file, which does not \
                       record it. A wrong value scales every time and depth.",
-        argument: None,
     },
     OverrideKey {
         name: "date",
@@ -149,7 +146,6 @@ pub const OVERRIDE_KEYS: &[OverrideKey] = &[
         description: "The UTC date of the recording, for an IceRadar, pulseEKKO or VIRL file, \
                       whose positions record only a time of day or a date that may be wrong. Written \
                       as a TOML date (date = 2014-04-05) or a string.",
-        argument: Some("--override-date"),
     },
 ];
 
@@ -213,6 +209,95 @@ impl Overrides {
             .collect::<Vec<_>>()
             .join(", ")
     }
+
+    /// `self`, without the values `other` sets.
+    fn without(self, other: Overrides) -> Overrides {
+        Overrides {
+            antenna_mhz: self.antenna_mhz.filter(|_| other.antenna_mhz.is_none()),
+            antenna_separation_m: self
+                .antenna_separation_m
+                .filter(|_| other.antenna_separation_m.is_none()),
+            sampling_mhz: self.sampling_mhz.filter(|_| other.sampling_mhz.is_none()),
+            date: self.date.filter(|_| other.date.is_none()),
+        }
+    }
+}
+
+/// One override given as an argument rather than in a sidecar: a
+/// `--override KEY=VALUE`, an item of `overrides=` in Python, or one of
+/// the per-key forms that came before them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Assignment {
+    /// The key, as `[overrides]` names it.
+    pub key: String,
+    pub value: toml::Value,
+    /// How it was given, for messages: `--override date=2014-04-05`.
+    pub given_as: String,
+}
+
+impl Assignment {
+    /// `KEY=VALUE`, as `--override` and `ridal override --set` take it,
+    /// split at the first `=`. The value is read as a TOML value, so
+    /// `date=2014-04-05` is a date and `antenna_mhz=50` a number, as they
+    /// would be in a sidecar; anything that is not one is a string.
+    pub fn parse(text: &str, option: &str) -> Result<Assignment, String> {
+        let (key, value) = text
+            .split_once('=')
+            .ok_or_else(|| "expected KEY=VALUE, such as antenna_mhz=50".to_string())?;
+        let key = key.trim();
+        let value = value.trim();
+        let value = format!("value = {value}")
+            .parse::<toml::Table>()
+            .ok()
+            .and_then(|mut table| table.remove("value"))
+            .unwrap_or_else(|| toml::Value::String(value.to_string()));
+        Ok(Assignment {
+            key: key.to_string(),
+            value,
+            given_as: format!("{option} {text}"),
+        })
+    }
+}
+
+/// The overrides `assignments` give, each checked as it would be in a
+/// sidecar.
+///
+/// # Errors
+/// A key that `[overrides]` does not have, listing those it does; a value
+/// a sidecar could not hold either; and a key given more than once, which
+/// is refused rather than one taking precedence.
+pub fn from_assignments(assignments: &[Assignment]) -> Result<Overrides, String> {
+    let mut overrides = Overrides::default();
+    for (i, assignment) in assignments.iter().enumerate() {
+        let Assignment {
+            key,
+            value,
+            given_as,
+        } = assignment;
+        if !OVERRIDE_KEYS.iter().any(|k| k.name == key) {
+            return Err(format!(
+                "{given_as}: there is no override {key:?}. The keys are {}.",
+                OVERRIDE_KEYS
+                    .iter()
+                    .map(|k| k.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if let Some(earlier) = assignments[..i].iter().find(|a| &a.key == key) {
+            return Err(format!(
+                "{key} is given twice, as {} and as {given_as}; give it once",
+                earlier.given_as
+            ));
+        }
+        let table = toml::Table::from_iter([(key.clone(), value.clone())]);
+        let one: Overrides = table
+            .try_into()
+            .map_err(|e: toml::de::Error| format!("{given_as}: {}", e.message()))?;
+        one.check().map_err(|e| format!("{given_as}: {e}"))?;
+        overrides = overrides.under(one);
+    }
+    Ok(overrides)
 }
 
 /// The value of one key of [`Overrides`].
@@ -444,22 +529,8 @@ fn check_lines(sidecar: &Sidecar, path: &Path, resolved: &ResolvedInput) -> Resu
 
 /// What the sidecar of `resolved` sets that the arguments do not: the
 /// values it actually decides, which the recipe records.
-pub fn applied(
-    resolved: &ResolvedInput,
-    antenna_mhz: Option<f32>,
-    antenna_separation_m: Option<f32>,
-    date: Option<chrono::NaiveDate>,
-) -> Result<Overrides, String> {
-    let from_sidecar = overrides_of(resolved)?;
-    Ok(Overrides {
-        antenna_mhz: from_sidecar.antenna_mhz.filter(|_| antenna_mhz.is_none()),
-        antenna_separation_m: from_sidecar
-            .antenna_separation_m
-            .filter(|_| antenna_separation_m.is_none()),
-        // No argument takes precedence over it.
-        sampling_mhz: from_sidecar.sampling_mhz,
-        date: from_sidecar.date.filter(|_| date.is_none()),
-    })
+pub fn applied(resolved: &ResolvedInput, arguments: &Overrides) -> Result<Overrides, String> {
+    Ok(overrides_of(resolved)?.without(*arguments))
 }
 
 /// A sidecar that sets `overrides` and nothing else, as a server writes
@@ -680,15 +751,16 @@ mod tests {
             "[overrides]\nantenna_mhz = 50\nantenna_separation_m = 4\n",
         );
         let resolved = ramac(dir.path(), Some(path));
+        let given = |antenna_mhz, antenna_separation_m| Overrides {
+            antenna_mhz,
+            antenna_separation_m,
+            ..Default::default()
+        };
         assert_eq!(
-            applied(&resolved, Some(100.), None, None).unwrap(),
-            Overrides {
-                antenna_mhz: None,
-                antenna_separation_m: Some(4.),
-                ..Default::default()
-            }
+            applied(&resolved, &given(Some(100.), None)).unwrap(),
+            given(None, Some(4.))
         );
-        assert!(applied(&resolved, Some(100.), Some(1.), None)
+        assert!(applied(&resolved, &given(Some(100.), Some(1.)))
             .unwrap()
             .is_empty());
     }
@@ -744,7 +816,10 @@ mod tests {
             |sidecar: Choice, separation: Option<f32>| crate::processing::ProcessingOptions {
                 quiet: true,
                 sidecar,
-                override_antenna_separation: separation,
+                overrides: crate::sidecar::Overrides {
+                    antenna_separation_m: separation,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
         let process = |options: crate::processing::ProcessingOptions| {
@@ -789,7 +864,10 @@ mod tests {
 
         let info = |sidecar: Choice, separation: Option<f32>| {
             let records = crate::inspect::inspect(crate::inspect::InfoParams {
-                override_antenna_separation: separation,
+                overrides: crate::sidecar::Overrides {
+                    antenna_separation_m: separation,
+                    ..Default::default()
+                },
                 sidecar,
                 ..crate::inspect::tests::info_params(vec![rad.clone()])
             })
@@ -813,18 +891,9 @@ mod tests {
 
     /// The key table of `docs/reference/sidecar.md`, between its markers.
     fn key_table() -> String {
-        let mut table = String::from(
-            "| Key | Unit | Option that takes precedence | Description |\n|---|---|---|---|\n",
-        );
+        let mut table = String::from("| Key | Unit | Description |\n|---|---|---|\n");
         for key in OVERRIDE_KEYS {
-            let argument = match key.argument {
-                Some(argument) => format!("`{argument}`"),
-                None => "none".to_string(),
-            };
-            table += &format!(
-                "| `{}` | {} | {argument} | {} |\n",
-                key.name, key.unit, key.description
-            );
+            table += &format!("| `{}` | {} | {} |\n", key.name, key.unit, key.description);
         }
         table
     }

@@ -98,7 +98,7 @@ impl Layout {
 /// time of day, so the date is the PC clock's unless the user gives one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IceRadarDate {
-    /// `--override-date`.
+    /// `--override date=` or a sidecar's `date`.
     Given(chrono::NaiveDate),
     /// The acquisition PC's clock, which is local time and may be wrong by
     /// hours, since nothing sets it from the GPS. A line recorded near
@@ -644,7 +644,7 @@ fn read_line_meta(
             let date = pc_date(&timestamp).ok_or_else(|| {
                 super::UnknownDate::new(format!(
                     "{line_name} of {} gives no date the PC clock recorded ({timestamp:?}). \
-                     Give the UTC date with --override-date YYYY-MM-DD (override_date= in Python)",
+                     Give the UTC date with --override date=YYYY-MM-DD (overrides= in Python)",
                     path.display()
                 ))
             })?;
@@ -654,7 +654,8 @@ fn read_line_meta(
                 return Err(super::UnknownDate::new(format!(
                     "{line_name} of {} was recorded with the PC clock at {timestamp:?}, its reset \
                      value, so the file does not know its date, and the GPS records only the \
-                     time of day. Give the UTC date with --override-date YYYY-MM-DD (override_date= in Python)",
+                     time of day. Give the UTC date with --override date=YYYY-MM-DD (overrides= in \
+                     Python)",
                     path.display()
                 ))
                 .into());
@@ -752,8 +753,8 @@ pub fn load_iceradar_meta(
         super::UnknownAntennaFrequency::new(
             antenna.as_str(),
             "IceRadar files do not record the antenna frequency. Give it with \
-             --override-antenna-mhz (override_antenna_mhz= in Python), or as antenna_mhz \
-             in a <stem>.ridal.toml beside the file"
+             --override antenna_mhz=MHZ (overrides= in Python), or as antenna_mhz in a \
+             <stem>.ridal.toml beside the file"
                 .to_string(),
         )
     })?;
@@ -1094,8 +1095,11 @@ pub(crate) mod tests {
         run(
             path,
             crate::processing::ProcessingOptions {
-                override_antenna_mhz: mhz,
-                override_date: date.map(|d| d.parse().unwrap()),
+                overrides: crate::sidecar::Overrides {
+                    antenna_mhz: mhz,
+                    date: date.map(|d| d.parse().unwrap()),
+                    ..Default::default()
+                },
                 lines: lines.map(|l| l.parse().unwrap()),
                 ..Default::default()
             },
@@ -1142,11 +1146,11 @@ pub(crate) mod tests {
 
         // The PC clock is at its reset value, and the frequency is unknown.
         let error = process(&path, None, None, Some(10.)).err().unwrap();
-        assert!(error.contains("--override-date"), "{error}");
+        assert!(error.contains("--override date="), "{error}");
         let error = process(&path, None, Some("2024-08-15"), None)
             .err()
             .unwrap();
-        assert!(error.contains("--override-antenna-mhz"), "{error}");
+        assert!(error.contains("--override antenna_mhz="), "{error}");
 
         let gpr = process(&path, None, Some("2024-08-15"), Some(10.)).unwrap();
         assert_eq!(gpr.data.shape(), &[40, 4]);
@@ -1181,8 +1185,11 @@ pub(crate) mod tests {
         let gpr = run(
             &path,
             crate::processing::ProcessingOptions {
-                override_antenna_mhz: Some(10.),
-                override_date: chrono::NaiveDate::from_ymd_opt(2024, 8, 15),
+                overrides: crate::sidecar::Overrides {
+                    antenna_mhz: Some(10.),
+                    date: chrono::NaiveDate::from_ymd_opt(2024, 8, 15),
+                    ..Default::default()
+                },
                 steps: vec!["remove_empty_traces".into()],
                 ..Default::default()
             },
@@ -1303,7 +1310,10 @@ pub(crate) mod tests {
                 display_name_pattern: None,
                 options: crate::processing::ProcessingOptions {
                     quiet: true,
-                    override_antenna_mhz: Some(20.),
+                    overrides: crate::sidecar::Overrides {
+                        antenna_mhz: Some(20.),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             })
@@ -1395,7 +1405,10 @@ pub(crate) mod tests {
         };
         write_fixture(&path, Layout::V1, &[line(), line()], "6/18/2024 1:30:00 PM");
         let options = |lines: &str, cor: Option<&Path>| crate::processing::ProcessingOptions {
-            override_antenna_mhz: Some(20.),
+            overrides: crate::sidecar::Overrides {
+                antenna_mhz: Some(20.),
+                ..Default::default()
+            },
             lines: Some(lines.parse().unwrap()),
             cor_path: cor.map(Path::to_path_buf),
             ..Default::default()
@@ -1480,7 +1493,7 @@ pub(crate) mod tests {
             let error = read_line_meta(&path, 0, None).err().unwrap().to_string();
             assert!(error.contains("gives no date"), "{layout:?}: {error}");
             assert!(error.contains("\"18.6.2024\""), "{layout:?}: {error}");
-            assert!(error.contains("--override-date"), "{layout:?}: {error}");
+            assert!(error.contains("--override date="), "{layout:?}: {error}");
             // A given date does not need the PC's.
             let date = chrono::NaiveDate::from_ymd_opt(2024, 6, 18).unwrap();
             assert_eq!(
@@ -1518,8 +1531,11 @@ pub(crate) mod tests {
         }
 
         let options = crate::processing::ProcessingOptions {
-            override_antenna_separation: Some(10.),
-            override_date: chrono::NaiveDate::from_ymd_opt(2024, 6, 18),
+            overrides: crate::sidecar::Overrides {
+                antenna_separation_m: Some(10.),
+                date: chrono::NaiveDate::from_ymd_opt(2024, 6, 18),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let warnings = crate::processing::assumptions(&resolved, &options).unwrap();

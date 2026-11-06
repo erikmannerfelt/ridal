@@ -187,12 +187,12 @@ def test_override_writes_a_sidecar_that_info_reads(tmp_path):
     rad = tmp_path / f"{line}.rad"
     sidecar = tmp_path / f"{line}.ridal.toml"
 
-    assert ridal.override(rad, antenna_separation_m=4.5) == [str(sidecar)]
-    assert ridal.override(rad, antenna_separation_m=4.5) == []
+    assert ridal.override(rad, {"antenna_separation_m": 4.5}) == [str(sidecar)]
+    assert ridal.override(rad, {"antenna_separation_m": 4.5}) == []
     (record,) = ridal.info(rad)
     assert record["metadata"]["antenna_separation_m"] == 4.5
     assert record["sidecar"]["header"]["antenna_separation_m"] == pytest.approx(6.2)
-    (given,) = ridal.info(rad, override_antenna_separation=1.0)
+    (given,) = ridal.info(rad, overrides={"antenna_separation_m": 1.0})
     assert given["metadata"]["antenna_separation_m"] == 1.0
 
     assert ridal.override([rad, rad.with_suffix(".rd3")], unset="antenna_separation_m")
@@ -202,9 +202,9 @@ def test_override_writes_a_sidecar_that_info_reads(tmp_path):
     with pytest.raises(ValueError, match="nothing to change"):
         ridal.override(rad)
     with pytest.raises(ValueError, match="alone"):
-        ridal.override(rad, antenna_mhz=25, template=True)
+        ridal.override(rad, {"antenna_mhz": 25}, template=True)
     with pytest.raises(RuntimeError, match="IceRadar files only"):
-        ridal.override(rad, antenna_mhz=25, lines="all")
+        ridal.override(rad, {"antenna_mhz": 25}, lines="all")
     sidecar.unlink()
     assert ridal.override(rad, template=True) == [str(sidecar)]
     assert "# antenna_separation_m = 6.2" in sidecar.read_text()
@@ -364,9 +364,9 @@ def test_override_date_is_refused_where_the_positions_carry_dates(date):
     # A .cor dates every position itself, so a date given for it would be
     # ignored; it is refused instead.
     with pytest.raises(RuntimeError, match="gives its own dates"):
-        ridal.read(str(FIXTURE), override_date=date)
+        ridal.read(str(FIXTURE), overrides={"date": date})
     with pytest.raises(RuntimeError, match="gives its own dates"):
-        ridal.info(str(FIXTURE), override_date=date)
+        ridal.info(str(FIXTURE), overrides={"date": date})
 
 
 @pytest.mark.parametrize(
@@ -384,6 +384,68 @@ def test_override_date_is_refused_where_the_positions_carry_dates(date):
 def test_bad_override_dates_are_refused(date, error, match):
     with pytest.raises(error, match=match):
         ridal.read(str(FIXTURE), override_date=date)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error", "match"),
+    [
+        (
+            {"antena_mhz": 50},
+            ValueError,
+            "no override .antena_mhz.. The keys are antenna_mhz",
+        ),
+        (
+            {"antenna_mhz": 0},
+            ValueError,
+            r'overrides\["antenna_mhz"\]: antenna_mhz must be above 0',
+        ),
+        ({"antenna_mhz": "fifty"}, ValueError, "antenna_mhz"),
+        ({"date": "27/03/2025"}, ValueError, "YYYY-MM-DD"),
+        (
+            {"date": datetime.datetime(2025, 3, 27, 12, tzinfo=datetime.UTC)},
+            TypeError,
+            "not a datetime",
+        ),
+        ({"antenna_mhz": [50]}, TypeError, "must be a number"),
+        ({1: 50}, TypeError, "keys of overrides must be strings"),
+        ([("antenna_mhz", 50)], TypeError, "must be a mapping"),
+    ],
+)
+def test_bad_overrides_are_refused(overrides, error, match):
+    with pytest.raises(error, match=match):
+        ridal.info(str(FIXTURE), overrides=overrides)
+    with pytest.raises(error, match=match):
+        ridal.override(str(FIXTURE), overrides)
+
+
+def test_the_per_key_override_arguments_are_deprecated(tmp_path):
+    # #559: they still work, warn, and cannot be given beside `overrides`.
+    with pytest.warns(
+        DeprecationWarning, match="override_antenna_separation= is deprecated"
+    ):
+        (record,) = ridal.info(str(FIXTURE), override_antenna_separation=1.0)
+    assert record["metadata"]["antenna_separation_m"] == 1.0
+    (record,) = ridal.info(
+        str(FIXTURE), overrides={"antenna_separation_m": 1.0, "antenna_mhz": None}
+    )
+    assert record["metadata"]["antenna_separation_m"] == 1.0
+    with (
+        pytest.warns(DeprecationWarning),
+        pytest.raises(ValueError, match="antenna_separation_m is given twice"),
+    ):
+        ridal.info(
+            str(FIXTURE),
+            override_antenna_separation=1.0,
+            overrides={"antenna_separation_m": 1.0},
+        )
+
+    line = "dronbreen-20250327-DAT_0066_A1"
+    for ext in ["rad", "rd3", "cor"]:
+        shutil.copy(Path("assets/mala") / f"{line}.{ext}", tmp_path)
+    rad = tmp_path / f"{line}.rad"
+    with pytest.warns(DeprecationWarning, match="sampling_mhz= is deprecated"):
+        ridal.override(rad, sampling_mhz=200)
+    assert "sampling_mhz = 200" in rad.with_suffix(".ridal.toml").read_text()
 
 
 def write_two_channel_gssi(directory: Path) -> Path:

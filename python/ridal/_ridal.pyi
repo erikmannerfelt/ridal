@@ -4,9 +4,19 @@
 import datetime
 from collections.abc import Sequence
 from os import PathLike
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, TypedDict
 
 _Path: TypeAlias = str | PathLike[str]
+
+class Overrides(TypedDict, total=False):
+    """The ``overrides=`` of ``process()``, ``read()``, ``batch_process()``,
+    ``info()`` and ``override()``: a sidecar's ``[overrides]`` keys, each
+    optional. ``None`` gives nothing."""
+
+    antenna_mhz: float | None
+    antenna_separation_m: float | None
+    sampling_mhz: float | None
+    date: datetime.date | str | None
 
 version: str
 __version__: str
@@ -37,6 +47,7 @@ def info(
     cor: _Path | None = ...,
     dem: _Path | None = ...,
     crs: str | None = ...,
+    overrides: Overrides | None = ...,
     override_antenna_mhz: float | None = ...,
     override_antenna_separation: float | None = ...,
     override_date: datetime.date | str | None = ...,
@@ -45,6 +56,7 @@ def info(
 ) -> list[dict[str, Any]]: ...
 def override(
     inputs: _Path | Sequence[_Path],
+    overrides: Overrides | None = ...,
     *,
     antenna_mhz: float | None = ...,
     antenna_separation_m: float | None = ...,

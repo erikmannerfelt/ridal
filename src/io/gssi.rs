@@ -851,7 +851,10 @@ mod tests {
             })
         );
         let options = crate::processing::ProcessingOptions {
-            override_antenna_separation: Some(0.),
+            overrides: crate::sidecar::Overrides {
+                antenna_separation_m: Some(0.),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let resolved = crate::formats::resolve_input(&dzt).unwrap();

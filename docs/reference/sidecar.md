@@ -5,7 +5,7 @@ A sidecar is a TOML file beside a raw recording, named after its stem
 precedence over what the recording's header says. It is how a correction
 belongs to one recording rather than to a whole run: a survey whose antenna
 separation changed between recordings gets one sidecar per recording, and
-`batch-process` then needs no `--override-*` options.
+`batch-process` then needs no `--override` options.
 
 The sidecar is an overlay, not a replacement. The header is still read, and
 the sidecar sets only the values it names; the raw files are never changed.
@@ -25,20 +25,20 @@ edits it in place otherwise, keeping its comments and anything else in it:
 
 ```bash
 # Every recording of a survey: one sidecar each.
-ridal override survey/*.rad --antenna-separation-m 4
+ridal override survey/*.rad --set antenna_separation_m=4
 
 # One line of an IceRadar file, whose own value then takes precedence.
-ridal override stor.h5 --lines 3 --antenna-separation-m 6
+ridal override stor.h5 --lines 3 --set antenna_separation_m=6
 
 # One channel of a GSSI file of several, likewise.
-ridal override track.DZT --channel 2 --antenna-separation-m 0.5
+ridal override track.DZT --channel 2 --set antenna_separation_m=0.5
 
 # The UTC date of pulseEKKO or IceRadar recordings, whose positions record
 # only a time of day: one day's recordings at a time.
-ridal override day1/*.HD --date 2024-08-15
+ridal override day1/*.HD --set date=2024-08-15
 
 # The digitizer's sampling frequency, for a format that does not record it.
-ridal override survey/*.rad --sampling-mhz 200
+ridal override survey/*.rad --set sampling_mhz=200
 
 # Remove a value again.
 ridal override survey/DAT_0012_A1.rad --unset antenna_separation_m
@@ -47,6 +47,12 @@ ridal override survey/DAT_0012_A1.rad --unset antenna_separation_m
 # the header says of it.
 ridal override survey/*.rad --template
 ```
+
+`--set KEY=VALUE` takes any key listed {ref}`below <override-keys>`, and
+is repeated for several (`ridal.override(inputs, {"date": ...})` in
+Python). The per-key options of earlier releases (`--antenna-mhz`,
+`--antenna-separation-m`, `--sampling-mhz` and `--date`) still work, and
+are listed only in `ridal override --help`.
 
 A recording is named by any of its files, its sidecar included, or by a
 glob, and one named several times is changed once. Every sidecar is
@@ -72,10 +78,14 @@ sidecar's result.
 
 For each value, the first of these that gives it is used:
 
-1. the option given for the run (`--override-antenna-separation`,
-   `override_antenna_separation=` in Python), which then applies to every
-   recording, with a warning where it differs from a sidecar's value.
-   `sampling_mhz` has no such option;
+1. the value given for the run, `--override KEY=VALUE` (`overrides=` in
+   Python), with the same keys and values as a sidecar's `[overrides]`. It
+   applies to every recording given, with a warning where it differs from a
+   sidecar's value, so a value that differs between recordings belongs in
+   each one's sidecar instead. The `--override-antenna-mhz`,
+   `--override-antenna-separation` and `--override-date` options of earlier
+   releases give the same as `--override` with their key, and a key given
+   both ways is refused;
 2. the line's or channel's table of the sidecar (`[lines.<N>]`, IceRadar
    only, or `[channels.<N>]`, GSSI only);
 3. the sidecar's `[overrides]`;
@@ -129,17 +139,18 @@ antenna_separation_m = 4.0
 antenna_separation_m = 6.0
 ```
 
+(override-keys)=
 ## Override keys
 
 <!-- Generated from OVERRIDE_KEYS in src/sidecar.rs. Regenerate with
 UPDATE_SIDECAR_MD=1 cargo test --no-default-features -F cli sidecar_md -->
 
-| Key | Unit | Option that takes precedence | Description |
-|---|---|---|---|
-| `antenna_mhz` | MHz | `--override-antenna-mhz` | The antenna's center frequency. Needed for an IceRadar or VIRL file, which does not record it. |
-| `antenna_separation_m` | m | `--override-antenna-separation` | The horizontal distance between the transmitter and the receiver. GSSI, IceRadar and VIRL files do not record it, and it is taken as 0 m without one. |
-| `sampling_mhz` | MHz | none | The digitizer's sampling frequency, not the antenna's: the time between samples is 1000 / sampling_mhz ns. Needed for a VIRL file, which does not record it. A wrong value scales every time and depth. |
-| `date` | YYYY-MM-DD | `--override-date` | The UTC date of the recording, for an IceRadar, pulseEKKO or VIRL file, whose positions record only a time of day or a date that may be wrong. Written as a TOML date (date = 2014-04-05) or a string. |
+| Key | Unit | Description |
+|---|---|---|
+| `antenna_mhz` | MHz | The antenna's center frequency. Needed for an IceRadar or VIRL file, which does not record it. |
+| `antenna_separation_m` | m | The horizontal distance between the transmitter and the receiver. GSSI, IceRadar and VIRL files do not record it, and it is taken as 0 m without one. |
+| `sampling_mhz` | MHz | The digitizer's sampling frequency, not the antenna's: the time between samples is 1000 / sampling_mhz ns. Needed for a VIRL file, which does not record it. A wrong value scales every time and depth. |
+| `date` | YYYY-MM-DD | The UTC date of the recording, for an IceRadar, pulseEKKO or VIRL file, whose positions record only a time of day or a date that may be wrong. Written as a TOML date (date = 2014-04-05) or a string. |
 
 <!-- end of generated keys -->
 

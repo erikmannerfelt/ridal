@@ -48,16 +48,8 @@ Correct elevation values with a DEM
 Which coordinate reference system to project coordinates in
 ```
 
-```{option} --override-antenna-mhz <OVERRIDE_ANTENNA_MHZ>
-Override the antenna center frequency (in MHz) from file metadata
-```
-
-```{option} --override-antenna-separation <OVERRIDE_ANTENNA_SEPARATION>
-Override the antenna separation (in m) from file metadata
-```
-
-```{option} --override-date <YYYY-MM-DD>
-The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, pulseEKKO and VIRL
+```{option} --override <KEY=VALUE>
+A value for the run that takes precedence over every recording's sidecar and header, as KEY=VALUE: antenna_mhz=50, date=2024-04-05. Repeatable, once per key. The keys are a sidecar's, listed at https://ridal.readthedocs.io/en/stable/reference/sidecar.html#override-keys. The value applies to every recording given; one that differs between them belongs in each one's sidecar
 ```
 
 ```{option} --channel <N>
@@ -65,7 +57,7 @@ Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbe
 ```
 
 ```{option} --sidecar <PATH>
-A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it
+A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. --override takes precedence over it
 ```
 
 ```{option} --no-sidecar
@@ -136,6 +128,20 @@ Human-readable name of the group this radargram belongs to (survey, campaign, lo
 Explicit override for the group's id, when the id automatically derived from --group-name is not the one wanted
 ```
 
+**Overrides**
+
+```{option} --override-antenna-mhz <MHZ>
+The antenna center frequency, in MHz. The same as --override antenna_mhz=MHZ, which replaces it
+```
+
+```{option} --override-antenna-separation <M>
+The antenna separation, in m. The same as --override antenna_separation_m=M, which replaces it
+```
+
+```{option} --override-date <YYYY-MM-DD>
+The UTC date of recordings whose files record only a time of day, or a date that is wrong. The same as --override date=YYYY-MM-DD, which replaces it
+```
+
 ## `ridal batch-process`
 
 ```{program} ridal batch-process
@@ -179,16 +185,8 @@ Correct elevation values with a DEM
 Which coordinate reference system to project coordinates in
 ```
 
-```{option} --override-antenna-mhz <OVERRIDE_ANTENNA_MHZ>
-Override the antenna center frequency (in MHz) from file metadata
-```
-
-```{option} --override-antenna-separation <OVERRIDE_ANTENNA_SEPARATION>
-Override the antenna separation (in m) from file metadata
-```
-
-```{option} --override-date <YYYY-MM-DD>
-The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, pulseEKKO and VIRL
+```{option} --override <KEY=VALUE>
+A value for the run that takes precedence over every recording's sidecar and header, as KEY=VALUE: antenna_mhz=50, date=2024-04-05. Repeatable, once per key. The keys are a sidecar's, listed at https://ridal.readthedocs.io/en/stable/reference/sidecar.html#override-keys. The value applies to every recording given; one that differs between them belongs in each one's sidecar
 ```
 
 ```{option} --channel <N>
@@ -196,7 +194,7 @@ Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbe
 ```
 
 ```{option} --sidecar <PATH>
-A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it
+A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. --override takes precedence over it
 ```
 
 ```{option} --no-sidecar
@@ -275,6 +273,20 @@ Print what the batch would do -- which inputs make which output, under which id,
 With --dry-run, print the plan as JSON
 ```
 
+**Overrides**
+
+```{option} --override-antenna-mhz <MHZ>
+The antenna center frequency, in MHz. The same as --override antenna_mhz=MHZ, which replaces it
+```
+
+```{option} --override-antenna-separation <M>
+The antenna separation, in m. The same as --override antenna_separation_m=M, which replaces it
+```
+
+```{option} --override-date <YYYY-MM-DD>
+The UTC date of recordings whose files record only a time of day, or a date that is wrong. The same as --override date=YYYY-MM-DD, which replaces it
+```
+
 ## `ridal info`
 
 ```{program} ridal info
@@ -318,16 +330,8 @@ Correct elevation values with a DEM
 Which coordinate reference system to project coordinates in
 ```
 
-```{option} --override-antenna-mhz <OVERRIDE_ANTENNA_MHZ>
-Override the antenna center frequency (in MHz) from file metadata
-```
-
-```{option} --override-antenna-separation <OVERRIDE_ANTENNA_SEPARATION>
-Override the antenna separation (in m) from file metadata
-```
-
-```{option} --override-date <YYYY-MM-DD>
-The UTC date (YYYY-MM-DD) of recordings whose files record only a time of day, or a date that is wrong: IceRadar, whose date is the acquisition PC's clock, pulseEKKO and VIRL
+```{option} --override <KEY=VALUE>
+A value for the run that takes precedence over every recording's sidecar and header, as KEY=VALUE: antenna_mhz=50, date=2024-04-05. Repeatable, once per key. The keys are a sidecar's, listed at https://ridal.readthedocs.io/en/stable/reference/sidecar.html#override-keys. The value applies to every recording given; one that differs between them belongs in each one's sidecar
 ```
 
 ```{option} --channel <N>
@@ -335,11 +339,25 @@ Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbe
 ```
 
 ```{option} --sidecar <PATH>
-A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it
+A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. --override takes precedence over it
 ```
 
 ```{option} --no-sidecar
 Read no sidecar, even when a "<stem>.ridal.toml" is beside a recording
+```
+
+**Overrides**
+
+```{option} --override-antenna-mhz <MHZ>
+The antenna center frequency, in MHz. The same as --override antenna_mhz=MHZ, which replaces it
+```
+
+```{option} --override-antenna-separation <M>
+The antenna separation, in m. The same as --override antenna_separation_m=M, which replaces it
+```
+
+```{option} --override-date <YYYY-MM-DD>
+The UTC date of recordings whose files record only a time of day, or a date that is wrong. The same as --override date=YYYY-MM-DD, which replaces it
 ```
 
 ## `ridal coords`
@@ -419,7 +437,7 @@ A DEM to take every altitude from, before any other
 Set or remove values in recordings' sidecars ("<stem>.ridal.toml" beside each), which take precedence over their headers (#527)
 
 ```console
-$ ridal override [OPTIONS] <--antenna-mhz <ANTENNA_MHZ>|--antenna-separation-m <ANTENNA_SEPARATION_M>|--sampling-mhz <SAMPLING_MHZ>|--date <YYYY-MM-DD>|--unset <KEY>|--template> <INPUTS>...
+$ ridal override [OPTIONS] <--set <KEY=VALUE>|--unset <KEY>|--template> <INPUTS>...
 ```
 
 **Arguments**
@@ -432,20 +450,8 @@ Required.
 
 **Options**
 
-```{option} --antenna-mhz <ANTENNA_MHZ>
-The antenna's center frequency, in MHz
-```
-
-```{option} --antenna-separation-m <ANTENNA_SEPARATION_M>
-The horizontal distance between the transmitter and the receiver, in m
-```
-
-```{option} --sampling-mhz <SAMPLING_MHZ>
-The digitizer's sampling frequency, in MHz: not the antenna's. The time between samples is 1000 / this, in ns
-```
-
-```{option} --date <YYYY-MM-DD>
-The UTC date of an IceRadar, pulseEKKO or VIRL recording, whose positions record only a time of day
+```{option} --set <KEY=VALUE>
+Set a value, as KEY=VALUE: antenna_separation_m=4.5, date=2024-04-05. Repeatable, once per key. The keys are listed at https://ridal.readthedocs.io/en/stable/reference/sidecar.html#override-keys
 ```
 
 ```{option} --unset <KEY>
@@ -462,6 +468,24 @@ For a GSSI file of several channels: change this channel's own values (from 1), 
 
 ```{option} --template
 Write a sidecar that sets nothing, with every key commented out beside what the header says of it, for each recording that has none
+```
+
+**Per-key values**
+
+```{option} --antenna-mhz <MHZ>
+The antenna's center frequency, in MHz. The same as --set antenna_mhz=MHZ, which replaces it
+```
+
+```{option} --antenna-separation-m <M>
+The horizontal distance between the transmitter and the receiver, in m. The same as --set antenna_separation_m=M, which replaces it
+```
+
+```{option} --sampling-mhz <MHZ>
+The digitizer's sampling frequency, in MHz: not the antenna's. The same as --set sampling_mhz=MHZ, which replaces it
+```
+
+```{option} --date <YYYY-MM-DD>
+The UTC date of an IceRadar, pulseEKKO or VIRL recording, whose positions record only a time of day. The same as --set date=YYYY-MM-DD, which replaces it
 ```
 
 ## `ridal steps`
