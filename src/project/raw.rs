@@ -50,10 +50,72 @@ pub const SWEEP_MIN_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// What one radargram is made from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "SourceDocument", into = "SourceDocument")]
+pub struct Source {
+    /// The raw recordings, in the order they are merged.
+    pub bundles: Vec<Bundle>,
+    /// The CRS to project positions into; the project's default otherwise.
+    pub crs: Option<String>,
+    /// The project's DEM to take elevations from.
+    pub dem: Option<SourceDem>,
+    /// Values for every recording, which take precedence over each
+    /// recording's sidecar and header (#409, #537, #558): the antenna's as
+    /// a run's arguments, and the rest in place of each recording's sidecar
+    /// values ([`Source::bundles_to_read`]).
+    pub overrides: crate::sidecar::Overrides,
+    /// What to call the radargram while it has none of its own: an id
+    /// with raw data and no processed file yet (#382 phase 7). Once it is
+    /// served, the catalog's names win and renaming is an override.
+    pub names: Option<SourceNames>,
+}
+
+impl From<SourceDocument> for Source {
+    /// `overrides`, with what the per-key fields of a source written before
+    /// them give where it gives nothing.
+    fn from(document: SourceDocument) -> Source {
+        let per_key = crate::sidecar::Overrides {
+            antenna_mhz: document.antenna_mhz,
+            antenna_separation_m: document.antenna_separation,
+            sampling_mhz: document.sampling_mhz,
+            date: document.date,
+            altitude_offset_m: document.altitude_offset_m,
+        };
+        Source {
+            bundles: document.bundles,
+            crs: document.crs,
+            dem: document.dem,
+            overrides: per_key.under(document.overrides),
+            names: document.names,
+        }
+    }
+}
+
+impl From<Source> for SourceDocument {
+    fn from(source: Source) -> SourceDocument {
+        let overrides = source.overrides;
+        SourceDocument {
+            bundles: source.bundles,
+            crs: source.crs,
+            dem: source.dem,
+            overrides,
+            antenna_mhz: overrides.antenna_mhz,
+            antenna_separation: overrides.antenna_separation_m,
+            sampling_mhz: overrides.sampling_mhz,
+            date: overrides.date,
+            altitude_offset_m: overrides.altitude_offset_m,
+            names: source.names,
+        }
+    }
+}
+
+/// [`Source`] as it is stored and served: its `overrides`, and beside them
+/// the per-key fields that came before them (#559), derived from them, so
+/// a client or a Ridal from before reads it as it did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 // gprinterp's picks document has a `Source` schema of its own.
 #[cfg_attr(feature = "server", schema(as = RawSource))]
-pub struct Source {
+pub struct SourceDocument {
     /// The raw recordings, in the order they are merged.
     pub bundles: Vec<Bundle>,
     /// The CRS to project positions into; the project's default otherwise.
@@ -64,37 +126,36 @@ pub struct Source {
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub dem: Option<SourceDem>,
-    /// The antenna's frequency in MHz, where the files do not say it or say
-    /// it wrongly; `None` reads it from the files (#409). It describes the
-    /// recording, as the CRS and DEM do, so every draft and batch made from
-    /// the source uses it.
+    /// Values for every recording, with the keys of a sidecar's
+    /// `[overrides]`, which take precedence over each recording's sidecar
+    /// and header. They describe the recordings, as the CRS and DEM do, so
+    /// every draft and batch made from the source uses them. A date is only
+    /// for recordings whose positions record a time of day, and an altitude
+    /// offset not for those whose positions are a `.coords.csv`.
+    // Defaulted, so a source written before reads as its per-key fields.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub overrides: crate::sidecar::Overrides,
+    /// Deprecated: `overrides.antenna_mhz`.
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub antenna_mhz: Option<f32>,
-    /// The distance between the antennas in m, likewise; `None` reads it
-    /// from the files.
+    /// Deprecated: `overrides.antenna_separation_m`.
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub antenna_separation: Option<f32>,
-    /// The digitizer's sampling frequency in MHz, where the files do not
-    /// record it (VIRL) or record it wrongly; `None` reads it from the
-    /// files, or a recording's sidecar.
+    /// Deprecated: `overrides.sampling_mhz`.
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub sampling_mhz: Option<f32>,
-    /// The UTC date of the recordings whose positions record only a time
-    /// of day (IceRadar, pulseEKKO and VIRL, but not one with a
-    /// `.coords.csv`), in place of the date their files give; `None` takes
-    /// it from the files, or a recording's sidecar.
+    /// Deprecated: `overrides.date`.
     #[serde(default, with = "crate::sidecar::date_serde")]
     #[cfg_attr(
         feature = "server",
         schema(value_type = Option<String>, format = Date, required = true)
     )]
     pub date: Option<chrono::NaiveDate>,
-    /// m added to every altitude of the recordings' own positions (#558),
-    /// in place of their sidecars'; `None` takes it from the sidecars. Not
-    /// for a recording whose positions are a `.coords.csv`.
+    /// Deprecated: `overrides.altitude_offset_m`.
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub altitude_offset_m: Option<f32>,
@@ -142,13 +203,14 @@ impl Source {
             .iter()
             .map(|bundle| {
                 let mut overrides = bundle.overrides.unwrap_or_default();
-                overrides.sampling_mhz = self.sampling_mhz.or(overrides.sampling_mhz);
+                let given = &self.overrides;
+                overrides.sampling_mhz = given.sampling_mhz.or(overrides.sampling_mhz);
                 if bundle_takes_date(bundle) {
-                    overrides.date = self.date.or(overrides.date);
+                    overrides.date = given.date.or(overrides.date);
                 }
                 if !bundle_has_coords_csv(bundle) {
                     overrides.altitude_offset_m =
-                        self.altitude_offset_m.or(overrides.altitude_offset_m);
+                        given.altitude_offset_m.or(overrides.altitude_offset_m);
                 }
                 Bundle {
                     overrides: Some(overrides).filter(|o| !o.is_empty()),
@@ -167,10 +229,12 @@ impl Source {
             .iter()
             .map(|bundle| {
                 let applied = bundle.overrides.map(|o| crate::sidecar::Overrides {
-                    antenna_mhz: o.antenna_mhz.filter(|_| self.antenna_mhz.is_none()),
+                    antenna_mhz: o
+                        .antenna_mhz
+                        .filter(|_| self.overrides.antenna_mhz.is_none()),
                     antenna_separation_m: o
                         .antenna_separation_m
-                        .filter(|_| self.antenna_separation.is_none()),
+                        .filter(|_| self.overrides.antenna_separation_m.is_none()),
                     ..o
                 });
                 Bundle {
@@ -1059,11 +1123,12 @@ mod tests {
             ],
             crs: None,
             dem: None,
-            antenna_mhz: None,
-            antenna_separation: None,
-            sampling_mhz: Some(200.),
-            date,
-            altitude_offset_m: Some(-1.5),
+            overrides: crate::sidecar::Overrides {
+                sampling_mhz: Some(200.),
+                date,
+                altitude_offset_m: Some(-1.5),
+                ..Default::default()
+            },
             names: None,
         };
         let read: Vec<_> = source
@@ -1084,6 +1149,31 @@ mod tests {
         );
         // As a recipe of it records them, so changing them makes it stale.
         assert_eq!(source.expected_bundles()[0].overrides, Some(read[0]));
+    }
+
+    #[test]
+    fn a_source_s_overrides_are_one_object_and_its_old_fields_still_read() {
+        // As a source was written before `overrides` (#559 follow-up).
+        let old = r#"{"bundles": [], "crs": null, "dem": null, "antenna_mhz": 25.0,
+            "antenna_separation": 4.0, "sampling_mhz": null, "date": "2014-04-05",
+            "names": null}"#;
+        let source: Source = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            source.overrides,
+            crate::sidecar::Overrides {
+                antenna_mhz: Some(25.),
+                antenna_separation_m: Some(4.),
+                date: chrono::NaiveDate::from_ymd_opt(2014, 4, 5),
+                ..Default::default()
+            }
+        );
+        // Written with both, so a client or a Ridal from before reads it.
+        let written: serde_json::Value = serde_json::to_value(&source).unwrap();
+        assert_eq!(written["overrides"]["antenna_separation_m"], 4.0);
+        assert_eq!(written["antenna_separation"], 4.0);
+        assert_eq!(written["date"], "2014-04-05");
+        let read: Source = serde_json::from_value(written).unwrap();
+        assert_eq!(read, source);
     }
 
     #[test]
@@ -1108,11 +1198,11 @@ mod tests {
             bundles: bundles.clone(),
             crs: None,
             dem: None,
-            antenna_mhz: mhz,
-            antenna_separation: separation,
-            sampling_mhz: None,
-            date: None,
-            altitude_offset_m: None,
+            overrides: crate::sidecar::Overrides {
+                antenna_mhz: mhz,
+                antenna_separation_m: separation,
+                ..Default::default()
+            },
             names: None,
         };
         assert_eq!(source(None, None).expected_bundles(), bundles);
@@ -1202,11 +1292,7 @@ mod tests {
             bundles,
             crs: None,
             dem: None,
-            antenna_mhz: None,
-            antenna_separation: None,
-            sampling_mhz: None,
-            date: None,
-            altitude_offset_m: None,
+            overrides: Default::default(),
             names: None,
         };
         write_source(&store, &id, &source, &Expectation::Absent).unwrap();
@@ -1275,11 +1361,7 @@ mod tests {
                 id: id.clone(),
                 file: dem.file.clone(),
             }),
-            antenna_mhz: None,
-            antenna_separation: None,
-            sampling_mhz: None,
-            date: None,
-            altitude_offset_m: None,
+            overrides: Default::default(),
             names: None,
         };
         write_source(&store, &line, &source, &Expectation::Absent).unwrap();

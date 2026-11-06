@@ -1,5 +1,6 @@
 """The client against a fake server: requests, refusals and transfers."""
 
+import datetime
 import json
 import os
 import threading
@@ -681,3 +682,60 @@ def test_a_source_keeps_its_names_unless_told_otherwise() -> None:
         "group_id": None,
     }
     assert named.source.names == names
+
+
+def test_a_source_takes_its_overrides_as_one_mapping() -> None:
+    # After #563: every sidecar key in one `overrides`, with the per-key
+    # arguments deprecated.
+    sent: list[Any] = []
+
+    def handler(request: Any) -> Any:
+        sent.append(json.loads(request.content))
+        given = {k: v for k, v in sent[-1]["overrides"].items() if v is not None}
+        source = {
+            "bundles": [],
+            "crs": None,
+            "dem": None,
+            "overrides": given,
+            "antenna_mhz": given.get("antenna_mhz"),
+            "antenna_separation": given.get("antenna_separation_m"),
+            "names": None,
+        }
+        return httpx.Response(
+            200, json={"radargram_id": "line-01", "source": source, "recordings": []}
+        )
+
+    with fake(handler) as client:
+        view = client.set_source(
+            "line-01",
+            [],
+            overrides={
+                "antenna_mhz": 25,
+                "date": datetime.date(2014, 4, 5),
+                "altitude_offset_m": None,
+            },
+        )
+        with pytest.warns(
+            DeprecationWarning, match="antenna_separation= is deprecated"
+        ):
+            client.set_source("line-01", [], antenna_separation=4.0)
+        with (
+            pytest.warns(DeprecationWarning),
+            pytest.raises(ValueError, match="sampling_mhz is given both"),
+        ):
+            client.set_source(
+                "line-01", [], sampling_mhz=200, overrides={"sampling_mhz": 200}
+            )
+        with pytest.raises(TypeError, match="not a datetime"):
+            client.set_source(
+                "line-01",
+                [],
+                overrides={"date": datetime.datetime(2014, 4, 5, tzinfo=datetime.UTC)},
+            )
+    unset = dict.fromkeys(ridal_client.Overrides.__annotations__)
+    assert sent[0]["overrides"] == unset | {"antenna_mhz": 25, "date": "2014-04-05"}
+    assert "antenna_mhz" not in sent[0]
+    assert view.source.overrides.antenna_mhz == 25
+    assert view.source.overrides.date == "2014-04-05"
+    assert sent[1]["overrides"] == unset | {"antenna_separation_m": 4.0}
+    assert len(sent) == 2

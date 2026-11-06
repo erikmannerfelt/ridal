@@ -7457,6 +7457,33 @@ async fn a_source_gives_the_sampling_frequency_and_date_its_files_do_not() {
         "altitude_offset"
     );
 
+    // The same as one `overrides` object, which the answer has too, and a
+    // key given both ways is refused.
+    let object = set(json!({"overrides": {
+        "sampling_mhz": 200, "date": "2014-04-05", "altitude_offset_m": 100
+    }}))
+    .await;
+    assert_eq!(object.status, StatusCode::OK, "{}", object.text);
+    assert_eq!(
+        object.body["source"]["overrides"]["altitude_offset_m"],
+        100.
+    );
+    assert_eq!(object.body["source"]["overrides"]["antenna_mhz"], 25.);
+    assert_eq!(object.body["source"]["altitude_offset_m"], 100.);
+    assert_eq!(altitude(&object.body), altitude(&offset.body));
+    let twice = set(json!({"sampling_mhz": 200, "overrides": {"sampling_mhz": 200}})).await;
+    assert_eq!(
+        twice.body["error"]["code"], "override_given_twice",
+        "{}",
+        twice.text
+    );
+    let zero = set(json!({"overrides": {"sampling_mhz": 0, "date": "2014-04-05"}})).await;
+    assert_eq!(
+        zero.body["error"]["code"], "invalid_sampling_mhz",
+        "{}",
+        zero.text
+    );
+
     // A date is refused for recordings that give their own.
     let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
     let ramac = put(

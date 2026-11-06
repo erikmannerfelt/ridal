@@ -229,6 +229,14 @@ optional `crs` and one of the project's DEMs), `create_draft`,
 `wait_for_draft`, `download_draft` to look at the result locally, and
 `commit_draft`.
 
+Both `process` and `set_source` take `overrides`, values for every
+recording by the keys of a {doc}`sidecar <../reference/sidecar>`, which take
+precedence over what each recording's sidecar and files say:
+`overrides={"antenna_mhz": 25, "altitude_offset_m": 1234.5}`. A key left out,
+or given as `None`, is read from the sidecars and files. The
+`antenna_mhz`, `antenna_separation`, `sampling_mhz` and `date` arguments of
+earlier releases still work, with a `DeprecationWarning`.
+
 **Processing profiles** keep radargrams processed alike. Put radargrams in
 one, and when its steps change, reprocess those that are out of date as a
 batch:
@@ -285,10 +293,12 @@ if plan.ok:
             output.radargram_id,
             [[by_name[name] for name in recording.files] for recording in recordings],
             parts=[recording.part for recording in recordings],
-            antenna_mhz=output.antenna_mhz_override,
-            antenna_separation=output.antenna_separation_override,
-            sampling_mhz=output.sampling_mhz_override,
-            date=output.date,
+            overrides={
+                "antenna_mhz": output.antenna_mhz_override,
+                "antenna_separation_m": output.antenna_separation_override,
+                "sampling_mhz": output.sampling_mhz_override,
+                "date": output.date,
+            },
             names=SourceNames(output.display_name, "Drønbreen"),
             only_new=True,
         )

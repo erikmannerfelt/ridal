@@ -173,9 +173,10 @@ downloaded are read as the server reads them.
 
 Saving a source again with a recording's own files, as changing its antenna
 settings does, keeps the values; uploading an empty sidecar with it removes
-them. The source's own antenna frequency and separation are set for every
-recording of the radargram, like an option for a run, and take precedence
-over the sidecars. A change to a recording's sidecar values makes what was
+them. The source's own `overrides` (the **Process…** dialog's boxes, or
+`overrides` in `PUT /api/v1/sources/{radargram_id}`) have the same keys,
+are set for every recording of the radargram, like `--override` for a run,
+and take precedence over the sidecars. A change to a recording's sidecar values makes what was
 processed before stale.
 
 ## In processed files
