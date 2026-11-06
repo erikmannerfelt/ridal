@@ -102,6 +102,19 @@ pub struct InfoRecord {
     /// without one or the sidecar decided nothing (#527).
     #[cfg_attr(feature = "server", schema(required = true))]
     pub sidecar: Option<SidecarSummary>,
+    /// What the recording's files say beyond its metadata, for a format
+    /// that reports more (SkyHub): the recorder's settings, where the
+    /// positions came from and the share of clipped samples. Empty for
+    /// the others.
+    pub settings: Vec<RecordingSetting>,
+}
+
+/// One thing a recording's files say beyond its metadata, in words.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct RecordingSetting {
+    pub name: String,
+    pub value: String,
 }
 
 /// What a recording's sidecar overrode, beside what its header says.
@@ -329,7 +342,23 @@ fn info_record(
             coordinates: resolved.coordinates.to_string_lossy().to_string(),
         },
         sidecar,
+        settings: recording_settings(resolved).map_err(|e| e.to_string())?,
     })
+}
+
+/// [`InfoRecord::settings`] of `resolved`.
+fn recording_settings(resolved: &ResolvedInput) -> Result<Vec<RecordingSetting>, Box<dyn Error>> {
+    let settings = match resolved.kind {
+        formats::FormatKind::SkyHub => crate::io::skyhub_settings(
+            &resolved.header,
+            Some(resolved.coordinates.as_path()).filter(|p| !formats::is_coords_csv(p)),
+        )?,
+        _ => Vec::new(),
+    };
+    Ok(settings
+        .into_iter()
+        .map(|(name, value)| RecordingSetting { name, value })
+        .collect())
 }
 
 /// What the sidecar of `resolved` decided, beside what its header says,
@@ -726,6 +755,7 @@ pub(crate) mod tests {
                 coordinates: String::new(),
             },
             sidecar: None,
+            settings: Vec::new(),
         }
     }
 

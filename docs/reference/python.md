@@ -170,6 +170,7 @@ What the server answers. Each mirrors a schema in
 .. autoclass:: ridal.client.SourceDem
 .. autoclass:: ridal.client.Recording
 .. autoclass:: ridal.client.SidecarSummary
+.. autoclass:: ridal.client.RecordingSetting
 .. autoclass:: ridal.client.Dem
 .. autoclass:: ridal.client.Draft
    :members: finished

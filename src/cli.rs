@@ -1943,6 +1943,14 @@ fn print_info_record(record: &crate::inspect::InfoRecord) {
     println!("Antenna:\t{}", record.metadata.antenna_name);
     println!("Antenna MHz:\t{}", record.metadata.antenna_mhz);
     println!("Antenna sep:\t{} m", record.metadata.antenna_separation_m);
+    if !record.settings.is_empty() {
+        println!();
+        println!("Recorder");
+        println!("--------");
+        for setting in &record.settings {
+            println!("{}:\t{}", setting.name, setting.value);
+        }
+    }
     if let Some(sidecar) = &record.sidecar {
         println!();
         println!("Overrides from {}", sidecar.path);

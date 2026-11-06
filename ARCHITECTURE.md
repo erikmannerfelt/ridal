@@ -1163,6 +1163,49 @@ depth.
   dropped comma). The counter before it wraps and overwrites a comma, so
   the sentence is found by `$GPGGA`.
 
+## UAV SEG-Y from SkyHub (#561)
+
+`src/io/skyhub.rs` reads the SEG-Y that SPH Engineering's SkyHub writes for
+a Radsys zGPR. It is a small purpose-built parser, not a SEG-Y library:
+only the file headers, a few fixed trace-header fields and int32 samples
+are needed, and the file breaks the standard (little-endian, ASCII textual
+header, NMEA positions as float32). A `.sgy` that is not SkyHub's is
+refused with what its header says.
+
+- **Positions are found by name, by layout.** `formats::resolve_files`
+  and `own_positions` call `io::skyhub_positions_beside`: a
+  `<stamp>-gpr.sgy`'s `<stamp>-position.csv`, a part `<stem>_NNN.sgy`'s
+  `<stem>.txt`, or else the `.sgy` itself for its trace headers. The
+  reader tells which it was given from the name, so `--cor` can name any of
+  them. `formats::is_coords_csv` excludes `-position.csv`, which would
+  otherwise be read as a Ridal coordinate CSV. `with_coordinates` with a
+  directory looks for the same names there.
+- **Traces are matched by number, never by row.** `tracl` is the trace's
+  number in the whole recording, so a cut part's first trace is not 0, and
+  a `-position.csv` lacks rows for a few traces and has rows for none
+  (GNSS-only events). Times come from `Elapsed` by trace number,
+  interpolated over missing rows; positions from the first row of each run
+  of identical values (the GNSS updates less often than rows are logged),
+  interpolated in time. RTK columns are used when any row's status is
+  `ON`, and only those rows.
+- **The marker sample is a crop.** `input::load_skyhub_gpr` reads every
+  sample and crops sample 0 with `GPR::crop_samples`, so `twtt_crop` says
+  so and time zero is left for `zero_corr`: `delrt` is absent in one
+  layout, and the `Pulse delay` is a hardware setting, not a time.
+- **What altitude it is.** The reader records which source it used in a
+  `read` line of the processing log (`GPR::merge` now keeps a merged
+  recording's own lines before its `merge` line), and `ridal info` lists it
+  in `InfoRecord::settings` with the textual header's settings and the
+  share of clipped samples. Whether an altitude refers to the surface, the
+  antenna or take-off is not yet a property of the file (#560);
+  `processing::assumptions` warns without a DEM, and also asks for
+  `altitude_offset_m` for an altitude relative to take-off.
+- **The GUI groups by the same names.** `RIDAL.recordingStem` puts a
+  `-position.csv` with its `-gpr.sgy`, `RIDAL.sharedBy` adds a `.txt` to
+  every part it belongs to (one stored file in several bundles), and
+  `RIDAL.ignoredRawFile` leaves out `-system.log` files, which SkyHub also
+  writes for sessions without a recording.
+
 ## Sidecars (#527)
 
 A recording's `<stem>.ridal.toml` (`src/sidecar.rs`) holds values that take

@@ -100,19 +100,36 @@
   let queue = Promise.resolve();
   let created = false;
 
+  /** Files of several recordings, by name: a SkyHub `.txt`, which joins
+   * every part it belongs to, whichever was dropped first. */
+  const shared = new Map();
+
   function addFiles(list) {
     if (created) return;
     errorBox.hidden = true;
     const touched = new Set();
-    for (const file of list) {
-      const stem = stemOf(file.name);
-      if (!byStem.has(stem)) byStem.set(stem, { stem, files: [], stored: null });
-      const entry = byStem.get(stem);
+    const add = (entry, file) => {
       // The same name again replaces it: a corrected `.cor`, say.
       entry.files = entry.files.filter((f) => f.name !== file.name);
       entry.files.push(file);
       entry.stored = null;
       touched.add(entry);
+    };
+    for (const file of list) {
+      if (RIDAL.ignoredRawFile(file.name)) continue;
+      const belongsTo = RIDAL.sharedBy(file.name);
+      if (belongsTo) {
+        shared.set(file.name, { file, belongsTo });
+        continue;
+      }
+      const stem = stemOf(file.name);
+      if (!byStem.has(stem)) byStem.set(stem, { stem, files: [], stored: null });
+      add(byStem.get(stem), file);
+    }
+    for (const { file, belongsTo } of shared.values()) {
+      for (const entry of byStem.values()) {
+        if (belongsTo(entry.stem) && !entry.files.includes(file)) add(entry, file);
+      }
     }
     if (touched.size) {
       stopped = false;
@@ -121,7 +138,8 @@
   }
 
   async function uploadAll(entries) {
-    const files = entries.flatMap((e) => e.files.filter((f) => !stored.has(fileKey(f))));
+    // A shared file once, though several recordings name it.
+    const files = [...new Set(entries.flatMap((e) => e.files.filter((f) => !stored.has(fileKey(f)))))];
     let done = 0;
     cancelUpload.hidden = files.length === 0;
     for (const entry of entries) {

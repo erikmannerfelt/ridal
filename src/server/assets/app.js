@@ -603,13 +603,37 @@ const RIDAL = Object.freeze({
   /** The recording a raw file belongs to: its name without the extension,
    * where `ridal coords`' `<name>.coords.csv` belongs to `<name>` (#13),
    * and so does a sidecar, `<name>.ridal.toml` (#527), as
-   * `formats::resolve_input` reads them. */
+   * `formats::resolve_input` reads them. A SkyHub `<stamp>-position.csv`
+   * belongs to its `<stamp>-gpr.sgy` (#561). */
   recordingStem(name) {
     for (const suffix of [/\.coords\.csv$/i, /\.ridal\.toml$/i]) {
       if (suffix.test(name)) return name.replace(suffix, '');
     }
+    const skyhub = /^(.+)-position\.csv$/i.exec(name);
+    if (skyhub) return `${skyhub[1]}-gpr`;
     const dot = name.lastIndexOf('.');
     return dot > 0 ? name.slice(0, dot) : name;
+  },
+
+  /** Whether a raw file is left out rather than uploaded: a SkyHub
+   * `-system.log`, which Ridal does not read and which SkyHub also writes
+   * for sessions without a recording. */
+  ignoredRawFile(name) {
+    return /-system\.log$/i.test(name);
+  },
+
+  /** The recordings a file shared between several belongs to, or `null`
+   * for a file of one: the `<stem>.txt` of a SkyHub recording cut into
+   * parts holds the positions of every part `<stem>_NNN.sgy`, so it is a
+   * file of each recording whose stem `belongsTo` accepts (#561). */
+  sharedBy(name) {
+    const txt = /^(.+)\.txt$/i.exec(name);
+    if (!txt) return null;
+    const base = txt[1].toLowerCase();
+    return (stem) => {
+      const part = /^(.+)_\d+$/.exec(stem);
+      return part !== null && part[1].toLowerCase() === base;
+    };
   },
 
   /** The stored files a source names for one recording: all of them, but
@@ -617,7 +641,7 @@ const RIDAL = Object.freeze({
    * since a source names only what a radargram is made from. */
   sourceFiles(stored) {
     if (!stored.some((f) => /\.coords\.csv$/i.test(f.name))) return stored;
-    return stored.filter((f) => !/\.(cor|gp2|dzg)$/i.test(f.name));
+    return stored.filter((f) => !/(\.(cor|gp2|dzg|txt)|-position\.csv)$/i.test(f.name));
   },
 
   /** Derive an id from a display name, the way Ridal derives one from a

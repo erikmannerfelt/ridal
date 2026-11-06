@@ -135,6 +135,12 @@ pub(crate) fn load_meta(
             sampling_mhz,
             override_date,
         )?,
+        FormatKind::SkyHub => io::load_skyhub_meta(
+            &resolved.header,
+            medium_velocity,
+            override_antenna_mhz,
+            override_antenna_separation,
+        )?,
     };
     if let Some(mhz) = sampling_mhz {
         meta.frequency = mhz;
@@ -198,6 +204,7 @@ pub(crate) fn load_gpr(
             let data = io::load_virl_data(&resolved.header)?;
             crate::gpr::GPR::from_meta_loc_and_data(location, meta, data)
         }
+        FormatKind::SkyHub => return load_skyhub_gpr(resolved, meta, location),
         FormatKind::Gssi => {
             let data = io::load_dzt(
                 &resolved.data,
@@ -209,6 +216,36 @@ pub(crate) fn load_gpr(
         _ => crate::gpr::GPR::from_meta_and_loc(location, meta),
     };
     gpr.map_err(|e| format!("Error loading GPR data from {:?}: {:?}", resolved.data, e).into())
+}
+
+/// A SkyHub recording, with its first sample, a marker rather than data,
+/// cropped off, and a log line saying where its positions came from.
+fn load_skyhub_gpr(
+    resolved: &ResolvedInput,
+    meta: GPRMeta,
+    location: GPRLocation,
+) -> Result<crate::gpr::GPR, Box<dyn Error>> {
+    let start = std::time::Instant::now();
+    let data = io::load_skyhub_data(&resolved.header)?;
+    let mut gpr = crate::gpr::GPR::from_meta_loc_and_data(location, meta, data)
+        .map_err(|e| format!("Error loading GPR data from {:?}: {e}", resolved.data))?;
+    let without_marker = gpr.data.slice(ndarray::s![1.., ..]).to_owned();
+    gpr.crop_samples(without_marker, &vec![1; gpr.width()])?;
+    let positions = match formats::is_coords_csv(&resolved.coordinates) {
+        true => "a coordinate CSV".to_string(),
+        false => io::skyhub_positions_source(&resolved.header, &resolved.coordinates)?
+            .describe()
+            .to_string(),
+    };
+    gpr.log.push(crate::gpr::processing_log::line(
+        "read",
+        start.elapsed(),
+        &format!(
+            "Read {:?} without its marker sample, with {positions} from {:?}",
+            resolved.header, resolved.coordinates
+        ),
+    ));
+    Ok(gpr)
 }
 
 /// The positions in `positions`, for the recording `resolved`: a Ridal
@@ -306,6 +343,10 @@ fn native_or_csv_positions(
     if resolved.kind == FormatKind::Virl && positions == resolved.header {
         return io::load_virl_positions(&resolved.header, override_date, crs);
     }
+    // Its own positions are one of three files, each told by its name.
+    if resolved.kind == FormatKind::SkyHub {
+        return Ok(io::load_skyhub_positions(&resolved.header, positions, crs)?.0);
+    }
     let native = formats::format_info(resolved.kind).files.coordinates;
     let is_native = positions
         .extension()
@@ -327,7 +368,7 @@ fn native_or_csv_positions(
         FormatKind::Gssi => {
             io::load_gssi_dzg(positions, crs, io::gssi_recorded_date(&resolved.header)?)
         }
-        FormatKind::IceRadar | FormatKind::Virl => Err(format!(
+        FormatKind::IceRadar | FormatKind::Virl | FormatKind::SkyHub => Err(format!(
             "{} cannot hold the positions of {}: {} recording's positions are in \
              the file itself, or in a Ridal coordinate CSV (.csv).",
             positions.display(),
