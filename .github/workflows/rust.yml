@@ -52,7 +52,7 @@ jobs:
       # and the server-feature tests -- was fine.
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-14]
+        os: [ubuntu-24.04, windows-latest, macos-15]
 
     steps:
     - uses: actions/checkout@v6
