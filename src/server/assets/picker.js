@@ -892,12 +892,24 @@
      * onto its own end would close a loop, which is never a function of
      * trace. */
     function findJoinTarget(featureIndex, latlng) {
-      const label = features[featureIndex].properties?.label;
+      return nearestEndpoint(
+        features[featureIndex].properties?.label,
+        latlng,
+        featureIndex,
+      );
+    }
+
+    /** The nearest endpoint of a stored `label` line to `latlng`, within
+     * `SNAP_RADIUS_PX`, as `{ index, atStart, distance }`, or null.
+     * `exclude` is a feature index to leave out. A line on a layer switched
+     * off in the panel is not drawn, so it is not a target either. */
+    function nearestEndpoint(label, latlng, exclude) {
       const point = map.latLngToContainerPoint(latlng);
       let best = null;
       features.forEach((feature, index) => {
-        if (index === featureIndex) return;
+        if (index === exclude) return;
         if ((feature.properties?.label ?? null) !== (label ?? null)) return;
+        if (hiddenLayers.has(feature.properties?.label)) return;
         const coordinates = feature.geometry.coordinates;
         for (const atStart of [true, false]) {
           const [trace, sample] = atStart
@@ -912,6 +924,57 @@
         }
       });
       return best;
+    }
+
+    /** The stored lines the draft continues: `start` and `end`, each
+     * `{ index, atStart }` or null.
+     *
+     * Read from the draft's geometry rather than remembered from the click
+     * that placed the vertex. A tap near an endpoint copies it exactly (see
+     * the map's click handler), so equality is the test, and undoing,
+     * removing or dragging that vertex ends the join without any state to
+     * keep in step. The two ends never join the same line: that closes a
+     * loop, which is never a function of trace. */
+    function draftJoins(label, coordinates) {
+      const at = ([trace, sample], exclude) => {
+        let found = null;
+        features.forEach((feature, index) => {
+          if (found || index === exclude) return;
+          if ((feature.properties?.label ?? null) !== (label ?? null)) return;
+          const line = feature.geometry.coordinates;
+          for (const atStart of [true, false]) {
+            const end = atStart ? line[0] : line[line.length - 1];
+            if (end[0] === trace && end[1] === sample) {
+              found = { index, atStart };
+              return;
+            }
+          }
+        });
+        return found;
+      };
+      if (!coordinates.length) return { start: null, end: null };
+      const start = at(coordinates[0]);
+      const end =
+        coordinates.length > 1
+          ? at(coordinates[coordinates.length - 1], start?.index)
+          : null;
+      return { start, end };
+    }
+
+    /** The draft `coordinates` with the lines it continues joined on, by
+     * `joinCoordinates`, so the result runs from one stored line through the
+     * draft into the other. */
+    function joinedDraft(coordinates, joins) {
+      let merged = coordinates;
+      if (joins.start) {
+        const other = features[joins.start.index].geometry.coordinates;
+        merged = joinCoordinates(other, merged, joins.start.atStart, true);
+      }
+      if (joins.end) {
+        const other = features[joins.end.index].geometry.coordinates;
+        merged = joinCoordinates(merged, other, false, joins.end.atStart);
+      }
+      return merged;
     }
 
     /** Merge the dragged line into the one whose endpoint it was dropped on.
@@ -1391,6 +1454,13 @@
             updateStatus();
           }),
         );
+        // An end that continues another line is marked, so a snap is seen
+        // as it happens rather than discovered when the line is finished.
+        const joins = draftJoins(label, draft);
+        if (joins.start) L.DomUtil.addClass(handles[0].getElement(), "pick-handle-join");
+        if (joins.end) {
+          L.DomUtil.addClass(handles[handles.length - 1].getElement(), "pick-handle-join");
+        }
         return;
       }
 
@@ -1841,18 +1911,53 @@
         redraw();
         return true;
       }
-      const overlap = firstOverlap(layerSelect.value, draft);
+      const label = layerSelect.value;
+      const overlap = firstOverlap(label, draft);
       if (overlap) {
         showError(
           `This line covers traces ${overlap.fromTrace.toFixed(1)} to ` +
             `${overlap.toTrace.toFixed(1)}, where ` +
-            `${takenBy(layerSelect.value, overlap)}. ${ruleFor(overlap)} ` +
+            `${takenBy(label, overlap)}. ${ruleFor(overlap)} ` +
             "Shorten it so it does not cover those traces.",
         );
         return false;
       }
-      features.push(newFeature(draft, layerSelect.value));
+
+      // A draft that starts or ends on another line's endpoint continues
+      // that line, so it is stored as one line with it rather than as a
+      // second line that merely touches it.
+      const joins = draftJoins(label, draft);
+      const joined = [joins.start, joins.end].filter(Boolean).map((j) => j.index);
+      if (!joined.length) {
+        features.push(newFeature(draft, label));
+        draft = null;
+        markDirty();
+        redraw();
+        return true;
+      }
+      const merged = joinedDraft(draft, joins);
+      if (!allowsOverhangs(label) && overhangIndices(merged).length > 0) {
+        showError(
+          "Joining this line to the one it starts or ends on would double " +
+            "back, so the result would have two depths at one position. Move " +
+            "that end off the other line's endpoint to keep them separate.",
+        );
+        return false;
+      }
+      // No overlap check beyond the draft's: the draft was checked against
+      // every line, the joined ones included, so the merged line covers
+      // only traces the draft and the joined lines already did.
+      const sorted = joined.slice().sort((a, b) => b - a);
+      sorted.forEach((index) => features.splice(index, 1));
+      features.push(newFeature(merged, label));
       draft = null;
+      selected = features.length - 1;
+      clearError();
+      showInfo(
+        joined.length === 2
+          ? "The new line joins two lines into one."
+          : "The new line was joined to the line it continues.",
+      );
       markDirty();
       redraw();
       return true;
@@ -1878,17 +1983,36 @@
         showError("Choose a layer before picking.");
         return;
       }
-      const [trace, sample] = toIndex(event.latlng);
+      let [trace, sample] = toIndex(event.latlng);
       if (!inBounds(trace, sample)) return;
+
+      // A tap near the end of another line on this layer lands exactly on
+      // it, so the draft continues that line and is joined to it when
+      // finished (`draftJoins`). Not the line the draft already starts on:
+      // that would close a loop.
+      const startsOn = draftJoins(layerSelect.value, draft).start;
+      const snap = nearestEndpoint(
+        layerSelect.value,
+        event.latlng,
+        draft.length ? startsOn?.index : undefined,
+      );
+      if (snap) {
+        const line = features[snap.index].geometry.coordinates;
+        [trace, sample] = snap.atStart ? line[0] : line[line.length - 1];
+      }
 
       // Test the whole candidate line, not just this vertex against the
       // previous one. Direction is a property of the line as a whole, and
       // checking pairwise let one stray vertex flip the perceived direction
       // and then reject every later point as an overhang.
+      // With the lines it continues joined on, since a draft that starts on
+      // the end of a line pointing the other way doubles back only as one.
       const candidate = draft.concat([[trace, sample]]);
       if (
         !allowsOverhangs(layerSelect.value) &&
-        overhangIndices(candidate).length > 0
+        overhangIndices(
+          joinedDraft(candidate, draftJoins(layerSelect.value, candidate)),
+        ).length > 0
       ) {
         showError(
           "That point would make the line double back, so it would have two " +
