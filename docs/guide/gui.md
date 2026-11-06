@@ -214,6 +214,9 @@ once, and what is served then needs processing again.
    is a recording of its own, as in `ridal batch-process`: lines merge in
    time like files, and the channels of a file are never merged with each
    other. `{line}` and `{channel}` in the id pattern say which is which.
+   A SkyHub `-position.csv` belongs to its `-gpr.sgy`, the `.txt` of a
+   SkyHub recording cut into parts belongs to every part, and SkyHub's
+   `-system.log` files are left out.
 2. **Check the radargrams.** Recordings made less than the threshold apart
    (ten minutes unless changed), with the same antenna and settings, are
    merged into one radargram. The timeline shows one row per radargram:

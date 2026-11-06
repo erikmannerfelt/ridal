@@ -2,12 +2,14 @@
 
 ## Input formats
 
-Ridal reads five families of impulse GPR data. A recording of the first
+Ridal reads six families of impulse GPR data. A recording of the first
 three consists of several files that share a name but have different
 extensions, and any one of them can be given as the input, since Ridal finds
 the others beside it regardless of the case of their extensions. An IceRadar
 or VIRL recording is a single file (see [IceRadar](#iceradar) and
-[VIRL](#virl) below).
+[VIRL](#virl) below), and a SkyHub recording's positions are found by the
+names SkyHub and the software that cuts its recordings give them (see
+[SkyHub](#skyhub)).
 
 | Format | Header | Data | Positions |
 |---|---|---|---|
@@ -16,6 +18,7 @@ or VIRL recording is a single file (see [IceRadar](#iceradar) and
 | GSSI (`gssi`) | `.DZT` | `.DZT` | `.DZG` |
 | Blue System Integration IceRadar (`iceradar`) | `.h5`/`.hdf5` | the same file | the same file |
 | VIRL, as the VIRL-7 (`virl`) | `.DSR` | the same file | the same file |
+| SPH Engineering SkyHub, with a Radsys zGPR (`skyhub`) | `.sgy` | the same file | `-position.csv`, a `.txt`, or the same file |
 
 `ridal formats` prints the same table, and `ridal.all_format_descriptions`
 holds it in Python. A path without an extension also works, as long as only
@@ -25,7 +28,8 @@ Positions are required, because a radargram without positions cannot be
 placed on a map, and Ridal refuses to read a recording without them. GSSI and
 pulseEKKO positions are read from the NMEA sentences (`$GPGGA`) in their
 sidecar files, IceRadar positions from the GPS fields stored with each
-trace, and VIRL positions from the `$GPGGA` sentence in each trace's header. Positions from anywhere else, for any format, can be given as
+trace, VIRL positions from the `$GPGGA` sentence in each trace's header, and
+SkyHub positions from the files described [below](#skyhub). Positions from anywhere else, for any format, can be given as
 a coordinate CSV, either beside the recording as `<stem>.coords.csv` or with
 `--cor` (see {ref}`coordinate-csv`).
 
@@ -56,7 +60,7 @@ Antenna frequency
 
 Antenna separation
 : The distance between the transmitter and the receiver (in meters), read
-  from the RAMAC and pulseEKKO headers. GSSI, IceRadar and VIRL files do not
+  from the RAMAC and pulseEKKO headers. GSSI, IceRadar, VIRL and SkyHub files do not
   record it, so it is 0 for them, with a warning, unless
   `--override antenna_separation_m=M` or a sidecar's `antenna_separation_m`
   gives it. A sidecar is the way to give recordings of one survey different
@@ -411,3 +415,57 @@ Interpretations and points
 : Picks are stored as [gprinterp](https://docs.rs/gprinterp) JSON documents
   and exported as GeoJSON or CSV points (see {doc}`interpretation` and
   {doc}`../reference/project-files`).
+
+(skyhub)=
+### SkyHub
+
+SPH Engineering's SkyHub is the onboard computer of a common UAV radar
+setup. It records a Radsys zGPR, such as the Zond Aero LF (`zAeroLF`), as
+SEG-Y. Ridal reads these files and refuses any other SEG-Y, since `.sgy` is
+a generic extension: a SkyHub file is told by its textual header, which
+names SkyHub and the zGPR. Unlike the standard, the file is little-endian,
+with 32-bit integer samples.
+
+A recording comes in one of two layouts.
+
+As SkyHub writes it
+: `<stamp>-gpr.sgy` with `<stamp>-position.csv`, and a `<stamp>-system.log`
+  that Ridal does not read. Either the `.sgy` or the `-position.csv` can be
+  given as the input. The CSV is matched to the traces by its `zGPR:Trace`
+  column, and gives each trace a time to the millisecond. Its RTK columns
+  are used when any row has RTK, and its standalone positions otherwise. The
+  GNSS updates less often than traces are recorded, so a position repeated
+  over several rows is kept at its first and the traces between are
+  interpolated in time.
+
+Cut into parts
+: `<stem>_001.sgy`, `<stem>_002.sgy`, ... are parts of one recording, with
+  one `<stem>.txt` of trace number, latitude, longitude and altitude for
+  the whole recording. Each part is a recording of its own, positioned by
+  its traces' numbers in the whole recording.
+
+Without either file, the positions in the trace headers are read. They are
+stored to only about a metre.
+
+What must be given
+: The files do not record the antenna frequency, and the zGPR takes
+  antennas of several frequencies, so it is never assumed: give
+  `antenna_mhz` in a sidecar or with `--override antenna_mhz=MHZ`. The
+  antenna separation is 0 m with a warning unless given.
+
+Altitudes
+: The altitudes are the aircraft's, not the ground's. Only the RTK
+  altitudes are absolute (in a vertical datum the files do not name); the
+  others are relative to take-off, and need `altitude_offset_m` (see
+  {ref}`altitude-offset`) to become elevations. Without a DEM (`--dem`),
+  which gives the ground's elevations in their place, processing warns
+  about both. `ridal info` and the processing log say which positions were
+  used.
+
+The samples
+: The first sample of every trace is a marker, not data, and is cropped
+  off as it is read. The `Pulse delay` of the textual header is a hardware
+  setting tuned per antenna and unit to keep the direct wave at the top of
+  the window, not a time, so it is only reported, by `ridal info`, with the
+  rest of the radar's settings and the share of samples at the zGPR's
+  saturation, which the direct wave often reaches.

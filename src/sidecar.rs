@@ -128,15 +128,15 @@ pub const OVERRIDE_KEYS: &[OverrideKey] = &[
     OverrideKey {
         name: "antenna_mhz",
         unit: "MHz",
-        description: "The antenna's center frequency. Needed for an IceRadar or VIRL file, \
-                      which does not record it.",
+        description: "The antenna's center frequency. Needed for an IceRadar, VIRL or SkyHub \
+                      file, which does not record it.",
     },
     OverrideKey {
         name: "antenna_separation_m",
         unit: "m",
         description: "The horizontal distance between the transmitter and the receiver. GSSI, \
-                      IceRadar and VIRL files do not record it, and it is taken as 0 m without \
-                      one.",
+                      IceRadar, VIRL and SkyHub files do not record it, and it is taken as 0 m \
+                      without one.",
     },
     OverrideKey {
         name: "sampling_mhz",

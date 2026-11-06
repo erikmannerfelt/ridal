@@ -135,7 +135,8 @@ fn describe_input(resolved: &ResolvedInput) -> String {
 
 /// What the input files did not record and Ridal assumed instead, as
 /// warnings to show: the antenna separation, for the formats whose headers
-/// do not give it, and an IceRadar line's date taken from the PC clock.
+/// do not give it, an IceRadar line's date taken from the PC clock, and
+/// a UAV's altitudes taken for the ground's.
 /// Empty when nothing was assumed, or the user gave it.
 pub(crate) fn assumptions(
     resolved: &[ResolvedInput],
@@ -216,6 +217,33 @@ pub(crate) fn assumptions(
                     0 => "no fix with a correct checksum",
                     _ => "one fix",
                 }
+            ));
+        }
+    }
+    // A UAV's positions give the aircraft's altitude, not the ground's,
+    // and every consumer reads the altitude as the ground's. A DEM puts
+    // the ground's in its place.
+    if options.dem_path.is_none() {
+        for r in resolved.iter().filter(|r| {
+            r.kind == formats::FormatKind::SkyHub && !formats::is_coords_csv(&r.coordinates)
+        }) {
+            let source = crate::io::skyhub_positions_source(&r.header, &r.coordinates)?;
+            let offset = options.overrides.altitude_offset_m.is_some()
+                || crate::sidecar::overrides_of(r)?.altitude_offset_m.is_some();
+            let relative = match (source.relative_altitude(), offset) {
+                (true, false) => {
+                    ", and relative to take-off. Give the take-off's elevation with \
+                     --override altitude_offset_m=M (overrides= in Python) to make them \
+                     absolute"
+                }
+                _ => "",
+            };
+            warnings.push(format!(
+                "Warning: the altitudes of {} are the aircraft's, from its {}, not the \
+                 ground's{relative}. Give a DEM with --dem (dem= in Python) to take the \
+                 ground's elevations from it.",
+                describe_input(r),
+                source.name()
             ));
         }
     }

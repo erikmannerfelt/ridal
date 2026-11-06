@@ -50,8 +50,11 @@
         Every file of each recording: <code>.rad</code>, <code>.rd3</code>
         and <code>.cor</code> for RAMAC, <code>.hd</code>, <code>.dt1</code>
         and <code>.gp2</code> for pulseEKKO, <code>.dzt</code> and
-        <code>.dzg</code> for GSSI, the <code>.h5</code> for IceRadar and
-        the <code>.dsr</code> for VIRL. Each line of an IceRadar file and
+        <code>.dzg</code> for GSSI, the <code>.h5</code> for IceRadar, the
+        <code>.dsr</code> for VIRL, and the <code>-gpr.sgy</code> and
+        <code>-position.csv</code> for SkyHub (or the parts of a recording
+        cut into <code>_001.sgy</code>, ... with its <code>.txt</code>).
+        Each line of an IceRadar file and
         each channel of a GSSI file is a recording of its own. A
         <code>&lt;name&gt;.coords.csv</code>
         from <code>ridal coords</code> is used in place of a recording's own
@@ -59,7 +62,7 @@
         without the extension, and uploaded one at a time.
       </p>
       <input type="file" id="ingest-input" multiple hidden
-             accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx,.h5,.hdf5,.dsr,.csv,.toml">
+             accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx,.h5,.hdf5,.dsr,.sgy,.txt,.csv,.toml">
     </div>
     <p id="ingest-upload" class="hint" aria-live="polite"></p>
     <p><button type="button" id="ingest-cancel" hidden>Stop uploading</button></p>

@@ -798,8 +798,11 @@ impl GPR {
             self.metadata.last_trace = self.width() as u32;
             user_metadata::merge_prefer_first(&mut self.user_metadata, &other.user_metadata);
 
-            // Not a step, but recorded like one: `export` reads the merged
-            // files back from these lines.
+            // What reading the other said of it (a SkyHub recording's
+            // positions source), then the merge itself. Not a step, but
+            // recorded like one: `export` reads the merged files back from
+            // these lines.
+            self.log.extend_from_slice(&other.log);
             self.log.push(processing_log::line(
                 "merge",
                 start_time.elapsed(),

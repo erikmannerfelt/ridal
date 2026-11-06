@@ -164,7 +164,9 @@ mod tests {
                     format.files.data,
                     format.files.coordinates,
                 ] {
+                    // A SkyHub `-position.csv` is picked as a `.csv`.
                     let extension = extension.to_ascii_lowercase();
+                    let extension = format!(".{}", extension.rsplit('.').next().unwrap());
                     assert!(
                         accepted.contains(&extension.as_str()),
                         "{name} does not accept {extension} ({})",

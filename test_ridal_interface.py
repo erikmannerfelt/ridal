@@ -23,6 +23,7 @@ def test_known_format_names_exist():
     assert "iceradar" in ridal.all_formats
     assert ridal.all_format_descriptions["iceradar"]["files"]["header"] == ".h5"
     assert ridal.all_format_descriptions["virl"]["files"]["header"] == ".DSR"
+    assert ridal.all_format_descriptions["skyhub"]["files"]["header"] == ".sgy"
 
 
 def test_run_cli_raises_migration_error():

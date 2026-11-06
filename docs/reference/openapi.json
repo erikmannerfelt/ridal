@@ -14769,7 +14769,8 @@
           "metadata",
           "location",
           "related_files",
-          "sidecar"
+          "sidecar",
+          "settings"
         ],
         "properties": {
           "input": {
@@ -14797,6 +14798,13 @@
                 "type": "null"
               }
             ]
+          },
+          "settings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecordingSetting"
+            },
+            "description": "What the recording's files say beyond its metadata, for a format\nthat reports more (SkyHub): the recorder's settings, where the\npositions came from and the share of clipped samples. Empty for\nthe others."
           }
         }
       },
@@ -18310,6 +18318,22 @@
               "$ref": "#/components/schemas/NamedFile"
             },
             "description": "The files it is made of, as `POST /api/v1/raw` answered."
+          }
+        }
+      },
+      "RecordingSetting": {
+        "type": "object",
+        "description": "One thing a recording's files say beyond its metadata, in words.",
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
           }
         }
       },

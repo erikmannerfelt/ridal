@@ -1387,6 +1387,22 @@ class SidecarSummary:
 
 
 @dataclass(frozen=True)
+class RecordingSetting:
+    """One thing a recording's files say beyond its metadata, in words."""
+
+    name: str
+    value: str
+
+    @classmethod
+    def from_json(cls, data: Any) -> "RecordingSetting":
+        return _parse(
+            "recording setting",
+            data,
+            lambda d: cls(name=d["name"], value=d["value"]),
+        )
+
+
+@dataclass(frozen=True)
 class Recording:
     """What one raw recording's header and positions say, as the server read
     them when its source was set."""
@@ -1398,6 +1414,10 @@ class Recording:
     related_files: RelatedFiles
     sidecar: SidecarSummary | None = None
     """What the recording's sidecar overrode, or ``None`` without one."""
+    settings: tuple[RecordingSetting, ...] = ()
+    """What the recording's files say beyond its metadata, for a format that
+    reports more (SkyHub): the recorder's settings, where the positions came
+    from and the share of clipped samples. Empty for the others."""
 
     @classmethod
     def from_json(cls, data: Any) -> "Recording":
@@ -1413,6 +1433,9 @@ class Recording:
                 sidecar=None
                 if d.get("sidecar") is None
                 else SidecarSummary.from_json(d["sidecar"]),
+                settings=tuple(
+                    RecordingSetting.from_json(s) for s in d.get("settings", [])
+                ),
             ),
         )
 

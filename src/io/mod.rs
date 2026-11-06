@@ -10,6 +10,9 @@
 //!   the header, the data and the positions in one file.
 //! - [`virl`]: VIRL radar (`.DSR`), with the header, the data and the
 //!   positions in one file, and neither the sampling frequency nor the date.
+//! - [`skyhub`]: SPH Engineering SkyHub (`.sgy`), a UAV's Radsys zGPR as
+//!   little-endian SEG-Y, with its positions in a `-position.csv`, the
+//!   `.txt` of a recording cut into parts, or its own trace headers.
 //! - [`coords_csv`]: Ridal's coordinate CSV, which `--cor` reads in place of
 //!   any format's own positions file (#13).
 //! - [`ridal`]: Ridal's own products -- the processed NetCDF and the track
@@ -26,6 +29,7 @@ pub(crate) mod iceradar;
 mod mala;
 mod pulseekko;
 mod ridal;
+mod skyhub;
 mod virl;
 
 pub use coords_csv::{
@@ -43,6 +47,13 @@ pub use iceradar::{
 };
 pub use mala::{load_cor, load_rad, load_rd3};
 pub use pulseekko::{load_pe_dt1, load_pe_gp2, load_pe_hd, pe_missing_last_trace};
+#[cfg(test)]
+pub(crate) use skyhub::test_sgy;
+pub use skyhub::{
+    is_skyhub_position_csv, load_skyhub_data, load_skyhub_meta, load_skyhub_positions,
+    skyhub_positions_beside, skyhub_positions_file_name, skyhub_positions_source,
+    skyhub_recording_of_positions, skyhub_settings,
+};
 #[cfg(test)]
 pub(crate) use virl::test_dsr;
 pub use virl::{load_virl_data, load_virl_meta, load_virl_positions, virl_fix_count};

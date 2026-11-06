@@ -497,9 +497,16 @@
   function recordings() {
     const groups = new Map();
     for (const file of files) {
+      if (RIDAL.sharedBy(file.name)) continue;
       const stem = stemOf(file);
       if (!groups.has(stem)) groups.set(stem, []);
       groups.get(stem).push(file);
+    }
+    // A SkyHub `.txt` is a file of every part it belongs to.
+    for (const file of files) {
+      const belongsTo = RIDAL.sharedBy(file.name);
+      if (!belongsTo) continue;
+      for (const [stem, members] of groups) if (belongsTo(stem)) members.push(file);
     }
     return [...groups.entries()]
       .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
@@ -537,6 +544,7 @@
     // Added to what is chosen already, so a recording in another folder can
     // join; a file chosen twice is there once.
     for (const file of picker.files || []) {
+      if (RIDAL.ignoredRawFile(file.name)) continue;
       files = files.filter((f) => f.name !== file.name);
       files.push(file);
     }

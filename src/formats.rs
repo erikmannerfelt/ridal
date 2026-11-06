@@ -7,6 +7,7 @@ pub enum FormatKind {
     Gssi,
     IceRadar,
     Virl,
+    SkyHub,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -142,6 +143,19 @@ pub fn all_formats() -> Vec<FormatInfo> {
                 coordinates: ".DSR",
             },
         },
+        FormatInfo {
+            name: "skyhub",
+            description: "SPH Engineering SkyHub SEG-Y of a Radsys zGPR (UAV)",
+            capabilities: FormatCapabilities {
+                read: true,
+                write: false,
+            },
+            files: FormatFiles {
+                header: ".sgy",
+                data: ".sgy",
+                coordinates: "-position.csv",
+            },
+        },
     ]
 }
 
@@ -167,6 +181,10 @@ pub fn format_info(kind: FormatKind) -> FormatInfo {
             .into_iter()
             .find(|fmt| fmt.name == "virl")
             .unwrap(),
+        FormatKind::SkyHub => all_formats()
+            .into_iter()
+            .find(|fmt| fmt.name == "skyhub")
+            .unwrap(),
     }
 }
 
@@ -179,6 +197,7 @@ pub fn kind_named(name: &str) -> Option<FormatKind> {
         FormatKind::Gssi,
         FormatKind::IceRadar,
         FormatKind::Virl,
+        FormatKind::SkyHub,
     ]
     .into_iter()
     .find(|kind| format_info(*kind).name == name)
@@ -192,6 +211,7 @@ pub fn display_name(kind: FormatKind) -> &'static str {
         FormatKind::Gssi => "GSSI",
         FormatKind::IceRadar => "IceRadar",
         FormatKind::Virl => "VIRL",
+        FormatKind::SkyHub => "SkyHub",
     }
 }
 
@@ -201,7 +221,7 @@ pub fn display_name(kind: FormatKind) -> &'static str {
 pub fn records_antenna_separation(kind: FormatKind) -> bool {
     match kind {
         FormatKind::Ramac | FormatKind::PulseEkko => true,
-        FormatKind::Gssi | FormatKind::IceRadar | FormatKind::Virl => false,
+        FormatKind::Gssi | FormatKind::IceRadar | FormatKind::Virl | FormatKind::SkyHub => false,
     }
 }
 
@@ -211,7 +231,7 @@ pub fn records_antenna_separation(kind: FormatKind) -> bool {
 pub fn takes_date(kind: FormatKind) -> bool {
     match kind {
         FormatKind::IceRadar | FormatKind::PulseEkko | FormatKind::Virl => true,
-        FormatKind::Ramac | FormatKind::Gssi => false,
+        FormatKind::Ramac | FormatKind::Gssi | FormatKind::SkyHub => false,
     }
 }
 
@@ -244,11 +264,13 @@ fn resolve_sidecar(base: &Path, target_extension: &str) -> PathBuf {
 pub const COORDS_CSV_SUFFIX: &str = ".coords.csv";
 
 /// Whether `path` is to be read as a Ridal coordinate CSV rather than as a
-/// format's own positions file.
+/// format's own positions file: any `.csv` but a SkyHub
+/// `<stamp>-position.csv`.
 pub fn is_coords_csv(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
+        && !crate::io::is_skyhub_position_csv(path)
 }
 
 /// The recording stem of a `<stem>.coords.csv`.
@@ -323,6 +345,12 @@ pub fn own_positions(resolved: &ResolvedInput) -> PathBuf {
     if matches!(resolved.kind, FormatKind::IceRadar | FormatKind::Virl) {
         return resolved.header.clone();
     }
+    // A file beside it by one of two naming rules, or else its own trace
+    // headers.
+    if resolved.kind == FormatKind::SkyHub {
+        return crate::io::skyhub_positions_beside(&resolved.header)
+            .unwrap_or_else(|| resolved.header.clone());
+    }
     let native = format_info(resolved.kind).files.coordinates;
     resolve_sidecar(&resolved.header, native.trim_start_matches('.'))
 }
@@ -373,18 +401,23 @@ pub fn with_coordinates(resolved: &mut [ResolvedInput], cor: Option<&Path>) -> R
     for recording in resolved.iter_mut() {
         let stem = header_stem(recording)?;
         let native = format_info(recording.kind).files.coordinates;
-        recording.coordinates = find_coords_csv(cor, stem)
-            .or_else(|| {
-                find_neighbor_case_insensitive(&cor.join(format!("{stem}{native}")), native)
-            })
-            .ok_or_else(|| {
-                format!(
-                    "No positions for {} in {}: neither {stem}{COORDS_CSV_SUFFIX} \
+        let own = || match recording.kind {
+            // Named by the layout, not by appending to the stem.
+            FormatKind::SkyHub => recording
+                .header
+                .file_name()
+                .and_then(|name| crate::io::skyhub_positions_file_name(name.to_str()?))
+                .and_then(|name| find_named(cor, &name)),
+            _ => find_neighbor_case_insensitive(&cor.join(format!("{stem}{native}")), native),
+        };
+        recording.coordinates = find_coords_csv(cor, stem).or_else(own).ok_or_else(|| {
+            format!(
+                "No positions for {} in {}: neither {stem}{COORDS_CSV_SUFFIX} \
                      nor {stem}{native} is there.",
-                    recording.header.display(),
-                    cor.display()
-                )
-            })?;
+                recording.header.display(),
+                cor.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -648,7 +681,9 @@ pub fn recordings_of(resolved: &ResolvedInput) -> Result<Vec<FileRecording>, Str
                     .collect(),
             }
         }
-        FormatKind::Ramac | FormatKind::PulseEkko | FormatKind::Virl => vec![whole],
+        FormatKind::Ramac | FormatKind::PulseEkko | FormatKind::Virl | FormatKind::SkyHub => {
+            vec![whole]
+        }
     })
 }
 
@@ -741,13 +776,35 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             part: Part::default(),
             sidecar: None,
         }),
+        // The traces, with positions beside them or in their own headers.
+        Some("sgy") => Ok(ResolvedInput {
+            input: input.to_path_buf(),
+            kind: FormatKind::SkyHub,
+            header: input.to_path_buf(),
+            data: input.to_path_buf(),
+            coordinates: crate::io::skyhub_positions_beside(input)
+                .unwrap_or_else(|| input.to_path_buf()),
+            part: Part::default(),
+            sidecar: None,
+        }),
+        // A SkyHub positions file stands for its recording, as a `.cor`
+        // does for its `.rad`.
+        Some("csv") if crate::io::is_skyhub_position_csv(input) => {
+            let sgy = crate::io::skyhub_recording_of_positions(input)
+                .expect("a SkyHub positions file names its recording");
+            let sgy = find_neighbor_case_insensitive(&sgy, "sgy").unwrap_or(sgy);
+            Ok(ResolvedInput {
+                input: input.to_path_buf(),
+                ..resolve_files(&sgy)?
+            })
+        }
         Some(autosave) if is_iceradar_autosave(autosave) => Err(format!(
             "{:?} looks like an IceRadar autosave, a copy of the first part of the file it is named after. Give that file ({:?}) instead.",
             input,
             input.with_extension("")
         )),
         Some(other) => Err(format!(
-            "Unsupported input extension '.{other}' for {:?}. Supported formats are RAMAC (.rad/.rd3/.cor), pulseEKKO (.hd/.dt1/.gp2), GSSI (.dzt/.dzg/.dzx), IceRadar (.h5/.hdf5) and VIRL (.dsr), and a recording's <stem>{COORDS_CSV_SUFFIX}.",
+            "Unsupported input extension '.{other}' for {:?}. Supported formats are RAMAC (.rad/.rd3/.cor), pulseEKKO (.hd/.dt1/.gp2), GSSI (.dzt/.dzg/.dzx), IceRadar (.h5/.hdf5), VIRL (.dsr) and SkyHub (.sgy), and a recording's <stem>{COORDS_CSV_SUFFIX}.",
             input
         )),
         None => {
@@ -827,7 +884,8 @@ mod tests {
                 "pulseekko".to_string(),
                 "gssi".to_string(),
                 "iceradar".to_string(),
-                "virl".to_string()
+                "virl".to_string(),
+                "skyhub".to_string()
             ]
         );
     }
@@ -864,6 +922,47 @@ mod tests {
         }
         assert!(takes_date(FormatKind::Virl));
         assert!(!records_antenna_separation(FormatKind::Virl));
+    }
+
+    /// A SkyHub recording's positions are a file named by its layout, or
+    /// its own trace headers; its `-position.csv` stands for it and is not
+    /// a coordinate CSV, and `--cor DIR` finds the file by the same rule.
+    #[test]
+    fn a_skyhub_recording_finds_its_positions_by_its_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let touch = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"").unwrap();
+            path
+        };
+        let raw = touch("2024-03-01-10-00-00-gpr.sgy");
+        let alone = touch("2024-03-01-11-00-00-gpr.sgy");
+        let part = touch("rec-gpr-0_002.sgy");
+        let csv = touch("2024-03-01-10-00-00-position.csv");
+        let txt = touch("rec-gpr-0.txt");
+
+        for (input, positions) in [(&raw, &csv), (&csv, &csv), (&part, &txt), (&alone, &alone)] {
+            let resolved = resolve_input(input).unwrap();
+            assert_eq!(resolved.kind, FormatKind::SkyHub, "{input:?}");
+            assert_eq!(&resolved.coordinates, positions, "{input:?}");
+            assert_eq!(&own_positions(&resolved), positions, "{input:?}");
+        }
+        assert_eq!(resolve_input(&csv).unwrap().header, raw);
+        assert!(!is_coords_csv(&csv));
+        assert!(!takes_date(FormatKind::SkyHub));
+        assert!(!records_antenna_separation(FormatKind::SkyHub));
+
+        // Positions from another directory, by the same names.
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(elsewhere.path().join("rec-gpr-0.txt"), b"").unwrap();
+        let mut resolved = vec![resolve_input(&alone).unwrap()];
+        assert!(with_coordinates(&mut resolved, Some(elsewhere.path())).is_err());
+        let mut resolved = vec![resolve_input(&part).unwrap()];
+        with_coordinates(&mut resolved, Some(elsewhere.path())).unwrap();
+        assert_eq!(
+            resolved[0].coordinates,
+            elsewhere.path().join("rec-gpr-0.txt")
+        );
     }
 
     #[test]

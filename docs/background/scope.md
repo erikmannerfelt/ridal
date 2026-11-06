@@ -10,8 +10,8 @@ or get in touch.
 
 Impulse radar
 : Common-offset profiles from impulse GPR systems. Ridal currently reads
-  Malå (`.rd3`), GSSI (`.dzt`), pulseEKKO (`.dt1`), IceRadar (`.h5`) and
-  VIRL (`.DSR`) data.
+  Malå (`.rd3`), GSSI (`.dzt`), pulseEKKO (`.dt1`), IceRadar (`.h5`),
+  VIRL (`.DSR`) and SkyHub (`.sgy`, a UAV's radar) data.
 
 Processing 2D profiles
 : Everything in {doc}`../reference/steps`: from time-zero correction and
