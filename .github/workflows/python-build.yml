@@ -28,10 +28,12 @@ jobs:
 
     # Keyed by Python version too: the matrix builds each one on the same
     # runner OS, and pyo3 is compiled per interpreter, so the jobs would
-    # otherwise overwrite one another's cache.
+    # otherwise overwrite one another's cache. And by runner image, because
+    # netcdf-sys bakes the Homebrew Cellar path into its cached build output,
+    # so a target/ from another macOS image links against a missing directory.
     - uses: Swatinem/rust-cache@v2
       with:
-        key: py${{ inputs.python-version }}
+        key: ${{ inputs.os }}-py${{ inputs.python-version }}
 
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
