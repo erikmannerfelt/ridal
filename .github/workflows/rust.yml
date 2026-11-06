@@ -147,7 +147,12 @@ jobs:
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
+    # Keyed by runner image: build scripts such as netcdf-sys bake the
+    # Homebrew Cellar path into their cached output, so a target/ restored
+    # from another macOS image links against a directory that is not there.
     - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.os }}
 
     - name: Verify CMake (Windows)
       if: runner.os == 'Windows'
