@@ -91,6 +91,61 @@ ice).
 In the GUI, the **Process…** dialog and **Add raw data in bulk…** take the
 antenna overrides (see {doc}`gui`), but not yet the date.
 
+(ramac)=
+### Malå RAMAC
+
+A recording is three files with one name: the text header `.rad`, the
+traces `.rd3` and the positions `.cor`.
+
+Header
+: `KEY:VALUE` lines, of which Ridal reads the number of samples
+  (`SAMPLES`), the sampling frequency (`FREQUENCY`), the time window
+  (`TIMEWINDOW`), the antenna (`ANTENNAS`), the antenna separation
+  (`ANTENNA SEPARATION`), the interval between traces (`TIME INTERVAL`) and
+  the number of traces (`LAST TRACE`). The antenna frequency is the number
+  before `MHz` in the antenna's name.
+
+Samples
+: 16-bit little-endian integers, trace after trace, scaled to millivolts
+  for a range of ±50 V, as RGPR does. The 32-bit `.rd7` of newer systems
+  is not read yet.
+
+Positions
+: One line per fix in the `.cor`: the trace number (from 1), the date, the
+  time, the latitude and `N` or `S`, the longitude and `E` or `W`, and the
+  altitude, separated by whitespace. The time is read as UTC. A line that
+  does not parse, such as one with too few columns or an impossible time,
+  is skipped.
+
+(pulseekko)=
+### Sensors & Software pulseEKKO
+
+A recording is three files with one name: the text header `.hd`, the
+traces `.dt1` and the positions `.gp2`.
+
+Header
+: `KEY = VALUE` lines, of which Ridal reads the number of samples
+  (`NUMBER OF PTS/TRC`), the time window (`TOTAL TIME WINDOW`), the antenna
+  frequency (`NOMINAL FREQUENCY`), the antenna separation
+  (`ANTENNA SEPARATION`), the interval between traces
+  (`TRACE INTERVAL (s)`) and the number of traces (`NUMBER OF TRACES`). The
+  sampling frequency follows from the number of samples and the time
+  window.
+
+Samples
+: Each trace in the `.dt1` is a 128-byte trace header, which Ridal skips,
+  then the samples as 16-bit little-endian integers. A recording that was
+  interrupted can end without its last trace, though the header counts it:
+  it is then read without that trace, with a warning. A data file that
+  lacks more than one trace is refused.
+
+Positions
+: The `.gp2` holds a `$GPGGA` sentence for some of the traces, each after
+  the trace number (from 1). Only the first line of a trace is used. GGA
+  gives only the time of day, so the date comes from the file's `Date=`
+  line, which in older files was typed by hand; it can be given instead
+  (see Date above).
+
 (gssi)=
 ### GSSI
 
@@ -238,6 +293,60 @@ Traces
   at the start of the record, so time zero is found by `zero_corr` as for
   the other formats. The window is long (20 µs in 2014), so most of it can
   be noise below the bed, and `auto_gain` may then apply none.
+
+(skyhub)=
+### SkyHub
+
+SPH Engineering's SkyHub is the onboard computer of a common UAV radar
+setup. It records a Radsys zGPR, such as the Zond Aero LF (`zAeroLF`), as
+SEG-Y. Ridal reads these files and refuses any other SEG-Y, since `.sgy` is
+a generic extension: a SkyHub file is told by its textual header, which
+names SkyHub and the zGPR. Unlike the standard, the file is little-endian,
+with 32-bit integer samples.
+
+A recording comes in one of two layouts.
+
+As SkyHub writes it
+: `<stamp>-gpr.sgy` with `<stamp>-position.csv`, and a `<stamp>-system.log`
+  that Ridal does not read. Either the `.sgy` or the `-position.csv` can be
+  given as the input. The CSV is matched to the traces by its `zGPR:Trace`
+  column, and gives each trace a time to the millisecond. Its RTK columns
+  are used when any row has RTK, and its standalone positions otherwise. The
+  GNSS updates less often than traces are recorded, so a position repeated
+  over several rows is kept at its first and the traces between are
+  interpolated in time.
+
+Cut into parts
+: `<stem>_001.sgy`, `<stem>_002.sgy`, ... are parts of one recording, with
+  one `<stem>.txt` of trace number, latitude, longitude and altitude for
+  the whole recording. Each part is a recording of its own, positioned by
+  its traces' numbers in the whole recording.
+
+Without either file, the positions in the trace headers are read. They are
+stored to only about a metre.
+
+What must be given
+: The files do not record the antenna frequency, and the zGPR takes
+  antennas of several frequencies, so it is never assumed: give
+  `antenna_mhz` in a sidecar or with `--override antenna_mhz=MHZ`. The
+  antenna separation is 0 m with a warning unless given.
+
+Altitudes
+: The altitudes are the aircraft's, not the ground's. Only the RTK
+  altitudes are absolute (in a vertical datum the files do not name); the
+  others are relative to take-off, and need `altitude_offset_m` (see
+  {ref}`altitude-offset`) to become elevations. Without a DEM (`--dem`),
+  which gives the ground's elevations in their place, processing warns
+  about both. `ridal info` and the processing log say which positions were
+  used.
+
+The samples
+: The first sample of every trace is a marker, not data, and is cropped
+  off as it is read. The `Pulse delay` of the textual header is a hardware
+  setting tuned per antenna and unit to keep the direct wave at the top of
+  the window, not a time, so it is only reported, by `ridal info`, with the
+  rest of the radar's settings and the share of samples at the zGPR's
+  saturation, which the direct wave often reaches.
 
 ### From positions to traces
 
@@ -415,57 +524,3 @@ Interpretations and points
 : Picks are stored as [gprinterp](https://docs.rs/gprinterp) JSON documents
   and exported as GeoJSON or CSV points (see {doc}`interpretation` and
   {doc}`../reference/project-files`).
-
-(skyhub)=
-### SkyHub
-
-SPH Engineering's SkyHub is the onboard computer of a common UAV radar
-setup. It records a Radsys zGPR, such as the Zond Aero LF (`zAeroLF`), as
-SEG-Y. Ridal reads these files and refuses any other SEG-Y, since `.sgy` is
-a generic extension: a SkyHub file is told by its textual header, which
-names SkyHub and the zGPR. Unlike the standard, the file is little-endian,
-with 32-bit integer samples.
-
-A recording comes in one of two layouts.
-
-As SkyHub writes it
-: `<stamp>-gpr.sgy` with `<stamp>-position.csv`, and a `<stamp>-system.log`
-  that Ridal does not read. Either the `.sgy` or the `-position.csv` can be
-  given as the input. The CSV is matched to the traces by its `zGPR:Trace`
-  column, and gives each trace a time to the millisecond. Its RTK columns
-  are used when any row has RTK, and its standalone positions otherwise. The
-  GNSS updates less often than traces are recorded, so a position repeated
-  over several rows is kept at its first and the traces between are
-  interpolated in time.
-
-Cut into parts
-: `<stem>_001.sgy`, `<stem>_002.sgy`, ... are parts of one recording, with
-  one `<stem>.txt` of trace number, latitude, longitude and altitude for
-  the whole recording. Each part is a recording of its own, positioned by
-  its traces' numbers in the whole recording.
-
-Without either file, the positions in the trace headers are read. They are
-stored to only about a metre.
-
-What must be given
-: The files do not record the antenna frequency, and the zGPR takes
-  antennas of several frequencies, so it is never assumed: give
-  `antenna_mhz` in a sidecar or with `--override antenna_mhz=MHZ`. The
-  antenna separation is 0 m with a warning unless given.
-
-Altitudes
-: The altitudes are the aircraft's, not the ground's. Only the RTK
-  altitudes are absolute (in a vertical datum the files do not name); the
-  others are relative to take-off, and need `altitude_offset_m` (see
-  {ref}`altitude-offset`) to become elevations. Without a DEM (`--dem`),
-  which gives the ground's elevations in their place, processing warns
-  about both. `ridal info` and the processing log say which positions were
-  used.
-
-The samples
-: The first sample of every trace is a marker, not data, and is cropped
-  off as it is read. The `Pulse delay` of the textual header is a hardware
-  setting tuned per antenna and unit to keep the direct wave at the top of
-  the window, not a time, so it is only reported, by `ridal info`, with the
-  rest of the radar's settings and the share of samples at the zGPR's
-  saturation, which the direct wave often reaches.
