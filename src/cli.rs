@@ -733,25 +733,42 @@ pub struct RecordingArgs {
     #[arg(long)]
     pub crs: Option<String>,
 
-    /// Override the antenna center frequency (in MHz) from file metadata
-    #[arg(long)]
+    /// A value for the run that takes precedence over every recording's sidecar and header, as KEY=VALUE: antenna_mhz=50, date=2024-04-05. Repeatable, once per key. The keys are a sidecar's, listed at https://ridal.readthedocs.io/en/stable/reference/sidecar.html#override-keys. The value applies to every recording given; one that differs between them belongs in each one's sidecar.
+    #[arg(long = "override", value_name = "KEY=VALUE", action = clap::ArgAction::Append, value_parser = parse_override)]
+    pub overrides: Vec<crate::sidecar::Assignment>,
+
+    /// The antenna center frequency, in MHz. The same as --override antenna_mhz=MHZ, which replaces it.
+    #[arg(
+        long,
+        value_name = "MHZ",
+        help_heading = "Overrides",
+        hide_short_help = true
+    )]
     pub override_antenna_mhz: Option<f32>,
 
-    /// Override the antenna separation (in m) from file metadata
-    #[arg(long)]
+    /// The antenna separation, in m. The same as --override antenna_separation_m=M, which replaces it.
+    #[arg(
+        long,
+        value_name = "M",
+        help_heading = "Overrides",
+        hide_short_help = true
+    )]
     pub override_antenna_separation: Option<f32>,
 
-    /// The UTC date (YYYY-MM-DD) of recordings whose files record only a
-    /// time of day, or a date that is wrong: IceRadar, whose date is the
-    /// acquisition PC's clock, pulseEKKO and VIRL.
-    #[arg(long, value_name = "YYYY-MM-DD")]
+    /// The UTC date of recordings whose files record only a time of day, or a date that is wrong. The same as --override date=YYYY-MM-DD, which replaces it.
+    #[arg(
+        long,
+        value_name = "YYYY-MM-DD",
+        help_heading = "Overrides",
+        hide_short_help = true
+    )]
     pub override_date: Option<chrono::NaiveDate>,
 
     /// Which channel of a GSSI file recorded with several to read, from 1 as GSSI numbers them; the same channel is read from every file given. Required for a file of more than one channel, except by batch-process, which without it makes each channel its own output. Channels are recorded side by side and are never merged.
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     pub channel: Option<u32>,
 
-    /// A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. The --override-* options take precedence over it.
+    /// A sidecar to read overrides from, for one recording or the lines of one IceRadar file. Without it, a "<stem>.ridal.toml" beside a recording is read, if there is one. --override takes precedence over it.
     #[arg(long, value_name = "PATH", conflicts_with = "no_sidecar")]
     pub sidecar: Option<PathBuf>,
 
@@ -770,6 +787,64 @@ impl RecordingArgs {
             (None, false) => crate::sidecar::Choice::Beside,
         }
     }
+
+    /// The overrides given for the run: `--override`, and the per-key
+    /// options it replaces (#559).
+    fn overrides(&self) -> Result<crate::sidecar::Overrides, String> {
+        let number = |value: Option<f32>| value.map(|v| toml::Value::Float(v.into()));
+        let per_key = [
+            (
+                "--override-antenna-mhz",
+                "antenna_mhz",
+                number(self.override_antenna_mhz),
+            ),
+            (
+                "--override-antenna-separation",
+                "antenna_separation_m",
+                number(self.override_antenna_separation),
+            ),
+            (
+                "--override-date",
+                "date",
+                self.override_date
+                    .map(|date| toml::Value::String(date.format("%Y-%m-%d").to_string())),
+            ),
+        ];
+        crate::sidecar::from_assignments(&per_key_assignments(per_key, &self.overrides))
+    }
+}
+
+/// `--override` or `--set`, as KEY=VALUE.
+fn parse_override(text: &str) -> Result<crate::sidecar::Assignment, String> {
+    crate::sidecar::Assignment::parse(text, "--override")
+}
+
+fn parse_set(text: &str) -> Result<crate::sidecar::Assignment, String> {
+    crate::sidecar::Assignment::parse(text, "--set")
+}
+
+/// The values of per-key options, by option, key and value, as
+/// assignments before those of the generic option.
+fn per_key_assignments<const N: usize>(
+    per_key: [(&str, &str, Option<toml::Value>); N],
+    generic: &[crate::sidecar::Assignment],
+) -> Vec<crate::sidecar::Assignment> {
+    per_key
+        .into_iter()
+        .filter_map(|(option, key, value)| {
+            let value = value?;
+            let given_as = match &value {
+                toml::Value::String(text) => format!("{option} {text}"),
+                other => format!("{option} {other}"),
+            };
+            Some(crate::sidecar::Assignment {
+                key: key.to_string(),
+                given_as,
+                value,
+            })
+        })
+        .chain(generic.iter().cloned())
+        .collect()
 }
 
 /// How a recording is processed and what is written: shared by `process`
@@ -854,9 +929,7 @@ impl RunArgs {
             render_profile: self.render_profile.clone(),
             render_width: self.render_width,
             render_topo: self.render_topo,
-            override_antenna_mhz: recording.override_antenna_mhz,
-            override_antenna_separation: recording.override_antenna_separation,
-            override_date: recording.override_date,
+            overrides: recording.overrides()?,
             lines: None,
             channel: recording.channel,
             parts: None,
@@ -1016,27 +1089,56 @@ pub struct InfoArgs {
     ArgGroup::new("change")
         .required(true)
         .multiple(true)
-        .args(["antenna_mhz", "antenna_separation_m", "sampling_mhz", "date", "unset", "template"]),
+        .args(["set", "antenna_mhz", "antenna_separation_m", "sampling_mhz", "date", "unset", "template"]),
 ))]
+// Not the usage clap makes of the group, which lists the per-key options
+// that `--set` replaces (#559).
+#[command(
+    override_usage = "ridal override [OPTIONS] <--set <KEY=VALUE>|--unset <KEY>|--template> <INPUTS>..."
+)]
 pub struct OverrideArgs {
     /// Recordings, by any of their files, or glob patterns. Each gets its own "<stem>.ridal.toml" beside its header, made if there is none; comments and anything else in an existing one are kept.
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
 
-    /// The antenna's center frequency, in MHz.
-    #[arg(long)]
+    /// Set a value, as KEY=VALUE: antenna_separation_m=4.5, date=2024-04-05. Repeatable, once per key. The keys are listed at https://ridal.readthedocs.io/en/stable/reference/sidecar.html#override-keys.
+    #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append, value_parser = parse_set)]
+    pub set: Vec<crate::sidecar::Assignment>,
+
+    /// The antenna's center frequency, in MHz. The same as --set antenna_mhz=MHZ, which replaces it.
+    #[arg(
+        long,
+        value_name = "MHZ",
+        help_heading = "Per-key values",
+        hide_short_help = true
+    )]
     pub antenna_mhz: Option<f32>,
 
-    /// The horizontal distance between the transmitter and the receiver, in m.
-    #[arg(long)]
+    /// The horizontal distance between the transmitter and the receiver, in m. The same as --set antenna_separation_m=M, which replaces it.
+    #[arg(
+        long,
+        value_name = "M",
+        help_heading = "Per-key values",
+        hide_short_help = true
+    )]
     pub antenna_separation_m: Option<f32>,
 
-    /// The digitizer's sampling frequency, in MHz: not the antenna's. The time between samples is 1000 / this, in ns.
-    #[arg(long)]
+    /// The digitizer's sampling frequency, in MHz: not the antenna's. The same as --set sampling_mhz=MHZ, which replaces it.
+    #[arg(
+        long,
+        value_name = "MHZ",
+        help_heading = "Per-key values",
+        hide_short_help = true
+    )]
     pub sampling_mhz: Option<f32>,
 
-    /// The UTC date of an IceRadar, pulseEKKO or VIRL recording, whose positions record only a time of day.
-    #[arg(long, value_name = "YYYY-MM-DD")]
+    /// The UTC date of an IceRadar, pulseEKKO or VIRL recording, whose positions record only a time of day. The same as --set date=YYYY-MM-DD, which replaces it.
+    #[arg(
+        long,
+        value_name = "YYYY-MM-DD",
+        help_heading = "Per-key values",
+        hide_short_help = true
+    )]
     pub date: Option<chrono::NaiveDate>,
 
     /// Remove a value, by its key in the sidecar (antenna_mhz, antenna_separation_m, sampling_mhz, date). Repeatable, or comma-separated.
@@ -1052,8 +1154,32 @@ pub struct OverrideArgs {
     pub channel: Option<u32>,
 
     /// Write a sidecar that sets nothing, with every key commented out beside what the header says of it, for each recording that has none.
-    #[arg(long, conflicts_with_all = ["antenna_mhz", "antenna_separation_m", "sampling_mhz", "date", "unset", "lines", "channel"])]
+    #[arg(long, conflicts_with_all = ["set", "antenna_mhz", "antenna_separation_m", "sampling_mhz", "date", "unset", "lines", "channel"])]
     pub template: bool,
+}
+
+impl OverrideArgs {
+    /// The values to set: `--set`, and the per-key options it replaces
+    /// (#559).
+    fn overrides(&self) -> Result<crate::sidecar::Overrides, String> {
+        let number = |value: Option<f32>| value.map(|v| toml::Value::Float(v.into()));
+        let per_key = [
+            ("--antenna-mhz", "antenna_mhz", number(self.antenna_mhz)),
+            (
+                "--antenna-separation-m",
+                "antenna_separation_m",
+                number(self.antenna_separation_m),
+            ),
+            ("--sampling-mhz", "sampling_mhz", number(self.sampling_mhz)),
+            (
+                "--date",
+                "date",
+                self.date
+                    .map(|date| toml::Value::String(date.format("%Y-%m-%d").to_string())),
+            ),
+        ];
+        crate::sidecar::from_assignments(&per_key_assignments(per_key, &self.set))
+    }
 }
 
 #[derive(Debug, clap::Args)]
@@ -1490,12 +1616,7 @@ fn override_command(args: &OverrideArgs) -> Result<(), String> {
         edit::apply(
             &args.inputs,
             &edit::Edit {
-                set: crate::sidecar::Overrides {
-                    antenna_mhz: args.antenna_mhz,
-                    antenna_separation_m: args.antenna_separation_m,
-                    sampling_mhz: args.sampling_mhz,
-                    date: args.date,
-                },
+                set: args.overrides()?,
                 unset: args.unset.clone(),
                 lines: args.lines.clone(),
                 channel: args.channel,
@@ -1563,15 +1684,14 @@ fn coords_command(args: &CoordsArgs) -> Result<(), String> {
 fn info_command(args: InfoArgs) -> Result<(), String> {
     validate_cli_dem(args.recording.dem.as_deref())?;
     let sidecar = args.recording.sidecar_choice();
+    let overrides = args.recording.overrides()?;
     let params = crate::inspect::InfoParams {
         filepaths: args.inputs,
         dem_path: args.recording.dem,
         cor_path: args.recording.cor,
         medium_velocity: args.recording.velocity,
         crs: args.recording.crs,
-        override_antenna_mhz: args.recording.override_antenna_mhz,
-        override_antenna_separation: args.recording.override_antenna_separation,
-        override_date: args.recording.override_date,
+        overrides,
         channel: args.recording.channel,
         parts: None,
         sidecar,
@@ -2793,23 +2913,140 @@ mod tests {
         }
     }
 
+    /// What `ridal info a.rad` with `extra` overrides, or why it cannot.
+    fn info_overrides(extra: &[&str]) -> Result<crate::sidecar::Overrides, String> {
+        let argv = ["ridal", "info", "a.rad"].iter().chain(extra).copied();
+        match Args::try_parse_from(argv)
+            .map_err(|e| e.to_string())?
+            .command
+        {
+            Commands::Info(info) => info.recording.overrides(),
+            other => panic!("expected info, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn test_parse_override_antenna_separation() {
-        let args = Args::parse_from([
-            "ridal",
-            "process",
-            "line01.DZT",
-            "--override-antenna-separation",
-            "1.25",
-        ]);
-        match args.command {
-            Commands::Process(process) => {
-                assert_eq!(
-                    process.run.recording.override_antenna_separation,
-                    Some(1.25)
-                );
+    fn any_sidecar_key_is_overridden_with_one_option() {
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 4, 5);
+        assert_eq!(
+            info_overrides(&[
+                "--override",
+                "sampling_mhz=200",
+                "--override",
+                "date=2024-04-05",
+            ]),
+            Ok(crate::sidecar::Overrides {
+                sampling_mhz: Some(200.),
+                date,
+                ..Default::default()
+            })
+        );
+        // A string is a date too, as in a sidecar.
+        assert_eq!(
+            info_overrides(&["--override", "date=\"2024-04-05\""]).map(|o| o.date),
+            Ok(date)
+        );
+        // Split at the first `=` only.
+        let error = info_overrides(&["--override", "date=2024=04"]).unwrap_err();
+        assert!(error.contains("date must be YYYY-MM-DD"), "{error}");
+        // The per-key options are kept, and give the same.
+        assert_eq!(
+            info_overrides(&["--override-antenna-separation", "1.25"]),
+            info_overrides(&["--override", "antenna_separation_m=1.25"]),
+        );
+        assert_eq!(
+            info_overrides(&["--override-date", "2024-04-05"]).map(|o| o.date),
+            Ok(date)
+        );
+
+        for (extra, expected) in [
+            (
+                &["--override", "antena_mhz=50"][..],
+                "there is no override \"antena_mhz\". The keys are antenna_mhz, \
+                 antenna_separation_m, sampling_mhz, date",
+            ),
+            (&["--override", "antenna_mhz"], "expected KEY=VALUE"),
+            (
+                &["--override", "antenna_mhz=0"],
+                "--override antenna_mhz=0: antenna_mhz must be above 0",
+            ),
+            (
+                &["--override", "antenna_mhz=fifty"],
+                "--override antenna_mhz=fifty",
+            ),
+            (&["--override", "date=5.4.2024"], "date must be YYYY-MM-DD"),
+            (
+                &[
+                    "--override",
+                    "antenna_mhz=50",
+                    "--override",
+                    "antenna_mhz=25",
+                ],
+                "antenna_mhz is given twice",
+            ),
+            (
+                &[
+                    "--override-date",
+                    "2024-04-05",
+                    "--override",
+                    "date=2024-04-05",
+                ],
+                "date is given twice, as --override-date 2024-04-05 and as \
+                 --override date=2024-04-05",
+            ),
+        ] {
+            let error = info_overrides(extra).unwrap_err();
+            assert!(error.contains(expected), "{extra:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn ridal_override_sets_any_key_with_one_option() {
+        let set = |extra: &[&str]| {
+            let argv = ["ridal", "override", "a.rad"].iter().chain(extra).copied();
+            match Args::try_parse_from(argv)
+                .map_err(|e| e.kind().to_string())?
+                .command
+            {
+                Commands::Override(args) => args.overrides(),
+                other => panic!("expected override, got {other:?}"),
             }
-            _ => panic!("Expected process command"),
+        };
+        assert_eq!(
+            set(&["--set", "antenna_separation_m=4.5", "--sampling-mhz", "200"]),
+            Ok(crate::sidecar::Overrides {
+                antenna_separation_m: Some(4.5),
+                sampling_mhz: Some(200.),
+                ..Default::default()
+            })
+        );
+        let error = set(&["--set", "antenna_mhz=50", "--antenna-mhz", "50"]).unwrap_err();
+        assert!(error.contains("antenna_mhz is given twice"), "{error}");
+        let error = set(&["--set", "mhz=50"]).unwrap_err();
+        assert!(
+            error.contains("--set mhz=50: there is no override"),
+            "{error}"
+        );
+        assert!(set(&["--set", "antenna_mhz=50", "--template"]).is_err());
+    }
+
+    #[test]
+    fn the_per_key_override_options_are_left_out_of_the_short_help() {
+        let mut command = <Args as clap::CommandFactory>::command();
+        for (subcommand, per_key, generic) in [
+            (
+                "process",
+                "--override-antenna-mhz",
+                "--override <KEY=VALUE>",
+            ),
+            ("override", "--antenna-mhz", "--set <KEY=VALUE>"),
+        ] {
+            let sub = command.find_subcommand_mut(subcommand).unwrap();
+            let short = sub.render_help().to_string();
+            assert!(short.contains(generic), "{short}");
+            assert!(!short.contains(per_key), "{short}");
+            let long = sub.render_long_help().to_string();
+            assert!(long.contains(per_key), "{long}");
         }
     }
 
@@ -2859,8 +3096,11 @@ mod tests {
             "640",
             "--render-topo",
             "--no-export",
-            "--override-antenna-mhz",
-            "50",
+            "--override",
+            "antenna_mhz=50",
+            "--override",
+            "sampling_mhz=200",
+            // A per-key option still works beside them.
             "--override-antenna-separation",
             "2.5",
             "--metadata",
@@ -2894,8 +3134,16 @@ mod tests {
             assert!(options.quiet && options.no_export && options.render_topo);
             assert_eq!(options.render_profile.as_deref(), Some("siglog"));
             assert_eq!(options.render_width, Some(640));
-            assert_eq!(options.override_antenna_mhz, Some(50.0));
-            assert_eq!(options.override_antenna_separation, Some(2.5));
+            assert_eq!(
+                options.overrides,
+                crate::sidecar::Overrides {
+                    antenna_mhz: Some(50.),
+                    antenna_separation_m: Some(2.5),
+                    sampling_mhz: Some(200.),
+                    date: None,
+                },
+                "{command}"
+            );
             assert_eq!(
                 options.user_metadata.get("site"),
                 Some(&serde_json::json!("Dronbreen"))
@@ -2951,14 +3199,14 @@ mod tests {
             "0.1",
             "--crs",
             "EPSG:32633",
-            "--override-antenna-mhz",
-            "50",
+            "--override",
+            "antenna_mhz=50",
         ]);
         match args.command {
             Commands::Info(info) => {
                 assert_eq!(info.recording.velocity, 0.1);
                 assert_eq!(info.recording.crs.as_deref(), Some("EPSG:32633"));
-                assert_eq!(info.recording.override_antenna_mhz, Some(50.0));
+                assert_eq!(info.recording.overrides().unwrap().antenna_mhz, Some(50.0));
             }
             _ => panic!("Expected info command"),
         }
@@ -3909,10 +4157,24 @@ mod reference_tests {
             .filter(|arg| !arg.is_hide_set())
             .filter(|arg| !matches!(arg.get_id().as_str(), "help" | "version"))
             .collect();
-        for (title, positional) in [("Arguments", true), ("Options", false)] {
+        // Options under a help heading of their own (the per-key overrides,
+        // #559) come after the rest, under it, as `--help` lists them.
+        let mut headings = vec![None];
+        for arg in &arguments {
+            if !headings.contains(&arg.get_help_heading()) {
+                headings.push(arg.get_help_heading());
+            }
+        }
+        let sections = [("Arguments", true, None)].into_iter().chain(
+            headings
+                .into_iter()
+                .map(|heading| (heading.unwrap_or("Options"), false, heading)),
+        );
+        for (title, positional, heading) in sections {
             let selected: Vec<_> = arguments
                 .iter()
                 .filter(|arg| arg.is_positional() == positional)
+                .filter(|arg| positional || arg.get_help_heading() == heading)
                 .collect();
             if selected.is_empty() {
                 continue;

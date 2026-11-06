@@ -30,12 +30,14 @@ with the command you ran, the full message and the output of
 
 **"Could not read frequency from the antenna field … Try using the antenna MHz override"**
 : The header names the antenna in a way that Ridal does not recognize. Give
-  the frequency with `--override-antenna-mhz 100` (`override_antenna_mhz=` in
-  Python, or **Antenna frequency** in the GUI's dialogs).
+  the frequency with `--override antenna_mhz=100` (`overrides={"antenna_mhz":
+  100}` in Python, or **Antenna frequency** in the GUI's dialogs), or in the
+  recording's {doc}`sidecar <../reference/sidecar>`.
 
 **The antenna separation is wrong or 0**
 : GSSI headers do not record the separation, and some other headers record
-  it wrongly, so give it with `--override-antenna-separation`. It matters
+  it wrongly, so give it with `--override antenna_separation_m=M`, or in
+  each recording's sidecar. It matters
   mostly for depths near the surface (see {doc}`../guide/coordinates`).
 
 **I used `rsgpr`**

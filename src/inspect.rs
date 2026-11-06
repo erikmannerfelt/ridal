@@ -18,9 +18,9 @@ pub struct InfoParams {
     pub cor_path: Option<PathBuf>,
     pub medium_velocity: f32,
     pub crs: Option<String>,
-    pub override_antenna_mhz: Option<f32>,
-    pub override_antenna_separation: Option<f32>,
-    pub override_date: Option<chrono::NaiveDate>,
+    /// Values given that take precedence over every recording's sidecar
+    /// and header (`--override`, #559).
+    pub overrides: crate::sidecar::Overrides,
     /// The channel of multi-channel files (GSSI) to describe, from 1.
     pub channel: Option<u32>,
     /// The part of each raw input to describe, in order, as a server
@@ -334,12 +334,7 @@ fn sidecar_summary(
     meta: &GPRMeta,
     params: &InfoParams,
 ) -> Result<Option<SidecarSummary>, Box<dyn std::error::Error>> {
-    let applied = crate::sidecar::applied(
-        resolved,
-        params.override_antenna_mhz,
-        params.override_antenna_separation,
-        params.override_date,
-    )?;
+    let applied = crate::sidecar::applied(resolved, &params.overrides)?;
     let Some(path) = resolved.sidecar.as_ref().filter(|_| !applied.is_empty()) else {
         return Ok(None);
     };
@@ -351,10 +346,11 @@ fn sidecar_summary(
         input::load_meta(
             &bare,
             meta.medium_velocity,
-            mhz,
-            None,
-            params.override_date,
-            None,
+            &crate::sidecar::Overrides {
+                antenna_mhz: mhz,
+                date: params.overrides.date,
+                ..Default::default()
+            },
         )
     };
     // A format that does not record the antenna frequency cannot be read
@@ -446,15 +442,7 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
         ("cor", params.cor_path.is_some()),
         ("dem", params.dem_path.is_some()),
         ("crs", params.crs.is_some()),
-        (
-            "override_antenna_mhz",
-            params.override_antenna_mhz.is_some(),
-        ),
-        (
-            "override_antenna_separation",
-            params.override_antenna_separation.is_some(),
-        ),
-        ("override_date", params.override_date.is_some()),
+        ("overrides", !params.overrides.is_empty()),
         ("channel", params.channel.is_some()),
     ];
     if let Some(netcdf) = expanded.iter().find(|input| input::is_netcdf(input)) {
@@ -510,10 +498,7 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
             params.medium_velocity,
             params.crs.as_ref(),
             params.dem_path.as_ref(),
-            params.override_antenna_mhz,
-            params.override_antenna_separation,
-            params.override_date,
-            None,
+            &params.overrides,
         )?;
         let sidecar = sidecar_summary(&resolved, &meta, &params)?;
         records.push(Inspected::Raw(info_record(
@@ -537,9 +522,7 @@ pub(crate) mod tests {
             cor_path: None,
             medium_velocity: 0.168,
             crs: None,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            override_date: None,
+            overrides: crate::sidecar::Overrides::default(),
             channel: None,
             parts: None,
             sidecar: crate::sidecar::Choice::Beside,
@@ -815,9 +798,7 @@ mod coordinate_tests {
             cor_path: None,
             medium_velocity: 0.168,
             crs: None,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            override_date: None,
+            overrides: crate::sidecar::Overrides::default(),
             channel: None,
             parts: None,
             sidecar: crate::sidecar::Choice::Beside,
@@ -826,7 +807,11 @@ mod coordinate_tests {
 
     fn read(resolved: &formats::ResolvedInput) -> Result<super::GPRLocation, String> {
         crate::processing::input::load_meta_and_location(
-            resolved, 0.168, None, None, None, None, None, None,
+            resolved,
+            0.168,
+            None,
+            None,
+            &crate::sidecar::Overrides::default(),
         )
         .map(|(_, location)| location)
         .map_err(|e| e.to_string())

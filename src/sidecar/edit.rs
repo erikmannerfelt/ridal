@@ -353,7 +353,13 @@ fn header_values(resolved: &ResolvedInput) -> Overrides {
         sidecar: None,
         ..resolved.clone()
     };
-    let read = |mhz| crate::processing::input::load_meta(&bare, 0.168, mhz, None, None, None);
+    let read = |antenna_mhz| {
+        let given = Overrides {
+            antenna_mhz,
+            ..Default::default()
+        };
+        crate::processing::input::load_meta(&bare, 0.168, &given)
+    };
     let (antenna_mhz, meta) = match read(None) {
         Ok(meta) => (Some(meta.antenna_mhz), Some(meta)),
         // IceRadar: no frequency, so any stands in to read the rest.
@@ -394,7 +400,7 @@ fn template_text(resolved: &ResolvedInput) -> Result<String, String> {
         .unwrap_or_default();
     let mut text = format!(
         "# Overrides for {name}, which take precedence over what its header says.\n\
-         # Uncomment a key to set it. The --override-* options of a run take\n\
+         # Uncomment a key to set it. A run's --override options take\n\
          # precedence over this file.\n\
          schema = {SCHEMA}\n\n[overrides]\n"
     );

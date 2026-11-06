@@ -855,9 +855,11 @@ pub(super) fn read_recordings(
         cor_path: None,
         medium_velocity: 0.168,
         crs: source.crs.clone(),
-        override_antenna_mhz: source.antenna_mhz,
-        override_antenna_separation: source.antenna_separation,
-        override_date: None,
+        overrides: crate::sidecar::Overrides {
+            antenna_mhz: source.antenna_mhz,
+            antenna_separation_m: source.antenna_separation,
+            ..Default::default()
+        },
         channel: None,
         // The line or channel each bundle is; a file of several read as
         // a whole is refused here, listing them.

@@ -1128,7 +1128,7 @@ depth.
 
 - **What is missing comes from the sidecar.** `load_meta` passes the
   sidecar's `sampling_mhz` to `load_virl_meta`, which refuses without it,
-  and the date reaches `load_virl_positions` as `--override-date` and a
+  and the date reaches `load_virl_positions` as `--override date=` and a
   sidecar `date` reach every format that `formats::takes_date`. Nothing is
   defaulted but the separation, which is 0 m with the usual warning, as for
   GSSI and IceRadar.
@@ -1203,13 +1203,26 @@ writer once there are writers (#99). The user-facing description is
   `sampling_mhz` and `date`, added later, are hashed only when set, so a
   recipe from before them keeps its hash; one with a sidecar is now
   written with them as `null`.
-- **Not every key is a number or has an argument.** `date` is a
-  `NaiveDate`, read from a TOML local date or a string, so
-  `Overrides::entries` yields `sidecar::Value`. `sampling_mhz` has no run
-  option (`OverrideKey::argument` is `None`): it replaces the header's
-  sampling frequency and the time window with it in `load_meta`, for any
-  format. A sidecar `date` goes where `--override-date` does, through
-  `input::date_of`, and is refused where that is (`formats::takes_date`).
+- **Not every key is a number.** `date` is a `NaiveDate`, read from a
+  TOML local date or a string, so `Overrides::entries` yields
+  `sidecar::Value`. `sampling_mhz` replaces the header's sampling frequency
+  and the time window with it in `load_meta`, for any format. A sidecar
+  `date` goes where `--override date=` does, through `input::date_of`, and
+  is refused where that is (`formats::takes_date`).
+- **One argument for every key (#559).** A run's values are an
+  `Overrides` too (`ProcessingOptions::overrides`, `InfoParams::overrides`),
+  from `--override KEY=VALUE`, `overrides=` in Python, and the per-key
+  options and keyword arguments that came before them, which are kept
+  (hidden from `-h`, and a `DeprecationWarning` in Python). Each is a
+  `sidecar::Assignment` read by `sidecar::from_assignments`: the key is
+  checked against `OVERRIDE_KEYS`, and the value deserialized into
+  `Overrides` and checked as a sidecar's is, so the two cannot disagree. A
+  command-line value is parsed as a TOML value (`date=2014-04-05` is a
+  date), falling back to a string. A key given twice, in either form, is
+  refused rather than one winning. A new key therefore needs no CLI or
+  Python change, but the recipe records each argument by its own field
+  (`antenna_mhz_override`, ..., `sampling_mhz_override`), the later ones
+  hashed tagged and only when set, so a new key also needs one there.
 - **Per line and per channel.** `[lines.<N>]` and `[channels.<N>]` mirror
   `formats::Part`, each checked against the file (`check_lines`,
   `check_channels`), and `ridal override --lines`/`--channel` writes them.

@@ -441,10 +441,7 @@ fn read_for_grouping(
         params.options.medium_velocity,
         params.options.crs.as_ref(),
         None,
-        params.options.override_antenna_mhz,
-        params.options.override_antenna_separation,
-        params.options.override_date,
-        None,
+        &params.options.overrides,
     )
     .map_err(|e| format!("{}: {e}", path.display()))?;
     GroupingRecording::of(&meta, &location)
@@ -958,7 +955,10 @@ mod tests {
             display_name_pattern: None,
             options: super::ProcessingOptions {
                 quiet: true,
-                override_antenna_mhz: Some(20.),
+                overrides: crate::sidecar::Overrides {
+                    antenna_mhz: Some(20.),
+                    ..Default::default()
+                },
                 crs: Some("EPSG:32632".to_string()),
                 ..Default::default()
             },

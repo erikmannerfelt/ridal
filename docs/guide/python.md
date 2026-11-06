@@ -39,14 +39,18 @@ returns its path. `ridal.all_steps` lists the names of all steps and
 `ridal.all_step_descriptions` describes each of them.
 
 The other arguments are the same as those of `ridal process`: `velocity`,
-`crs`, `dem`, `cor`, `override_antenna_mhz`, `override_antenna_separation`,
-`override_date`, `lines`, `track` and `render`, with `render_profile`,
-`render_width` and `render_topo` for the image. Several inputs given
-together are merged into one output.
+`crs`, `dem`, `cor`, `overrides`, `lines`, `track` and `render`, with
+`render_profile`, `render_width` and `render_topo` for the image. Several
+inputs given together are merged into one output.
 
-`override_date` takes a `datetime.date` or a `"YYYY-MM-DD"` string, and
-refuses a `datetime.datetime`, whose time zone could make its date the wrong
-day. `lines` picks the lines of an IceRadar file (see
+`overrides` is `--override`: a dict of the keys a {doc}`sidecar
+<../reference/sidecar>` takes, such as `antenna_mhz` and `date`, whose
+values take precedence over every recording's sidecar and header. A date is
+a `datetime.date` or a `"YYYY-MM-DD"` string; a `datetime.datetime` is
+refused, since its time zone could make its date the wrong day. The
+`override_antenna_mhz`, `override_antenna_separation` and `override_date`
+arguments of earlier releases still work, with a `DeprecationWarning`.
+`lines` picks the lines of an IceRadar file (see
 {ref}`iceradar`): an int, a list of ints, or a string as `--lines` takes it.
 
 ```python
@@ -56,9 +60,11 @@ import ridal
 ridal.process(
     "survey.h5",
     lines=[3, 4],
-    override_antenna_mhz=20,
-    override_antenna_separation=4,
-    override_date=datetime.date(2024, 6, 18),
+    overrides={
+        "antenna_mhz": 20,
+        "antenna_separation_m": 4,
+        "date": datetime.date(2024, 6, 18),
+    },
     default=True,
 )
 ```

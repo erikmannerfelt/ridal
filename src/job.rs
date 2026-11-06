@@ -87,8 +87,11 @@ pub fn run(spec: &JobSpec, emit: &mut dyn FnMut(Event)) -> Result<String, String
             crs: spec.crs.clone(),
             quiet: true,
             steps: spec.steps.clone(),
-            override_antenna_mhz: spec.antenna_mhz_override,
-            override_antenna_separation: spec.antenna_separation_override,
+            overrides: crate::sidecar::Overrides {
+                antenna_mhz: spec.antenna_mhz_override,
+                antenna_separation_m: spec.antenna_separation_override,
+                ..Default::default()
+            },
             group: spec.group_name.clone(),
             group_id: spec.group_id.clone(),
             parts: spec.parts.clone(),

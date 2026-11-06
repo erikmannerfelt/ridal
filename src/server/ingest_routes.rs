@@ -573,10 +573,11 @@ fn read_header(
             antenna: crate::processing::input::load_meta(
                 resolved,
                 0.168,
-                given.antenna_mhz,
-                None,
-                None,
-                given.sampling_mhz,
+                &crate::sidecar::Overrides {
+                    antenna_mhz: given.antenna_mhz,
+                    sampling_mhz: given.sampling_mhz,
+                    ..Default::default()
+                },
             )
             .ok()
             .map(|meta| meta.antenna),

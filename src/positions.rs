@@ -115,7 +115,11 @@ pub fn build(request: &Request) -> Result<Built, String> {
     let header_name = file_name(&resolved.header);
     // Nothing here depends on the antenna, so one whose frequency the
     // header does not state should not stop it.
-    let meta = crate::processing::input::load_meta(&resolved, 0.168, Some(0.), None, None, None)
+    let any_antenna = crate::sidecar::Overrides {
+        antenna_mhz: Some(0.),
+        ..Default::default()
+    };
+    let meta = crate::processing::input::load_meta(&resolved, 0.168, &any_antenna)
         .map_err(|e| format!("{}: {e}", resolved.header.display()))?;
     let n_traces = meta.last_trace;
     if n_traces == 0 {
