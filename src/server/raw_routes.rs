@@ -526,6 +526,7 @@ pub async fn list_sources(
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SourceView {
     pub radargram_id: String,
+    #[schema(value_type = raw::SourceDocument)]
     pub source: Source,
     /// What each recording's header and positions say, in merge order.
     /// Only `PUT` reads the recordings; `GET` leaves this empty.
@@ -595,25 +596,31 @@ pub struct SourceBody {
     /// One of the project's DEMs, by id (`GET /api/v1/dems`).
     #[serde(default)]
     pub dem: Option<String>,
-    /// The antenna's frequency in MHz, overriding what the files say.
+    /// Values for every recording, by the keys of a sidecar's
+    /// `[overrides]`, which take precedence over what each recording's
+    /// sidecar and files say: `antenna_mhz`, `sampling_mhz` and `date` for
+    /// files that do not record them (VIRL records none), or an
+    /// `altitude_offset_m` to add to every altitude of the recordings' own
+    /// positions. A `date` is only for recordings whose positions record
+    /// a time of day (IceRadar, pulseEKKO and VIRL), and an
+    /// `altitude_offset_m` not for those whose positions are a
+    /// `.coords.csv`.
+    #[serde(default)]
+    pub overrides: crate::sidecar::Overrides,
+    /// Deprecated: `overrides.antenna_mhz`. Giving a key both ways is
+    /// refused.
     #[serde(default)]
     pub antenna_mhz: Option<f32>,
-    /// The antenna separation in m, overriding what the files say.
+    /// Deprecated: `overrides.antenna_separation_m`.
     #[serde(default)]
     pub antenna_separation: Option<f32>,
-    /// The sampling frequency in MHz, overriding what the files say: needed
-    /// for VIRL files, which do not record it.
+    /// Deprecated: `overrides.sampling_mhz`.
     #[serde(default)]
     pub sampling_mhz: Option<f32>,
-    /// The UTC date, `YYYY-MM-DD`, of recordings whose positions record
-    /// only a time of day (IceRadar, pulseEKKO and VIRL), overriding the
-    /// date their files give: needed for VIRL files, which give none.
+    /// Deprecated: `overrides.date`, as `YYYY-MM-DD`.
     #[serde(default)]
     pub date: Option<String>,
-    /// m added to every altitude of the recordings' own positions, in place
-    /// of their sidecars' `altitude_offset_m`: the take-off point's
-    /// elevation for altitudes relative to take-off, for example. Not for
-    /// recordings whose positions are a `.coords.csv`.
+    /// Deprecated: `overrides.altitude_offset_m`.
     #[serde(default)]
     pub altitude_offset_m: Option<f32>,
     /// What to call the radargram until it is served (#382 phase 7).
@@ -660,6 +667,50 @@ pub(super) fn source_names(names: SourceNames) -> Result<Option<SourceNames>, Ap
 
 /// An antenna override: a positive number, or the files are read as
 /// though it were, and every draft from them fails or comes out wrong.
+/// The overrides a source body gives: `overrides`, and the deprecated
+/// per-key fields, each checked. A key given both ways is refused rather
+/// than one taking precedence, as on the command line (#559).
+fn source_overrides(body: &SourceBody) -> Result<crate::sidecar::Overrides, ApiError> {
+    let per_key = crate::sidecar::Overrides {
+        antenna_mhz: body.antenna_mhz,
+        antenna_separation_m: body.antenna_separation,
+        sampling_mhz: body.sampling_mhz,
+        date: body.date.as_deref().map(source_date).transpose()?,
+        altitude_offset_m: body.altitude_offset_m,
+    };
+    for ((key, old), (_, new)) in per_key.entries().into_iter().zip(body.overrides.entries()) {
+        if old.is_some() && new.is_some() {
+            return Err(ApiError::bad_request(
+                "override_given_twice",
+                format!("{key} is given both in overrides and on its own; give it in overrides."),
+            ));
+        }
+    }
+    let overrides = per_key.under(body.overrides);
+    antenna_override(
+        overrides.antenna_mhz,
+        "invalid_antenna_mhz",
+        "antenna frequency (MHz)",
+    )?;
+    antenna_override(
+        overrides.antenna_separation_m,
+        "invalid_antenna_separation",
+        "antenna separation (m)",
+    )?;
+    antenna_override(
+        overrides.sampling_mhz,
+        "invalid_sampling_mhz",
+        "sampling frequency (MHz)",
+    )?;
+    if overrides.altitude_offset_m.is_some_and(|m| !m.is_finite()) {
+        return Err(ApiError::bad_request(
+            "invalid_altitude_offset",
+            "The altitude offset (m) must be a number, or empty to use the recorded altitudes.",
+        ));
+    }
+    Ok(overrides)
+}
+
 pub(super) fn antenna_override(
     value: Option<f32>,
     code: &'static str,
@@ -699,7 +750,7 @@ fn source_crs(text: &str) -> Result<String, ApiError> {
     request_body = SourceBody,
     responses(
         (status = 200, description = "The source as saved, with its `ETag`.", body = SourceView),
-        (status = 400, description = "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz`, `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates) or `invalid_altitude_offset` (not a number, or for recordings whose positions are a `.coords.csv`).", body = ErrorBody),
+        (status = 400, description = "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz`, `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates), `invalid_altitude_offset` (not a number, or for recordings whose positions are a `.coords.csv`) or `override_given_twice` (a key in `overrides` and in its deprecated field).", body = ErrorBody),
         (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
     ),
     extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
@@ -722,29 +773,7 @@ pub async fn put_source(
     let expected = expectation_from(&headers);
     let data_dir = project.data_dir().to_path_buf();
     let crs = body.crs.as_deref().map(source_crs).transpose()?;
-    let antenna_mhz = antenna_override(
-        body.antenna_mhz,
-        "invalid_antenna_mhz",
-        "antenna frequency (MHz)",
-    )?;
-    let antenna_separation = antenna_override(
-        body.antenna_separation,
-        "invalid_antenna_separation",
-        "antenna separation (m)",
-    )?;
-    let sampling_mhz = antenna_override(
-        body.sampling_mhz,
-        "invalid_sampling_mhz",
-        "sampling frequency (MHz)",
-    )?;
-    let date = body.date.as_deref().map(source_date).transpose()?;
-    let altitude_offset_m = body.altitude_offset_m;
-    if altitude_offset_m.is_some_and(|m| !m.is_finite()) {
-        return Err(ApiError::bad_request(
-            "invalid_altitude_offset",
-            "The altitude offset (m) must be a number, or empty to use the recorded altitudes.",
-        ));
-    }
+    let overrides = source_overrides(&body)?;
     // Compared against `expected` with the rest when the new one is written.
     let previous = raw::read_source(project.documents(), &id)
         .or_internal("source_read_failed")?
@@ -772,9 +801,10 @@ pub async fn put_source(
         let outcome = (|| -> Result<_, Unreadable> {
             let bundles = raw::bundles_of(&data_dir, &body.recordings, &body.parts, &work, &kept)
                 .map_err(Unreadable::other)?;
-            if let (Some(_), Some(bundle)) =
-                (date, bundles.iter().find(|b| !raw::bundle_takes_date(b)))
-            {
+            if let (Some(_), Some(bundle)) = (
+                overrides.date,
+                bundles.iter().find(|b| !raw::bundle_takes_date(b)),
+            ) {
                 return Err(Unreadable {
                     code: "invalid_date",
                     message: format!(
@@ -786,7 +816,7 @@ pub async fn put_source(
                 });
             }
             if let (Some(_), Some(bundle)) = (
-                altitude_offset_m,
+                overrides.altitude_offset_m,
                 bundles.iter().find(|b| raw::bundle_has_coords_csv(b)),
             ) {
                 return Err(Unreadable {
@@ -803,11 +833,7 @@ pub async fn put_source(
                 bundles,
                 crs: crs.clone(),
                 dem,
-                antenna_mhz,
-                antenna_separation,
-                sampling_mhz,
-                date,
-                altitude_offset_m,
+                overrides,
                 names,
             };
             let records = read_recordings(&data_dir, &source, &work.join("read"))?;
@@ -884,8 +910,8 @@ pub(super) fn read_recordings(
         medium_velocity: 0.168,
         crs: source.crs.clone(),
         overrides: crate::sidecar::Overrides {
-            antenna_mhz: source.antenna_mhz,
-            antenna_separation_m: source.antenna_separation,
+            antenna_mhz: source.overrides.antenna_mhz,
+            antenna_separation_m: source.overrides.antenna_separation_m,
             ..Default::default()
         },
         channel: None,

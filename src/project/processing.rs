@@ -511,13 +511,13 @@ pub fn state_of(
         })
     };
     reasons.extend(overridden(
-        source.antenna_mhz,
+        source.overrides.antenna_mhz,
         recipe.antenna_mhz_override,
         "antenna frequency",
         "MHz",
     ));
     reasons.extend(overridden(
-        source.antenna_separation,
+        source.overrides.antenna_separation_m,
         recipe.antenna_separation_override,
         "antenna separation",
         "m",
@@ -812,11 +812,7 @@ mod tests {
             bundles: vec![bundle(data)],
             crs: None,
             dem: None,
-            antenna_mhz: None,
-            antenna_separation: None,
-            sampling_mhz: None,
-            date: None,
-            altitude_offset_m: None,
+            overrides: Default::default(),
             names: None,
         }
     }
@@ -899,7 +895,7 @@ mod tests {
         }
         // Unless the source's own setting takes precedence over it, as it
         // does when the radargram is processed.
-        overridden.antenna_separation = Some(1.);
+        overridden.overrides.antenna_separation_m = Some(1.);
         assert!(matches!(
             state(&v1, &overridden),
             ProcessingState::Stale { reasons, .. }

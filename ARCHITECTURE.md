@@ -1218,8 +1218,18 @@ writer once there are writers (#99). The user-facing description is
   `LocationCorrection::AltitudeOffset`, which `elevation_correction` names;
   merged recordings keep each distinct offset (`LocationCorrection::merged`,
   0 for one without), and a DEM replaces it as it replaces the altitudes. A
-  server source has its own `altitude_offset_m`, put in place of each
-  bundle's like `sampling_mhz` (`Source::bundles_to_read`).
+  server source's own value is put in place of each bundle's as
+  `sampling_mhz` is (`Source::bundles_to_read`).
+- **A server source's overrides are one `Overrides` too** (after #563):
+  `Source::overrides`, which `PUT /sources` and the Python client take as
+  `overrides`. Its JSON, stored and served, is `SourceDocument`
+  (`serde(from, into)`): `overrides` and, derived from it, the per-key
+  fields that came before (`antenna_mhz`, `antenna_separation`,
+  `sampling_mhz`, `date`, `altitude_offset_m`), so a client or a Ridal from
+  before reads a new source as it did, and a source written before reads
+  its per-key fields into `overrides`. In a request, a key given both ways
+  is refused (`override_given_twice`). The antenna keys still go to a job
+  as arguments and the rest into each bundle's sidecar values, as before.
 - **One argument for every key (#559).** A run's values are an
   `Overrides` too (`ProcessingOptions::overrides`, `InfoParams::overrides`),
   from `--override KEY=VALUE`, `overrides=` in Python, and the per-key

@@ -427,7 +427,7 @@ CALLS: Final[dict[str, Callable[[Any, Files], Any]]] = {
         "line-01",
         [[stored("DAT_0001_A1.rd3"), stored("DAT_0001_A1.rad")]],
         crs="EPSG:32633",
-        antenna_mhz=100.0,
+        overrides={"antenna_mhz": 100.0},
         names=models.SourceNames(display_name="Line 1", group_name="Drønbreen"),
     ),
     "plan_ingest": lambda c, f: c.plan_ingest(

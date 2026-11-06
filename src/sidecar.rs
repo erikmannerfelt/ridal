@@ -174,7 +174,7 @@ impl Overrides {
     }
 
     /// `self`, with each value `other` sets in its place.
-    fn under(self, other: Overrides) -> Overrides {
+    pub fn under(self, other: Overrides) -> Overrides {
         Overrides {
             antenna_mhz: other.antenna_mhz.or(self.antenna_mhz),
             antenna_separation_m: other.antenna_separation_m.or(self.antenna_separation_m),

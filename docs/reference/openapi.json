@@ -9675,7 +9675,7 @@
             }
           },
           "400": {
-            "description": "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz`, `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates) or `invalid_altitude_offset` (not a number, or for recordings whose positions are a `.coords.csv`).",
+            "description": "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz`, `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates), `invalid_altitude_offset` (not a number, or for recordings whose positions are a `.coords.csv`) or `override_given_twice` (a key in `overrides` and in its deprecated field).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18201,11 +18201,12 @@
       },
       "RawSource": {
         "type": "object",
-        "description": "What one radargram is made from.",
+        "description": "[`Source`] as it is stored and served: its `overrides`, and beside them\nthe per-key fields that came before them (#559), derived from them, so\na client or a Ridal from before reads it as it did.",
         "required": [
           "bundles",
           "crs",
           "dem",
+          "overrides",
           "antenna_mhz",
           "antenna_separation",
           "sampling_mhz",
@@ -18239,13 +18240,17 @@
               }
             ]
           },
+          "overrides": {
+            "$ref": "#/components/schemas/Overrides",
+            "description": "Values for every recording, with the keys of a sidecar's\n`[overrides]`, which take precedence over each recording's sidecar\nand header. They describe the recordings, as the CRS and DEM do, so\nevery draft and batch made from the source uses them. A date is only\nfor recordings whose positions record a time of day, and an altitude\noffset not for those whose positions are a `.coords.csv`."
+          },
           "antenna_mhz": {
             "type": [
               "number",
               "null"
             ],
             "format": "float",
-            "description": "The antenna's frequency in MHz, where the files do not say it or say\nit wrongly; `None` reads it from the files (#409). It describes the\nrecording, as the CRS and DEM do, so every draft and batch made from\nthe source uses it."
+            "description": "Deprecated: `overrides.antenna_mhz`."
           },
           "antenna_separation": {
             "type": [
@@ -18253,7 +18258,7 @@
               "null"
             ],
             "format": "float",
-            "description": "The distance between the antennas in m, likewise; `None` reads it\nfrom the files."
+            "description": "Deprecated: `overrides.antenna_separation_m`."
           },
           "sampling_mhz": {
             "type": [
@@ -18261,7 +18266,7 @@
               "null"
             ],
             "format": "float",
-            "description": "The digitizer's sampling frequency in MHz, where the files do not\nrecord it (VIRL) or record it wrongly; `None` reads it from the\nfiles, or a recording's sidecar."
+            "description": "Deprecated: `overrides.sampling_mhz`."
           },
           "date": {
             "type": [
@@ -18269,7 +18274,7 @@
               "null"
             ],
             "format": "date",
-            "description": "The UTC date of the recordings whose positions record only a time\nof day (IceRadar, pulseEKKO and VIRL, but not one with a\n`.coords.csv`), in place of the date their files give; `None` takes\nit from the files, or a recording's sidecar."
+            "description": "Deprecated: `overrides.date`."
           },
           "altitude_offset_m": {
             "type": [
@@ -18277,7 +18282,7 @@
               "null"
             ],
             "format": "float",
-            "description": "m added to every altitude of the recordings' own positions (#558),\nin place of their sidecars'; `None` takes it from the sidecars. Not\nfor a recording whose positions are a `.coords.csv`."
+            "description": "Deprecated: `overrides.altitude_offset_m`."
           },
           "names": {
             "oneOf": [
@@ -19540,13 +19545,17 @@
             ],
             "description": "One of the project's DEMs, by id (`GET /api/v1/dems`)."
           },
+          "overrides": {
+            "$ref": "#/components/schemas/Overrides",
+            "description": "Values for every recording, by the keys of a sidecar's\n`[overrides]`, which take precedence over what each recording's\nsidecar and files say: `antenna_mhz`, `sampling_mhz` and `date` for\nfiles that do not record them (VIRL records none), or an\n`altitude_offset_m` to add to every altitude of the recordings' own\npositions. A `date` is only for recordings whose positions record\na time of day (IceRadar, pulseEKKO and VIRL), and an\n`altitude_offset_m` not for those whose positions are a\n`.coords.csv`."
+          },
           "antenna_mhz": {
             "type": [
               "number",
               "null"
             ],
             "format": "float",
-            "description": "The antenna's frequency in MHz, overriding what the files say."
+            "description": "Deprecated: `overrides.antenna_mhz`. Giving a key both ways is\nrefused."
           },
           "antenna_separation": {
             "type": [
@@ -19554,7 +19563,7 @@
               "null"
             ],
             "format": "float",
-            "description": "The antenna separation in m, overriding what the files say."
+            "description": "Deprecated: `overrides.antenna_separation_m`."
           },
           "sampling_mhz": {
             "type": [
@@ -19562,14 +19571,14 @@
               "null"
             ],
             "format": "float",
-            "description": "The sampling frequency in MHz, overriding what the files say: needed\nfor VIRL files, which do not record it."
+            "description": "Deprecated: `overrides.sampling_mhz`."
           },
           "date": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The UTC date, `YYYY-MM-DD`, of recordings whose positions record\nonly a time of day (IceRadar, pulseEKKO and VIRL), overriding the\ndate their files give: needed for VIRL files, which give none."
+            "description": "Deprecated: `overrides.date`, as `YYYY-MM-DD`."
           },
           "altitude_offset_m": {
             "type": [
@@ -19577,7 +19586,7 @@
               "null"
             ],
             "format": "float",
-            "description": "m added to every altitude of the recordings' own positions, in place\nof their sidecars' `altitude_offset_m`: the take-off point's\nelevation for altitudes relative to take-off, for example. Not for\nrecordings whose positions are a `.coords.csv`."
+            "description": "Deprecated: `overrides.altitude_offset_m`."
           },
           "names": {
             "oneOf": [

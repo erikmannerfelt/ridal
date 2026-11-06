@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import dataclasses
+import datetime
 import json
 import os
 import threading
@@ -11,7 +12,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping
 from os import PathLike
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Final, Literal, Self, TypeAlias, TypeVar
+from typing import Any, Final, Literal, Self, TypeAlias, TypeVar, cast
 
 import ridal
 from ridal import _ridal
@@ -984,6 +985,7 @@ class Client:
         parts: Iterable[models.Part] | None = None,
         crs: str | None = None,
         dem: str | None = None,
+        overrides: models.Overrides | None = None,
         antenna_mhz: float | None = None,
         antenna_separation: float | None = None,
         sampling_mhz: float | None = None,
@@ -1014,20 +1016,21 @@ class Client:
             (``[processing] crs``), else the UTM zone that suits the track.
         dem : str, optional
             The id of one of the project's DEMs (:meth:`dems`).
-        antenna_mhz : float, optional
-            The antenna's frequency in MHz, where the files do not say it or
-            say it wrongly. Without it, it is read from the files. Every
-            draft and batch made from the source uses it.
-        antenna_separation : float, optional
-            The distance between the antennas in m, likewise.
-        sampling_mhz : float, optional
-            The sampling frequency in MHz, likewise. VIRL files do not
-            record it, so they need it.
-        date : str, optional
-            The UTC date, ``"YYYY-MM-DD"``, of recordings whose positions
-            record only a time of day (IceRadar, pulseEKKO and VIRL), in
-            place of the date their files give. VIRL files give none, so
-            they need it; refused for other recordings.
+        overrides : Overrides, optional
+            Values for every recording, by the keys of a sidecar's
+            ``[overrides]``, in place of what each recording's sidecar and
+            files say: ``{"antenna_mhz": 25, "sampling_mhz": 200, "date":
+            datetime.date(2014, 4, 5)}``. VIRL files record none of those
+            three, so they need them. A ``date`` (a ``datetime.date`` or
+            ``"YYYY-MM-DD"``) is refused for recordings whose positions
+            give their own dates, and an ``altitude_offset_m`` for those
+            whose positions are a ``.coords.csv``. Every draft and batch
+            made from the source uses them; a key left out is read from the
+            sidecars and files.
+        antenna_mhz, antenna_separation, sampling_mhz, date : optional
+            Deprecated, with a ``DeprecationWarning``: ``overrides`` with
+            ``"antenna_mhz"``, ``"antenna_separation_m"``,
+            ``"sampling_mhz"`` or ``"date"`` gives the same.
         names : SourceNames or None, optional
             What to call the radargram until it is served. ``"keep"`` (the
             default) keeps what the source had, and ``None`` removes it.
@@ -1051,10 +1054,15 @@ class Client:
             "parts": [dataclasses.asdict(part) for part in parts or ()],
             "crs": crs,
             "dem": dem,
-            "antenna_mhz": antenna_mhz,
-            "antenna_separation": antenna_separation,
-            "sampling_mhz": sampling_mhz,
-            "date": date,
+            "overrides": _overrides_body(
+                overrides,
+                {
+                    "antenna_mhz": ("antenna_mhz", antenna_mhz),
+                    "antenna_separation": ("antenna_separation_m", antenna_separation),
+                    "sampling_mhz": ("sampling_mhz", sampling_mhz),
+                    "date": ("date", date),
+                },
+            ),
         }
         if names != "keep":
             body["names"] = None if names is None else dataclasses.asdict(names)
@@ -1371,6 +1379,7 @@ class Client:
         *,
         crs: str | None = None,
         dem: str | None = None,
+        overrides: models.Overrides | None = None,
         antenna_mhz: float | None = None,
         antenna_separation: float | None = None,
         sampling_mhz: float | None = None,
@@ -1396,10 +1405,10 @@ class Client:
             As ``ridal steps`` lists them.
         crs, dem : str, optional
             As for :meth:`set_source`.
-        antenna_mhz, antenna_separation, sampling_mhz : float, optional
+        overrides : Overrides, optional
             As for :meth:`set_source`.
-        date : str, optional
-            As for :meth:`set_source`.
+        antenna_mhz, antenna_separation, sampling_mhz, date : optional
+            Deprecated, as for :meth:`set_source`.
         medium_velocity : float, optional
             m/ns. The server's default is that of ice.
         allow : collection of Severity
@@ -1421,15 +1430,22 @@ class Client:
             [self.upload_raw(path, progress=progress) for path in files]
             for files in (_recording_files(r) for r in recordings)
         ]
+        # Merged here, so a deprecated argument warns once, at this call.
+        given = _overrides_body(
+            overrides,
+            {
+                "antenna_mhz": ("antenna_mhz", antenna_mhz),
+                "antenna_separation": ("antenna_separation_m", antenna_separation),
+                "sampling_mhz": ("sampling_mhz", sampling_mhz),
+                "date": ("date", date),
+            },
+        )
         self.set_source(
             radargram_id,
             stored,
             crs=crs,
             dem=dem,
-            antenna_mhz=antenna_mhz,
-            antenna_separation=antenna_separation,
-            sampling_mhz=sampling_mhz,
-            date=date,
+            overrides=cast(models.Overrides, given),
         )
         draft = self.create_draft(radargram_id, steps, medium_velocity=medium_velocity)
         draft = self.wait_for_draft(draft.job, on_update=on_update)
@@ -1836,6 +1852,43 @@ def _follow(
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError(f"{what} had not finished after {timeout} s")
         time.sleep(interval)
+
+
+def _overrides_body(
+    overrides: Mapping[str, Any] | None,
+    per_key: Mapping[str, tuple[str, Any]],
+) -> dict[str, Any]:
+    """``overrides=`` as a source body takes it, with the deprecated per-key
+    arguments, by name, as their key and value, which warn. A key given both
+    ways is refused, as on the command line; a ``None`` value gives nothing,
+    and every key not given is sent as ``None``, as the server describes the
+    object. The server checks the keys and values."""
+    given: dict[str, Any] = {}
+    for key, value in (overrides or {}).items():
+        if value is not None:
+            given[key] = value
+    for name, (key, value) in per_key.items():
+        if value is None:
+            continue
+        warnings.warn(
+            f"{name}= is deprecated; give overrides={{{key!r}: ...}} instead",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        if key in given:
+            raise ValueError(
+                f"{key} is given both in overrides and as {name}=; give it once"
+            )
+        given[key] = value
+    for key, value in given.items():
+        # A datetime's time zone could make its date the wrong day.
+        if isinstance(value, datetime.datetime):
+            raise TypeError(
+                f"overrides[{key!r}] must be a date, not a datetime: give the UTC date"
+            )
+        if isinstance(value, datetime.date):
+            given[key] = value.isoformat()
+    return {key: None for key in models.Overrides.__annotations__} | given
 
 
 def _recording_files(recording: Any) -> list[Path]:

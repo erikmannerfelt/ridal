@@ -7,9 +7,10 @@ for field; a test holds them to it. Fields the server sends as ``null`` are
 """
 
 import dataclasses
+import datetime
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias, TypeVar
+from typing import Any, Literal, TypeAlias, TypedDict, TypeVar
 
 import numpy as np
 
@@ -1093,6 +1094,19 @@ class Part:
         )
 
 
+class Overrides(TypedDict, total=False):
+    """Values for every recording of a source, by the keys of a sidecar's
+    ``[overrides]``, as :meth:`Client.set_source` takes them. ``None`` gives
+    nothing."""
+
+    antenna_mhz: float | None
+    antenna_separation_m: float | None
+    sampling_mhz: float | None
+    date: datetime.date | str | None
+    """A ``datetime.date`` or ``"YYYY-MM-DD"``."""
+    altitude_offset_m: float | None
+
+
 @dataclass(frozen=True)
 class SidecarOverrides:
     """Values from a recording's ``<stem>.ridal.toml`` that take precedence
@@ -1214,6 +1228,11 @@ class Source:
     altitude_offset_m: float | None = None
     """m added to every altitude of the recordings' own positions, in
     place of their sidecars'. ``None`` takes it from the sidecars."""
+    overrides: SidecarOverrides = SidecarOverrides()
+    """Every value the source gives its recordings, by sidecar key, in
+    place of what each recording's sidecar and files say. The fields above
+    (``antenna_mhz`` to ``altitude_offset_m``) are deprecated and say the
+    same."""
 
     @classmethod
     def from_json(cls, data: Any) -> "Source":
@@ -1230,6 +1249,7 @@ class Source:
                 sampling_mhz=d.get("sampling_mhz"),
                 date=d.get("date"),
                 altitude_offset_m=d.get("altitude_offset_m"),
+                overrides=SidecarOverrides.from_json(d.get("overrides") or {}),
             ),
         )
 
