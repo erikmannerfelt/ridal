@@ -62,7 +62,7 @@ pub(crate) fn load_meta_and_location(
         )
         .into());
     }
-    let mut gpr_location = load_positions(resolved, positions, crs, arguments.date)?;
+    let mut gpr_location = load_positions(resolved, positions, crs, arguments)?;
 
     if let Some(dem_path) = dem_path {
         gpr_location.get_dem_elevations(dem_path)?;
@@ -212,8 +212,51 @@ pub(crate) fn load_gpr(
 }
 
 /// The positions in `positions`, for the recording `resolved`: a Ridal
-/// coordinate CSV, or the positions file of the recording's format.
+/// coordinate CSV, or the positions file of the recording's format, whose
+/// altitudes get the `altitude_offset_m` the `arguments` or the sidecar
+/// give (#558).
 pub(crate) fn load_positions(
+    resolved: &ResolvedInput,
+    positions: &Path,
+    crs: Option<&String>,
+    arguments: &crate::sidecar::Overrides,
+) -> Result<GPRLocation, Box<dyn Error>> {
+    // A coordinate CSV's altitudes are the user's own, which may have been
+    // corrected already, as `ridal coords` writes them with the offset.
+    let from_csv = formats::is_coords_csv(positions);
+    if from_csv && arguments.altitude_offset_m.is_some() {
+        return Err(format!(
+            "An altitude offset given for the run (--override altitude_offset_m=, overrides= \
+             in Python) applies to the altitudes of a recording's own positions, and {} is a \
+             coordinate CSV, whose altitudes are used as they are",
+            positions.display()
+        )
+        .into());
+    }
+    let offset = match arguments.altitude_offset_m {
+        Some(offset) => Some(offset),
+        None => crate::sidecar::overrides_of(resolved)?.altitude_offset_m,
+    };
+    if let (Some(offset), true, Some(sidecar)) = (offset, from_csv, &resolved.sidecar) {
+        return Err(format!(
+            "{} sets altitude_offset_m = {offset}, which applies to the altitudes of a \
+             recording's own positions, and {} is a coordinate CSV, whose altitudes are used as \
+             they are. Remove it with ridal override --unset altitude_offset_m, or add it to the \
+             CSV's altitudes.",
+            sidecar.display(),
+            positions.display()
+        )
+        .into());
+    }
+    let mut location = native_or_csv_positions(resolved, positions, crs, arguments.date)?;
+    if let Some(offset) = offset {
+        location.offset_altitudes(offset);
+    }
+    Ok(location)
+}
+
+/// [`load_positions`], before any altitude offset.
+fn native_or_csv_positions(
     resolved: &ResolvedInput,
     positions: &Path,
     crs: Option<&String>,
@@ -357,7 +400,11 @@ mod tests {
     fn the_date_is_overridden_only_for_positions_without_their_own() {
         let date = chrono::NaiveDate::from_ymd_opt(2024, 8, 15);
         let refused = |resolved: &ResolvedInput, positions: &str| {
-            load_positions(resolved, Path::new(positions), None, date)
+            let given = crate::sidecar::Overrides {
+                date,
+                ..Default::default()
+            };
+            load_positions(resolved, Path::new(positions), None, &given)
                 .unwrap_err()
                 .to_string()
         };
@@ -389,9 +436,14 @@ mod tests {
                 sidecar: Some(sidecar.clone()),
                 ..resolved(kind, header)
             };
-            let error = load_positions(&resolved, Path::new(positions), None, None)
-                .unwrap_err()
-                .to_string();
+            let error = load_positions(
+                &resolved,
+                Path::new(positions),
+                None,
+                &crate::sidecar::Overrides::default(),
+            )
+            .unwrap_err()
+            .to_string();
             assert!(
                 error.contains("a.ridal.toml sets date = 2024-08-15"),
                 "{error}"
@@ -404,12 +456,101 @@ mod tests {
     }
 
     #[test]
+    fn an_altitude_offset_is_refused_for_a_coordinate_csv() {
+        let given = crate::sidecar::Overrides {
+            altitude_offset_m: Some(100.),
+            ..Default::default()
+        };
+        let csv = Path::new("a.coords.csv");
+        let error = load_positions(&resolved(FormatKind::Ramac, "a.rad"), csv, None, &given)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--override altitude_offset_m="), "{error}");
+        assert!(
+            error.contains("a.coords.csv is a coordinate CSV"),
+            "{error}"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join("a.ridal.toml");
+        std::fs::write(&sidecar, "[overrides]\naltitude_offset_m = -1.5\n").unwrap();
+        let resolved = ResolvedInput {
+            sidecar: Some(sidecar),
+            ..resolved(FormatKind::Ramac, "a.rad")
+        };
+        let error = load_positions(&resolved, csv, None, &Default::default())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("a.ridal.toml sets altitude_offset_m = -1.5"),
+            "{error}"
+        );
+        assert!(error.contains("--unset altitude_offset_m"), "{error}");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))] // PROJ, for the .cor.
+    fn an_altitude_offset_is_added_to_the_recorded_altitudes() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = "dronbreen-20250327-DAT_0066_A1";
+        for ext in ["rad", "rd3", "cor"] {
+            std::fs::copy(
+                format!("assets/mala/{line}.{ext}"),
+                dir.path().join(format!("{line}.{ext}")),
+            )
+            .unwrap();
+        }
+        let rad = dir.path().join(format!("{line}.rad"));
+        let read = |given: &crate::sidecar::Overrides| {
+            let resolved = formats::resolve_input(&rad).unwrap();
+            load_meta_and_location(&resolved, 0.168, None, None, given)
+                .unwrap()
+                .1
+        };
+        let altitudes = |location: &GPRLocation| {
+            location
+                .cor_points
+                .iter()
+                .map(|p| p.altitude)
+                .collect::<Vec<_>>()
+        };
+        let bare = read(&Default::default());
+        assert!(matches!(
+            bare.correction,
+            crate::gpr::LocationCorrection::None
+        ));
+
+        // From the sidecar.
+        std::fs::write(
+            rad.with_extension("ridal.toml"),
+            "[overrides]\naltitude_offset_m = 1234.5\n",
+        )
+        .unwrap();
+        let offset = read(&Default::default());
+        for (a, b) in altitudes(&bare).iter().zip(altitudes(&offset)) {
+            assert!((b - a - 1234.5).abs() < 1e-9, "{a} -> {b}");
+        }
+        assert!(matches!(
+            &offset.correction,
+            crate::gpr::LocationCorrection::AltitudeOffset { metres } if metres == &[1234.5]
+        ));
+        // An argument takes precedence over it.
+        let given = read(&crate::sidecar::Overrides {
+            altitude_offset_m: Some(-2.),
+            ..Default::default()
+        });
+        for (a, b) in altitudes(&bare).iter().zip(altitudes(&given)) {
+            assert!((b - a + 2.).abs() < 1e-9, "{a} -> {b}");
+        }
+    }
+
+    #[test]
     fn iceradar_positions_are_in_the_file_itself_or_a_csv() {
         let error = load_positions(
             &resolved(FormatKind::IceRadar, "a.h5"),
             Path::new("b.h5"),
             None,
-            None,
+            &crate::sidecar::Overrides::default(),
         )
         .unwrap_err()
         .to_string();

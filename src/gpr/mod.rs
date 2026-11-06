@@ -785,6 +785,7 @@ impl GPR {
                 .cor_points
                 .append(other.location.cor_points.clone().as_mut());
             self.location.time_source = self.location.time_source.and(other.location.time_source);
+            self.location.correction = self.location.correction.merged(&other.location.correction);
 
             // Per trace, so it concatenates with the traces. Two inputs
             // cropped by different amounts is exactly the case a single

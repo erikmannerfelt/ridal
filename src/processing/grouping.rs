@@ -27,6 +27,7 @@ pub fn read_header_and_positions(
             antenna_separation_m: None,
             sampling_mhz: given.sampling_mhz,
             date: given.date,
+            altitude_offset_m: None,
         },
     )
     .map_err(|e| {

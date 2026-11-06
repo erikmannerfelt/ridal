@@ -63,6 +63,11 @@ pub struct Overrides {
         schema(value_type = Option<String>, format = Date, required = true)
     )]
     pub date: Option<chrono::NaiveDate>,
+    /// m, added to every altitude read from the recording's own positions
+    /// (#558).
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub altitude_offset_m: Option<f32>,
 }
 
 /// `date` as `YYYY-MM-DD`: a string in JSON, and in TOML either a string
@@ -147,6 +152,15 @@ pub const OVERRIDE_KEYS: &[OverrideKey] = &[
                       whose positions record only a time of day or a date that may be wrong. Written \
                       as a TOML date (date = 2014-04-05) or a string.",
     },
+    OverrideKey {
+        name: "altitude_offset_m",
+        unit: "m",
+        description: "Added to every altitude the recording's own positions give, to make it the \
+                      radar antenna's height in the vertical datum it will be compared with: the \
+                      take-off point's elevation for altitudes relative to take-off, minus the \
+                      height of a GNSS antenna mounted above the radar antenna, or a geoid \
+                      separation. Not applied to a coordinate CSV's altitudes.",
+    },
 ];
 
 // `check` refuses NaN, so a read value is equal to itself, as a recipe's
@@ -166,6 +180,7 @@ impl Overrides {
             antenna_separation_m: other.antenna_separation_m.or(self.antenna_separation_m),
             sampling_mhz: other.sampling_mhz.or(self.sampling_mhz),
             date: other.date.or(self.date),
+            altitude_offset_m: other.altitude_offset_m.or(self.altitude_offset_m),
         }
     }
 
@@ -185,11 +200,16 @@ impl Overrides {
                 return Err(format!("sampling_mhz must be above 0, not {mhz}"));
             }
         }
+        if let Some(m) = self.altitude_offset_m {
+            if !m.is_finite() {
+                return Err(format!("altitude_offset_m must be a number, not {m}"));
+            }
+        }
         Ok(())
     }
 
     /// Each key, by its name in a sidecar, and its value.
-    pub fn entries(&self) -> [(&'static str, Option<Value>); 4] {
+    pub fn entries(&self) -> [(&'static str, Option<Value>); 5] {
         [
             ("antenna_mhz", self.antenna_mhz.map(Value::Number)),
             (
@@ -198,6 +218,10 @@ impl Overrides {
             ),
             ("sampling_mhz", self.sampling_mhz.map(Value::Number)),
             ("date", self.date.map(Value::Date)),
+            (
+                "altitude_offset_m",
+                self.altitude_offset_m.map(Value::Number),
+            ),
         ]
     }
 
@@ -219,6 +243,9 @@ impl Overrides {
                 .filter(|_| other.antenna_separation_m.is_none()),
             sampling_mhz: self.sampling_mhz.filter(|_| other.sampling_mhz.is_none()),
             date: self.date.filter(|_| other.date.is_none()),
+            altitude_offset_m: self
+                .altitude_offset_m
+                .filter(|_| other.altitude_offset_m.is_none()),
         }
     }
 }
@@ -932,6 +959,7 @@ mod tests {
             antenna_separation_m: Some(1.),
             sampling_mhz: Some(1.),
             date: chrono::NaiveDate::from_ymd_opt(2014, 4, 5),
+            altitude_offset_m: Some(1.),
         };
         let table = toml::Table::try_from(all).unwrap();
         let mut fields = table.keys().map(String::as_str).collect::<Vec<_>>();

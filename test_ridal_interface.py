@@ -515,3 +515,15 @@ def test_batch_process_makes_each_channel_its_own_output(tmp_path):
         [str(dzt)], str(output), quiet=True, id_pattern="{stem}-ch{channel}"
     )
     assert sorted(Path(p).name for p in written) == ["track-ch1.nc", "track-ch2.nc"]
+
+
+def test_an_altitude_offset_is_added_to_every_recorded_altitude():
+    # #558: through `overrides`, as any sidecar key.
+    (bare,) = ridal.info(str(FIXTURE))
+    (offset,) = ridal.info(str(FIXTURE), overrides={"altitude_offset_m": -12.5})
+    shift = (
+        offset["location"]["centroid"]["altitude"]
+        - bare["location"]["centroid"]["altitude"]
+    )
+    assert shift == pytest.approx(-12.5)
+    assert offset["location"]["correction"]["kind"] == "altitude_offset"

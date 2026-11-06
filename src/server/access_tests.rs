@@ -7433,6 +7433,30 @@ async fn a_source_gives_the_sampling_frequency_and_date_its_files_do_not() {
     assert!(sidecar.contains("sampling_mhz = 200"), "{sidecar}");
     assert!(sidecar.contains("2014-04-05"), "{sidecar}");
 
+    // An altitude offset (#558) is the source's too, and added to every
+    // recorded altitude.
+    let offset = set(json!({
+        "sampling_mhz": 200, "date": "2014-04-05", "altitude_offset_m": 100
+    }))
+    .await;
+    assert_eq!(offset.status, StatusCode::OK, "{}", offset.text);
+    assert_eq!(offset.body["source"]["altitude_offset_m"], 100.);
+    let altitude = |answer: &Value| {
+        answer["recordings"][0]["location"]["centroid"]["altitude"]
+            .as_f64()
+            .unwrap()
+    };
+    assert!(
+        (altitude(&offset.body) - altitude(&saved.body) - 100.).abs() < 1e-6,
+        "{} {}",
+        offset.body["recordings"][0]["location"],
+        saved.body["recordings"][0]["location"]
+    );
+    assert_eq!(
+        offset.body["recordings"][0]["location"]["correction"]["kind"],
+        "altitude_offset"
+    );
+
     // A date is refused for recordings that give their own.
     let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
     let ramac = put(

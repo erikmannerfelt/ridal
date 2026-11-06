@@ -374,6 +374,8 @@ fn header_values(resolved: &ResolvedInput) -> Overrides {
         sampling_mhz: meta.as_ref().map(|m| m.frequency),
         // Not one value a header says: the date of each position.
         date: None,
+        // A correction the header knows nothing of.
+        altitude_offset_m: None,
     }
 }
 
@@ -417,6 +419,9 @@ fn template_text(resolved: &ResolvedInput) -> Result<String, String> {
         match said {
             None if key == "date" => {
                 text += "# Without it, the date is the one the file gives.\n# date =\n"
+            }
+            None if key == "altitude_offset_m" => {
+                text += "# Without it, the altitudes are used as recorded.\n# altitude_offset_m =\n"
             }
             Some(value) => text += &format!("# The header says {value}.\n# {key} = {value}\n"),
             None if several_channels => {

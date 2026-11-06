@@ -778,6 +778,7 @@ mod tests {
             antenna_separation_override: None,
             date_override: None,
             sampling_mhz_override: None,
+            altitude_offset_m_override: None,
             steps: steps
                 .iter()
                 .map(|s| crate::recipe::RecipeStep {
@@ -815,6 +816,7 @@ mod tests {
             antenna_separation: None,
             sampling_mhz: None,
             date: None,
+            altitude_offset_m: None,
             names: None,
         }
     }

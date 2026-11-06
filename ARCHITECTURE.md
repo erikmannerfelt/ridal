@@ -1200,15 +1200,26 @@ writer once there are writers (#99). The user-facing description is
   Hashing values rather than the file's bytes means a comment or a
   reformatted sidecar is the same revision. A value given as an argument is
   a different recipe from the same value in a sidecar.
-  `sampling_mhz` and `date`, added later, are hashed only when set, so a
-  recipe from before them keeps its hash; one with a sidecar is now
-  written with them as `null`.
+  `sampling_mhz`, `date` and `altitude_offset_m`, added later, are hashed
+  only when set, so a recipe from before them keeps its hash; one with a
+  sidecar is now written with them as `null`.
 - **Not every key is a number.** `date` is a `NaiveDate`, read from a
   TOML local date or a string, so `Overrides::entries` yields
   `sidecar::Value`. `sampling_mhz` replaces the header's sampling frequency
   and the time window with it in `load_meta`, for any format. A sidecar
   `date` goes where `--override date=` does, through `input::date_of`, and
   is refused where that is (`formats::takes_date`).
+- **`altitude_offset_m` is applied in `input::load_positions` (#558)**,
+  to the recording's own positions only: a coordinate CSV's altitudes are
+  the user's, so an offset is refused beside one, from the run or the
+  sidecar, as the date is. Applying it there rather than in the readers
+  means `ridal coords` writes the offset into the CSV it makes, and says
+  so. `GPRLocation::offset_altitudes` records it as
+  `LocationCorrection::AltitudeOffset`, which `elevation_correction` names;
+  merged recordings keep each distinct offset (`LocationCorrection::merged`,
+  0 for one without), and a DEM replaces it as it replaces the altitudes. A
+  server source has its own `altitude_offset_m`, put in place of each
+  bundle's like `sampling_mhz` (`Source::bundles_to_read`).
 - **One argument for every key (#559).** A run's values are an
   `Overrides` too (`ProcessingOptions::overrides`, `InfoParams::overrides`),
   from `--override KEY=VALUE`, `overrides=` in Python, and the per-key

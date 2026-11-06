@@ -897,7 +897,8 @@ impl GPR {
 }
 
 /// The `elevation_correction` attribute: `None`, or the DEM's file name, or
-/// the coordinate CSV's when `ridal coords` sampled the DEM.
+/// the coordinate CSV's when `ridal coords` sampled the DEM, or the
+/// altitude offsets added to the recorded altitudes (#558).
 ///
 /// Bilinear says nothing more, as before #462, so a file made with a GDAL
 /// that has it is unchanged.
@@ -917,6 +918,17 @@ fn elevation_correction(correction: &LocationCorrection) -> String {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             format!("DEM-corrected by ridal coords: {name:?}")
         }
+        LocationCorrection::AltitudeOffset { metres } => match &metres[..] {
+            [m] => format!("Altitude offset: {m} m"),
+            several => format!(
+                "Altitude offsets by recording: {} m",
+                several
+                    .iter()
+                    .map(f32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        },
     }
 }
 
@@ -940,5 +952,29 @@ mod elevation_correction_tests {
             elevation_correction(&dem(Resampling::Nearest)),
             "DEM-corrected: \"svalbard.tif\" (nearest cell, GDAL before 3.10)"
         );
+    }
+
+    #[test]
+    fn an_altitude_offset_is_named_and_merged_offsets_list_each() {
+        let offset = |metres: &[f32]| LocationCorrection::AltitudeOffset {
+            metres: metres.to_vec(),
+        };
+        assert_eq!(
+            elevation_correction(&offset(&[1234.5])),
+            "Altitude offset: 1234.5 m"
+        );
+        // A recording without one, merged after one with one.
+        let merged = offset(&[1234.5]).merged(&LocationCorrection::None);
+        assert_eq!(
+            elevation_correction(&merged),
+            "Altitude offsets by recording: 1234.5, 0 m"
+        );
+        // The same offset twice is still one, and none twice is none.
+        let same = offset(&[-2.]).merged(&offset(&[-2.]));
+        assert_eq!(elevation_correction(&same), "Altitude offset: -2 m");
+        assert!(matches!(
+            LocationCorrection::None.merged(&LocationCorrection::None),
+            LocationCorrection::None
+        ));
     }
 }

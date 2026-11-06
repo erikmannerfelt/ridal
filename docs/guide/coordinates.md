@@ -170,6 +170,41 @@ Exported points (see {doc}`interpretation`) are in WGS84 by default and in
 the radargram's own CRS with `--crs native`, and the projected easting and
 northing are written as properties on every point either way.
 
+(altitude-offset)=
+## An offset for every altitude
+
+The altitudes a recording gives are not always the radar antenna's height
+in the datum they will be compared with. A UAV system may record its height
+above the take-off point, a GNSS antenna on a rigid frame sits a fixed
+distance above the radar antenna, and GNSS heights may be ellipsoidal where
+a DEM is orthometric. Each is a constant for the recording, which
+`altitude_offset_m` adds to every altitude its own positions give: in its
+{doc}`sidecar <../reference/sidecar>` for one recording, or for a whole run
+with `--override altitude_offset_m=1234.5` (`overrides=` in Python, or
+**Altitude offset** in the GUI's **Process…** dialog). It is the take-off
+point's elevation for altitudes relative to take-off, minus the GNSS
+antenna's height above the radar antenna for a rigid mount, or the geoid
+separation to compare ellipsoidal heights with an orthometric DEM. Which
+datum the result is in is up to you: Ridal converts none.
+
+```bash
+ridal override flight_01.sgy --set altitude_offset_m=1234.5
+```
+
+An offset makes a relative altitude absolute, but no more accurate than it
+was. A barometric or drifting altitude is good enough for a window several
+metres wide, not for a surface elevation from a radar height of 1 to 2 m;
+use a DEM there.
+
+The offset is applied as the positions are read, so it reaches the
+elevations and the topographic correction, and the output's
+`elevation_correction` attribute names it ("Altitude offset: 1234.5 m", or
+each recording's for recordings merged with different ones). A DEM given
+with `--dem` replaces the altitudes as before, offset or not. A coordinate
+CSV's altitudes are used as they are, so an offset is refused for a
+recording whose positions are one; `ridal coords` writes the CSV of a
+recording with the offset its sidecar gives already added, and says so.
+
 ## Elevations from a DEM
 
 The elevations in a positions file are those of the GNSS antenna, and

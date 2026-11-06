@@ -3832,6 +3832,7 @@ mod tests {
             antenna_separation_override: None,
             date_override: None,
             sampling_mhz_override: None,
+            altitude_offset_m_override: None,
             steps: vec![],
         };
         // Read from the name.

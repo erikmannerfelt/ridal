@@ -198,7 +198,8 @@ at before it is added. There, a file of several lines or channels is read
 as one of them: once the files are uploaded, the dialog lists what each
 holds and you choose which one the radargram is made from. Beside the
 antenna frequency and separation, it takes the sampling frequency and the
-date, where the files do not say them or say them wrongly; a VIRL file
+date, where the files do not say them or say them wrongly, and an altitude
+offset to add to every recorded altitude (see {ref}`altitude-offset`); a VIRL file
 needs the antenna frequency, the sampling frequency and the date before
 it is uploaded. Changing any of them later is saved with the raw data at
 once, and what is served then needs processing again.

@@ -47,8 +47,9 @@
   const separationBox = document.getElementById('process-antenna-separation');
   const samplingBox = document.getElementById('process-sampling-mhz');
   const dateBox = document.getElementById('process-date');
-  // Every box of what the recordings are, saved together (#409, #537).
-  const overrideBoxes = [mhzBox, separationBox, samplingBox, dateBox];
+  const altitudeBox = document.getElementById('process-altitude-offset');
+  // Every box of what the recordings are, saved together (#409, #537, #558).
+  const overrideBoxes = [mhzBox, separationBox, samplingBox, dateBox, altitudeBox];
   const antennaSlot = document.getElementById('process-antenna-slot');
   const upload = document.getElementById('process-upload');
   const cancelUpload = document.getElementById('process-cancel-upload');
@@ -138,28 +139,45 @@
     }
     return value;
   }
+  /** The altitude offset (#558): any number, which may be negative, or
+   * null when empty. */
+  function offsetValue(box) {
+    const text = box.value.trim();
+    if (text === '') return null;
+    const value = Number(text);
+    if (!Number.isFinite(value)) {
+      throw new Error('The altitude offset must be a number of metres, or empty to use the recorded altitudes.');
+    }
+    return value;
+  }
   /** What the source is to say of its recordings, from the boxes: the
-   * antenna overrides, and the sampling frequency and date that VIRL files
-   * do not record (#537). The date box gives `YYYY-MM-DD`, or nothing. */
+   * antenna overrides, the sampling frequency and date that VIRL files
+   * do not record (#537), and an altitude offset (#558). The date box
+   * gives `YYYY-MM-DD`, or nothing. */
   const antennaOverrides = () => ({
     antenna_mhz: antennaValue(mhzBox, 'antenna frequency'),
     antenna_separation: antennaValue(separationBox, 'antenna separation'),
     sampling_mhz: antennaValue(samplingBox, 'sampling frequency'),
     date: dateBox.value || null,
+    altitude_offset_m: offsetValue(altitudeBox),
   });
   /** What the source has, as the boxes show it. */
-  let savedAntenna = { antenna_mhz: null, antenna_separation: null, sampling_mhz: null, date: null };
+  let savedAntenna = {
+    antenna_mhz: null, antenna_separation: null, sampling_mhz: null, date: null, altitude_offset_m: null,
+  };
   function showAntenna(source) {
     savedAntenna = {
       antenna_mhz: source?.antenna_mhz ?? null,
       antenna_separation: source?.antenna_separation ?? null,
       sampling_mhz: source?.sampling_mhz ?? null,
       date: source?.date ?? null,
+      altitude_offset_m: source?.altitude_offset_m ?? null,
     };
     mhzBox.value = savedAntenna.antenna_mhz ?? '';
     separationBox.value = savedAntenna.antenna_separation ?? '';
     samplingBox.value = savedAntenna.sampling_mhz ?? '';
     dateBox.value = savedAntenna.date ?? '';
+    altitudeBox.value = savedAntenna.altitude_offset_m ?? '';
   }
   /** What the files did not say is read once the source gives it: say
    * where, and put the cursor there. Known by the refusal's code: a header

@@ -151,8 +151,13 @@ UPDATE_SIDECAR_MD=1 cargo test --no-default-features -F cli sidecar_md -->
 | `antenna_separation_m` | m | The horizontal distance between the transmitter and the receiver. GSSI, IceRadar and VIRL files do not record it, and it is taken as 0 m without one. |
 | `sampling_mhz` | MHz | The digitizer's sampling frequency, not the antenna's: the time between samples is 1000 / sampling_mhz ns. Needed for a VIRL file, which does not record it. A wrong value scales every time and depth. |
 | `date` | YYYY-MM-DD | The UTC date of the recording, for an IceRadar, pulseEKKO or VIRL file, whose positions record only a time of day or a date that may be wrong. Written as a TOML date (date = 2014-04-05) or a string. |
+| `altitude_offset_m` | m | Added to every altitude the recording's own positions give, to make it the radar antenna's height in the vertical datum it will be compared with: the take-off point's elevation for altitudes relative to take-off, minus the height of a GNSS antenna mounted above the radar antenna, or a geoid separation. Not applied to a coordinate CSV's altitudes. |
 
 <!-- end of generated keys -->
+
+`altitude_offset_m` is described with the other ways of getting elevations,
+in {ref}`altitude-offset`. It is not applied to positions from a coordinate
+CSV, and is refused for a recording whose positions are one.
 
 ## On a server
 
