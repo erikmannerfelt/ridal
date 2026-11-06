@@ -15,7 +15,10 @@ server, an account with the `picker` role or above (see
 1. Choose the **Layer** in the toolbar above the radargram.
 2. Click **Add line** and then click along the reflector, where each click
    adds a vertex. **Undo vertex** removes the last vertex, and clicking a
-   vertex of the line being drawn removes that vertex.
+   vertex of the line being drawn removes that vertex. A click near the end
+   of another line in the same layer snaps to it, marked with a ring, and the
+   new line is joined to that line when it is finished: start there to
+   continue a line, or end there to bridge to one.
 3. Finish the line with **Finish line** or with a double-click on the last
    point, or abandon it with Escape.
 4. Click **Save**. Nothing is stored until then, and the viewer warns before

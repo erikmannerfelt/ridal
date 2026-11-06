@@ -1987,6 +1987,15 @@ button.group-chip:hover,
   background: var(--color-text);
 }
 
+/* A draft end that sits on another line's endpoint, and so will join it on
+ * finishing. A ring rather than a colour: the layer colour is already taken
+ * by the line, and the ring reads the same on every layer. */
+.pick-handle-join {
+  box-shadow:
+    0 0 0 3px var(--color-surface),
+    0 0 0 5px var(--color-text);
+}
+
 /* An overhang marker sits on top of a handle, so it must read as a warning
  * without hiding what is underneath. */
 .pick-overhang {
