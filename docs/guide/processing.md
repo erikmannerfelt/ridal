@@ -20,8 +20,8 @@ zero_corr(coppens, scope=trace)
 ```
 
 The same list works everywhere: comma-separated after `--steps`, one step per
-line in a steps file (where `#` starts a comment) or in the GUI's steps box,
-or as a Python list. `ridal steps` lists every step, and
+line in a steps file or in the GUI's steps box (in both, `#` starts a comment
+that runs to the end of the line), or as a Python list. `ridal steps` lists every step, and
 `ridal steps --describe-all` describes them.
 
 What each step did is written into the output. `processing_steps` holds the

@@ -1976,7 +1976,9 @@ const RIDAL = Object.freeze({
    * colours and explains: the server still parses and checks the steps.
    *
    * `RIDAL.stepsEditor.highlight(text, preProfile)` gives the same colours
-   * as HTML, for steps that are shown rather than edited. */
+   * as HTML, for steps that are shown rather than edited, and
+   * `RIDAL.stepsEditor.lines(text)` the steps a box holds, comments left
+   * out. */
   stepsEditor: (function () {
     let catalog = null;
     function steps() {
@@ -1994,8 +1996,9 @@ const RIDAL = Object.freeze({
     /* The structure of a step list, as src/processing/steps/parse.rs reads it: steps
      * separated by commas or new lines, each a word with its arguments in
      * parentheses, and the arguments separated by spaces or commas and
-     * optionally named (`q=0.5`). Enough to colour it and to tell which
-     * step and argument the caret is in, and no more. */
+     * optionally named (`q=0.5`). A `#` starts a comment that runs to the
+     * end of its line, as in a steps file (#569). Enough to colour it and
+     * to tell which step and argument the caret is in, and no more. */
     function scan(text) {
       const tokens = [];
       const list = [];
@@ -2004,6 +2007,13 @@ const RIDAL = Object.freeze({
       let i = 0;
       while (i < text.length) {
         const c = text[i];
+        if (c === "#") {
+          const end = text.indexOf("\n", i);
+          const j = end < 0 ? text.length : end;
+          tokens.push({ kind: "comment", start: i, end: j });
+          i = j;
+          continue;
+        }
         if ("(),=".includes(c)) {
           tokens.push({ kind: "punct", start: i, end: i + 1 });
           if (c === "(") depth += 1;
@@ -2019,7 +2029,7 @@ const RIDAL = Object.freeze({
           continue;
         }
         let j = i;
-        while (j < text.length && !/[\s(),=]/.test(text[j])) j += 1;
+        while (j < text.length && !/[\s(),=#]/.test(text[j])) j += 1;
         const word = text.slice(i, j);
         if (depth === 0) {
           step = { name: word, start: i, end: j, args: [] };
@@ -2041,6 +2051,15 @@ const RIDAL = Object.freeze({
       }
       return { tokens, list };
     }
+
+    /* The steps in a box as the pages send them: one per line, without
+     * comments or empty lines, which is how `tools::read_text` reads a
+     * steps file. Also `stepsEditor.lines`. */
+    const lines = (text) =>
+      text
+        .split("\n")
+        .map((line) => line.split("#")[0].trim())
+        .filter((line) => line !== "");
 
     const preProfileNames = () =>
       steps()
@@ -2122,6 +2141,7 @@ const RIDAL = Object.freeze({
           name: "tok-keyword",
           number: "tok-number",
           value: "tok-string",
+          comment: "tok-comment",
         }[token.kind];
         // Without the catalog (a page for someone who cannot process, which
         // has no process dialog) a step is coloured but not judged.
@@ -2186,7 +2206,7 @@ const RIDAL = Object.freeze({
         const wrong = list.find((s) => problem(s, byName.get(s.name), preProfile));
         help.innerHTML = wrong
           ? `<p class="steps-help-problem">${problem(wrong, byName.get(wrong.name), preProfile)}</p>`
-          : `<p>Steps run in order, one per line. <a href="${RIDAL.docsBase}reference/steps.html" target="_blank" rel="noopener">Every step in the documentation</a></p>`;
+          : `<p>Steps run in order, one per line; <code>#</code> starts a comment. <a href="${RIDAL.docsBase}reference/steps.html" target="_blank" rel="noopener">Every step in the documentation</a></p>`;
       }
 
       // The pages also fill these boxes themselves (a profile's steps, the
@@ -2214,6 +2234,7 @@ const RIDAL = Object.freeze({
     }
 
     attach.highlight = highlight;
+    attach.lines = lines;
     return attach;
   })(),
 });

@@ -1029,7 +1029,7 @@
           'PUT',
           {
             name,
-            steps: $('ingest-profile-steps').value.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#')),
+            steps: RIDAL.stepsEditor.lines($('ingest-profile-steps').value),
             medium_velocity: Number($('ingest-profile-velocity').value),
           },
           { 'If-None-Match': '*' },

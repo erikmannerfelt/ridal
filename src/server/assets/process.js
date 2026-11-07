@@ -822,11 +822,7 @@
     polling = setTimeout(poll, 1000);
   }
 
-  const linesIn = (box) =>
-    box.value
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line !== '' && !line.startsWith('#'));
+  const linesIn = (box) => RIDAL.stepsEditor.lines(box.value);
 
   /** The radargram's own steps, run before the profile's: a box of their
    * own while it is in a profile, so which steps are whose is plain. */
