@@ -17,7 +17,7 @@
 //! be set for an id that has no processed file yet: that is where server
 //! processing starts. The files themselves live in [`crate::project::raw`].
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -531,6 +531,25 @@ pub struct SourceView {
     /// What each recording's header and positions say, in merge order.
     /// Only `PUT` reads the recordings; `GET` leaves this empty.
     pub recordings: Vec<crate::inspect::InfoRecord>,
+    /// The keys of `overrides` that do not apply to every one of its
+    /// recordings, which a `PUT` giving them refuses, each with why not.
+    #[schema(value_type = BTreeMap<String, String>)]
+    pub not_applicable: BTreeMap<&'static str, &'static str>,
+}
+
+impl SourceView {
+    pub fn new(
+        radargram_id: String,
+        source: Source,
+        recordings: Vec<crate::inspect::InfoRecord>,
+    ) -> Self {
+        Self {
+            not_applicable: source.not_applicable(),
+            radargram_id,
+            source,
+            recordings,
+        }
+    }
 }
 
 /// What the radargram is made from, with an `ETag`.
@@ -562,11 +581,7 @@ pub async fn get_source(
         })?;
     Ok((
         with_etag(&version),
-        Json(SourceView {
-            radargram_id: id.to_string(),
-            source,
-            recordings: Vec::new(),
-        }),
+        Json(SourceView::new(id.to_string(), source, Vec::new())),
     )
         .into_response())
 }
@@ -708,6 +723,10 @@ fn source_overrides(body: &SourceBody) -> Result<crate::sidecar::Overrides, ApiE
             "The altitude offset (m) must be a number, or empty to use the recorded altitudes.",
         ));
     }
+    // Every other key, by its kind in `OVERRIDE_KEYS`.
+    overrides
+        .check()
+        .map_err(|e| ApiError::bad_request("invalid_override", e))?;
     Ok(overrides)
 }
 
@@ -750,7 +769,7 @@ fn source_crs(text: &str) -> Result<String, ApiError> {
     request_body = SourceBody,
     responses(
         (status = 200, description = "The source as saved, with its `ETag`.", body = SourceView),
-        (status = 400, description = "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz`, `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates), `invalid_altitude_offset` (not a number, or for recordings whose positions are a `.coords.csv`) or `override_given_twice` (a key in `overrides` and in its deprecated field).", body = ErrorBody),
+        (status = 400, description = "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz`, `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates), `invalid_altitude_offset` (not a number, or for recordings whose positions are a `.coords.csv`), `invalid_override` or `override_not_applicable` (the same, for a key added since), or `override_given_twice` (a key in `overrides` and in its deprecated field).", body = ErrorBody),
         (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
     ),
     extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
@@ -801,31 +820,33 @@ pub async fn put_source(
         let outcome = (|| -> Result<_, Unreadable> {
             let bundles = raw::bundles_of(&data_dir, &body.recordings, &body.parts, &work, &kept)
                 .map_err(Unreadable::other)?;
-            if let (Some(_), Some(bundle)) = (
-                overrides.date,
-                bundles.iter().find(|b| !raw::bundle_takes_date(b)),
-            ) {
+            // Each key given, by where `OVERRIDE_KEYS` says it applies:
+            // refused for the whole source when one recording is not one
+            // it applies to, rather than given to some of them only.
+            for (name, value) in overrides.entries() {
+                let key = crate::sidecar::OVERRIDE_KEYS
+                    .iter()
+                    .find(|k| k.name == name)
+                    .expect("every key is listed");
+                let Some(bundle) = value.and_then(|_| {
+                    bundles
+                        .iter()
+                        .find(|b| !key.applies.to(raw::bundle_traits(b)))
+                }) else {
+                    continue;
+                };
                 return Err(Unreadable {
-                    code: "invalid_date",
+                    code: match name {
+                        // The codes these had before any other key did.
+                        "date" => "invalid_date",
+                        "altitude_offset_m" => "invalid_altitude_offset",
+                        _ => "override_not_applicable",
+                    },
                     message: format!(
-                        "A date is for recordings whose positions record only the time of \
-                         day (IceRadar, pulseEKKO and VIRL), but {} gives its own dates. \
-                         Leave the date empty.",
-                        bundle.files[0].file.name
-                    ),
-                });
-            }
-            if let (Some(_), Some(bundle)) = (
-                overrides.altitude_offset_m,
-                bundles.iter().find(|b| raw::bundle_has_coords_csv(b)),
-            ) {
-                return Err(Unreadable {
-                    code: "invalid_altitude_offset",
-                    message: format!(
-                        "An altitude offset is added to the altitudes of a recording's own \
-                         positions, but {}'s are a coordinate CSV, whose altitudes are used as \
-                         they are. Leave the altitude offset empty.",
-                        bundle.files[0].file.name
+                        "{} ({name}) does not apply to {}. {} Leave it empty.",
+                        key.label,
+                        bundle.files[0].file.name,
+                        key.applies.reason()
                     ),
                 });
             }
@@ -854,11 +875,7 @@ pub async fn put_source(
     sweep(&state, project);
     Ok((
         with_etag(&version),
-        Json(SourceView {
-            radargram_id: id.to_string(),
-            source,
-            recordings,
-        }),
+        Json(SourceView::new(id.to_string(), source, recordings)),
     )
         .into_response())
 }

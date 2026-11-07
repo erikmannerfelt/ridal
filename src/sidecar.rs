@@ -114,11 +114,128 @@ pub(crate) mod date_serde {
     }
 }
 
-/// One key of `[overrides]`, for `ridal override` and the reference page.
+/// One key of `[overrides]`: everything that is said of it outside
+/// [`Overrides`] itself. `ridal override`, the reference page and both
+/// raw-data forms of the GUI (#564) are built from these, so a new key
+/// appears in all of them once it is listed here, and every field below
+/// is a decision a new key has to make.
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct OverrideKey {
     pub name: &'static str,
+    /// What a form calls it, in sentence case and without the unit.
+    pub label: &'static str,
     pub unit: &'static str,
     pub description: &'static str,
+    /// The values it takes, which [`Overrides::check`] holds it to and
+    /// a form picks its input by.
+    pub kind: ValueKind,
+    /// Which recordings it applies to.
+    pub applies: Applies,
+    /// The code reading refuses a recording with when its files do not
+    /// say this, and nothing gives it: the refusal that makes it essential
+    /// in a form. `None` for a key a recording can be read without.
+    pub refusal: Option<&'static str>,
+    /// Whether bulk ingest takes it per antenna, as the headers name it,
+    /// rather than for the whole upload: what describes the antenna, so an
+    /// upload that mixes antennas can give each its own.
+    pub per_antenna: bool,
+    /// Whether it usually differs between recordings (a date, a take-off
+    /// point), so a form says that a sidecar per recording is the place for
+    /// it, rather than one value for all of them.
+    pub per_recording: bool,
+}
+
+/// The values one key takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValueKind {
+    /// A number above 0.
+    Positive,
+    /// A number of 0 or more.
+    NonNegative,
+    /// Any finite number.
+    Number,
+    /// `YYYY-MM-DD`.
+    Date,
+}
+
+/// Which recordings a key applies to: one it does not apply to is read as
+/// though it were not given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Applies {
+    Every,
+    /// Those whose positions are read with a date: a format whose positions
+    /// record a time of day ([`formats::takes_date`]), without a
+    /// `.coords.csv`, which gives dates of its own.
+    DatedPositions,
+    /// Those whose positions are their own rather than a `.coords.csv`.
+    OwnPositions,
+}
+
+/// What decides whether a key applies to a recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Traits {
+    /// `None` for a format this Ridal does not know.
+    pub kind: Option<FormatKind>,
+    /// Whether a `.coords.csv` gives its positions.
+    pub coords_csv: bool,
+}
+
+impl Applies {
+    pub fn to(self, recording: Traits) -> bool {
+        match self {
+            Applies::Every => true,
+            Applies::DatedPositions => {
+                !recording.coords_csv && recording.kind.is_some_and(formats::takes_date)
+            }
+            Applies::OwnPositions => !recording.coords_csv,
+        }
+    }
+
+    /// Why a key does not apply to a recording it does not apply to.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Applies::Every => "",
+            Applies::DatedPositions => {
+                "Only for recordings whose positions record a time of day (IceRadar, \
+                 pulseEKKO and VIRL), without a .coords.csv."
+            }
+            Applies::OwnPositions => "Not for positions from a .coords.csv.",
+        }
+    }
+}
+
+/// The keys that do not apply to `recordings`, each with why not: what a
+/// form shows disabled. `to_every`: a key that does not apply to one of
+/// them is out, as for a source, which refuses it; otherwise only one
+/// that applies to none of them, as for bulk ingest, which gives each
+/// recording the keys that apply to it. Nothing when there are no
+/// recordings yet, since nothing is known of them.
+pub fn not_applicable(
+    recordings: &[Traits],
+    to_every: bool,
+) -> BTreeMap<&'static str, &'static str> {
+    if recordings.is_empty() {
+        return BTreeMap::new();
+    }
+    OVERRIDE_KEYS
+        .iter()
+        .filter(|key| {
+            let applies = |r: &Traits| key.applies.to(*r);
+            if to_every {
+                !recordings.iter().all(applies)
+            } else {
+                !recordings.iter().any(applies)
+            }
+        })
+        .map(|key| (key.name, key.applies.reason()))
+        .collect()
+}
+
+/// The key reading gives `code` for when nothing gives it.
+pub fn key_refused_with(code: &str) -> Option<&'static OverrideKey> {
+    OVERRIDE_KEYS.iter().find(|k| k.refusal == Some(code))
 }
 
 /// Every key of `[overrides]`. `every_override_key_is_listed` checks this
@@ -127,39 +244,69 @@ pub struct OverrideKey {
 pub const OVERRIDE_KEYS: &[OverrideKey] = &[
     OverrideKey {
         name: "antenna_mhz",
+        label: "Antenna frequency",
         unit: "MHz",
         description: "The antenna's center frequency. Needed for an IceRadar, VIRL or SkyHub \
                       file, which does not record it.",
+        kind: ValueKind::Positive,
+        applies: Applies::Every,
+        refusal: Some("antenna_frequency_unknown"),
+        per_antenna: true,
+        per_recording: false,
     },
     OverrideKey {
         name: "antenna_separation_m",
+        label: "Antenna separation",
         unit: "m",
         description: "The horizontal distance between the transmitter and the receiver. GSSI, \
                       IceRadar, VIRL and SkyHub files do not record it, and it is taken as 0 m \
                       without one.",
+        kind: ValueKind::NonNegative,
+        applies: Applies::Every,
+        refusal: None,
+        per_antenna: true,
+        per_recording: false,
     },
     OverrideKey {
         name: "sampling_mhz",
+        label: "Sampling frequency",
         unit: "MHz",
         description: "The digitizer's sampling frequency, not the antenna's: the time between \
                       samples is 1000 / sampling_mhz ns. Needed for a VIRL file, which does not \
                       record it. A wrong value scales every time and depth.",
+        kind: ValueKind::Positive,
+        applies: Applies::Every,
+        refusal: Some("sampling_frequency_unknown"),
+        per_antenna: true,
+        per_recording: false,
     },
     OverrideKey {
         name: "date",
+        label: "Date (UTC)",
         unit: "YYYY-MM-DD",
         description: "The UTC date of the recording, for an IceRadar, pulseEKKO or VIRL file, \
                       whose positions record only a time of day or a date that may be wrong. Written \
                       as a TOML date (date = 2014-04-05) or a string.",
+        kind: ValueKind::Date,
+        applies: Applies::DatedPositions,
+        refusal: Some("date_unknown"),
+        per_antenna: false,
+        per_recording: true,
     },
     OverrideKey {
         name: "altitude_offset_m",
+        label: "Altitude offset",
         unit: "m",
         description: "Added to every altitude the recording's own positions give, to make it the \
                       radar antenna's height in the vertical datum it will be compared with: the \
                       take-off point's elevation for altitudes relative to take-off, minus the \
                       height of a GNSS antenna mounted above the radar antenna, or a geoid \
                       separation. Not applied to a coordinate CSV's altitudes.",
+        kind: ValueKind::Number,
+        applies: Applies::OwnPositions,
+        refusal: None,
+        per_antenna: false,
+        per_recording: true,
     },
 ];
 
@@ -184,28 +331,39 @@ impl Overrides {
         }
     }
 
-    fn check(&self) -> Result<(), String> {
-        if let Some(mhz) = self.antenna_mhz {
-            if !(mhz.is_finite() && mhz > 0.) {
-                return Err(format!("antenna_mhz must be above 0, not {mhz}"));
-            }
-        }
-        if let Some(m) = self.antenna_separation_m {
-            if !(m.is_finite() && m >= 0.) {
-                return Err(format!("antenna_separation_m must be 0 or more, not {m}"));
-            }
-        }
-        if let Some(mhz) = self.sampling_mhz {
-            if !(mhz.is_finite() && mhz > 0.) {
-                return Err(format!("sampling_mhz must be above 0, not {mhz}"));
-            }
-        }
-        if let Some(m) = self.altitude_offset_m {
-            if !m.is_finite() {
-                return Err(format!("altitude_offset_m must be a number, not {m}"));
+    /// Hold each value set to its key's [`ValueKind`].
+    pub fn check(&self) -> Result<(), String> {
+        for (name, value) in self.entries() {
+            let Some(Value::Number(n)) = value else {
+                continue;
+            };
+            let key = OVERRIDE_KEYS
+                .iter()
+                .find(|k| k.name == name)
+                .expect("every key is listed");
+            let refused = match key.kind {
+                ValueKind::Positive => (!(n.is_finite() && n > 0.)).then_some("be above 0"),
+                ValueKind::NonNegative => (!(n.is_finite() && n >= 0.)).then_some("be 0 or more"),
+                ValueKind::Number => (!n.is_finite()).then_some("be a number"),
+                ValueKind::Date => unreachable!("{name} is a date, not a number"),
+            };
+            if let Some(must) = refused {
+                return Err(format!("{name} must {must}, not {n}"));
             }
         }
         Ok(())
+    }
+
+    /// `self` with only the keys `keep` keeps.
+    pub fn only(self, keep: impl Fn(&OverrideKey) -> bool) -> Overrides {
+        let mut table = toml::Table::try_from(self).expect("overrides are a table");
+        table.retain(|name, _| {
+            OVERRIDE_KEYS
+                .iter()
+                .find(|k| k.name == name)
+                .is_some_and(&keep)
+        });
+        table.try_into().expect("a subset of overrides reads back")
     }
 
     /// Each key, by its name in a sidecar, and its value.
@@ -235,7 +393,7 @@ impl Overrides {
     }
 
     /// `self`, without the values `other` sets.
-    fn without(self, other: Overrides) -> Overrides {
+    pub fn without(self, other: Overrides) -> Overrides {
         Overrides {
             antenna_mhz: self.antenna_mhz.filter(|_| other.antenna_mhz.is_none()),
             antenna_separation_m: self
@@ -970,6 +1128,97 @@ mod tests {
         let mut entries = all.entries().map(|(key, _)| key).to_vec();
         entries.sort();
         assert_eq!(entries, listed);
+        // A form picks its input by the kind, and `check` holds a number to
+        // it: a date is the only key that is not a number.
+        for (name, value) in all.entries() {
+            let key = OVERRIDE_KEYS.iter().find(|k| k.name == name).unwrap();
+            assert_eq!(
+                matches!(value, Some(Value::Date(_))),
+                key.kind == ValueKind::Date,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_applies_by_where_the_positions_come_from() {
+        use crate::formats::FormatKind;
+        let virl = Traits {
+            kind: Some(FormatKind::Virl),
+            coords_csv: false,
+        };
+        let ramac = Traits {
+            kind: Some(FormatKind::Ramac),
+            coords_csv: false,
+        };
+        let csv = Traits {
+            coords_csv: true,
+            ..virl
+        };
+        assert!(not_applicable(&[], true).is_empty());
+        assert_eq!(
+            not_applicable(&[virl], true).keys().collect::<Vec<_>>(),
+            Vec::<&&str>::new()
+        );
+        assert_eq!(
+            not_applicable(&[ramac], true).keys().collect::<Vec<_>>(),
+            [&"date"]
+        );
+        assert_eq!(
+            not_applicable(&[csv], true).keys().collect::<Vec<_>>(),
+            [&"altitude_offset_m", &"date"]
+        );
+        // A key out for one recording is out of a source, which refuses
+        // it, but not of an upload, which gives it to those it applies to.
+        assert_eq!(
+            not_applicable(&[virl, ramac], true)
+                .keys()
+                .collect::<Vec<_>>(),
+            [&"date"]
+        );
+        assert!(not_applicable(&[virl, ramac], false).is_empty());
+    }
+
+    #[test]
+    fn a_value_is_held_to_its_key_s_kind() {
+        let only = Overrides {
+            antenna_mhz: Some(50.),
+            date: chrono::NaiveDate::from_ymd_opt(2014, 4, 5),
+            altitude_offset_m: Some(-3.),
+            ..Default::default()
+        };
+        assert_eq!(
+            only.only(|k| k.kind == ValueKind::Date),
+            Overrides {
+                date: only.date,
+                ..Default::default()
+            }
+        );
+        assert!(only.check().is_ok());
+        for (overrides, expected) in [
+            (
+                Overrides {
+                    antenna_separation_m: Some(-1.),
+                    ..Default::default()
+                },
+                "antenna_separation_m must be 0 or more, not -1",
+            ),
+            (
+                Overrides {
+                    altitude_offset_m: Some(f32::INFINITY),
+                    ..Default::default()
+                },
+                "altitude_offset_m must be a number, not inf",
+            ),
+        ] {
+            assert_eq!(overrides.check().unwrap_err(), expected);
+        }
+        // Every refusal names a key that is essential when reading gives it.
+        for key in OVERRIDE_KEYS {
+            if let Some(code) = key.refusal {
+                assert_eq!(key_refused_with(code).unwrap().name, key.name);
+            }
+        }
     }
 
     #[test]

@@ -101,10 +101,16 @@ pub struct PlanRequest {
     /// `per=freq` and merging see them, and carried to the sources made.
     #[serde(default)]
     pub antennas: BTreeMap<String, AntennaOverride>,
-    /// The UTC date, `YYYY-MM-DD`, of every recording whose positions are
-    /// read with one (IceRadar, pulseEKKO and VIRL; not one with a
-    /// `.coords.csv`), in place of the date its files give, if any. One for
-    /// the whole plan, and carried to the sources made.
+    /// Values for the whole upload, by the keys of a sidecar's
+    /// `[overrides]` (#564), each given to every recording it applies to
+    /// and carried to the sources made: a `date` to those whose positions
+    /// record a time of day, an `altitude_offset_m` to those whose
+    /// positions are their own. The keys that describe an antenna
+    /// (`antenna_mhz`, `antenna_separation_m`, `sampling_mhz`) go in
+    /// `antennas` instead.
+    #[serde(default)]
+    pub overrides: crate::sidecar::Overrides,
+    /// Deprecated: `overrides.date`, as `YYYY-MM-DD`.
     #[serde(default)]
     pub date: Option<String>,
     /// Whether to send each recording's track. A page that has them
@@ -118,19 +124,68 @@ fn yes() -> bool {
 }
 
 /// What to take one antenna to be, where its files do not say or are
-/// wrong. Either may be left to the files.
+/// wrong. Each may be left to the files.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, utoipa::ToSchema)]
 pub struct AntennaOverride {
-    /// MHz.
+    /// The keys of a sidecar's `[overrides]` that describe an antenna
+    /// (#564): `antenna_mhz`, `antenna_separation_m`, and `sampling_mhz`,
+    /// which is given only to recordings whose files do not record it
+    /// (VIRL); others keep their own.
+    #[serde(default)]
+    pub overrides: crate::sidecar::Overrides,
+    /// Deprecated: `overrides.antenna_mhz`. Giving a key both ways is
+    /// refused.
     #[serde(default)]
     pub mhz: Option<f32>,
-    /// m.
+    /// Deprecated: `overrides.antenna_separation_m`.
     #[serde(default)]
     pub separation: Option<f32>,
-    /// The sampling frequency in MHz, for recordings whose files do not
-    /// record it (VIRL); others keep their own.
+    /// Deprecated: `overrides.sampling_mhz`.
     #[serde(default)]
     pub sampling_mhz: Option<f32>,
+}
+
+impl AntennaOverride {
+    /// `overrides`, with what the deprecated fields give, or which key is
+    /// given both ways.
+    fn merged(&self) -> Result<crate::sidecar::Overrides, &'static str> {
+        let per_key = crate::sidecar::Overrides {
+            antenna_mhz: self.mhz,
+            antenna_separation_m: self.separation,
+            sampling_mhz: self.sampling_mhz,
+            ..Default::default()
+        };
+        for ((key, old), (_, new)) in per_key.entries().into_iter().zip(self.overrides.entries()) {
+            if old.is_some() && new.is_some() {
+                return Err(key);
+            }
+        }
+        Ok(per_key.under(self.overrides))
+    }
+}
+
+impl PlanRequest {
+    /// What each antenna is given, by its name, by the keys of a sidecar.
+    /// Checked when the request came in.
+    pub fn antenna_overrides(&self) -> BTreeMap<String, crate::sidecar::Overrides> {
+        self.antennas
+            .iter()
+            .map(|(name, given)| (name.clone(), given.merged().unwrap_or(given.overrides)))
+            .collect()
+    }
+
+    /// What the whole upload is given: `overrides`, with the deprecated
+    /// `date`. Checked when the request came in.
+    pub fn upload_overrides(&self) -> crate::sidecar::Overrides {
+        let date = self
+            .date
+            .as_deref()
+            .and_then(|text| chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d").ok());
+        crate::sidecar::Overrides {
+            date: self.overrides.date.or(date),
+            ..self.overrides
+        }
+    }
 }
 
 /// `POST /api/v1/ingest/plan`.
@@ -149,6 +204,10 @@ pub struct IngestPlan {
     /// Each antenna the recordings name, in name order.
     pub antennas: Vec<PlannedAntenna>,
     pub problems: Vec<PlanProblem>,
+    /// The keys of `overrides` that apply to none of the recordings, each
+    /// with why not (#564).
+    #[schema(value_type = BTreeMap<String, String>)]
+    pub not_applicable: BTreeMap<&'static str, &'static str>,
 }
 
 /// One antenna the recordings name, what their files say of it, and what
@@ -181,6 +240,12 @@ pub struct PlannedAntenna {
     pub sampling_override: Option<f32>,
     /// How many recordings have it.
     pub recordings: usize,
+    /// The request's overrides for it, by the keys of a sidecar (#564).
+    pub overrides: crate::sidecar::Overrides,
+    /// The keys of `antennas` it does not take, each with why not:
+    /// `sampling_mhz` where its files record the sampling frequency.
+    #[schema(value_type = BTreeMap<String, String>)]
+    pub not_applicable: BTreeMap<&'static str, &'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
@@ -227,6 +292,12 @@ pub struct PlannedRecording {
     /// another reason.
     #[schema(required = true)]
     pub missing: Option<String>,
+    /// The same, as the key of `overrides` that gives it (#564).
+    #[schema(required = true)]
+    pub missing_key: Option<String>,
+    /// What its sidecar, uploaded with it, sets: the values the request
+    /// takes precedence over.
+    pub sidecar: crate::sidecar::Overrides,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
@@ -264,6 +335,12 @@ pub struct PlannedOutput {
     /// its recordings is read with one.
     #[schema(required = true)]
     pub date: Option<String>,
+    /// Everything its source is to be given, by the keys of a sidecar
+    /// (#564): its antennas' overrides as the fields above say them, and
+    /// each key of the request's `overrides` that applies to one of its
+    /// recordings. The per-key fields above are kept for clients that read
+    /// them.
+    pub overrides: crate::sidecar::Overrides,
     /// Why it is not part of the output before it; `null` for the first.
     #[schema(required = true)]
     pub split: Option<Split>,
@@ -335,9 +412,10 @@ pub struct Read {
     /// The IceRadar line it is, for `{line}`: the part's, or the only line
     /// of a file of one.
     pub line: Option<u32>,
-    /// Whether its positions are read with a date, which the request's
-    /// `date` then gives ([`crate::formats::takes_date`]).
-    pub takes_date: bool,
+    /// What decides which override keys apply to it.
+    pub traits: crate::sidecar::Traits,
+    /// What its sidecar sets.
+    pub sidecar: crate::sidecar::Overrides,
     /// Whether its files do not record the sampling frequency, which it
     /// was read with from its antenna's override.
     pub sampling_given: bool,
@@ -414,6 +492,16 @@ impl Unread {
         }
     }
 
+    /// The code reading refuses it with, as `OverrideKey::refusal` names it.
+    fn refusal(&self) -> Option<&'static str> {
+        match self {
+            Unread::FrequencyUnknown { .. } => Some("antenna_frequency_unknown"),
+            Unread::SamplingUnknown { .. } => Some("sampling_frequency_unknown"),
+            Unread::DateUnknown { .. } => Some("date_unknown"),
+            Unread::Unreadable(_) => None,
+        }
+    }
+
     /// What `PlannedRecording::missing` says of it.
     fn missing(&self) -> Option<&'static str> {
         match self {
@@ -486,10 +574,14 @@ fn read_recording(
         .unwrap_or_default();
     let key = recording_key(files);
     // As `input::load_positions` decides: a `.coords.csv` gives its own.
-    let takes_date = !crate::formats::is_coords_csv(&resolved.coordinates)
-        && crate::formats::takes_date(resolved.kind);
+    let traits = crate::sidecar::Traits {
+        kind: Some(resolved.kind),
+        coords_csv: crate::formats::is_coords_csv(&resolved.coordinates),
+    };
     let given = HeaderOverrides {
-        date: given.date.filter(|_| takes_date),
+        date: given
+            .date
+            .filter(|_| crate::sidecar::Applies::DatedPositions.to(traits)),
         ..*given
     };
     let whole = Read {
@@ -499,7 +591,8 @@ fn read_recording(
         files: files.iter().map(|f| f.name.clone()).collect(),
         part: Part::default(),
         line: None,
-        takes_date,
+        traits,
+        sidecar: crate::sidecar::Overrides::default(),
         sampling_given: given.sampling_mhz.is_some(),
         outcome: Err(Unread::Unreadable(String::new())),
     };
@@ -541,6 +634,8 @@ fn read_recording(
                 name: format!("{header}{}", part_label(&recording.part)),
                 part: recording.part,
                 line: recording.line,
+                // An invalid one leaves the recording unreadable, saying so.
+                sidecar: crate::sidecar::overrides_of(&resolved).unwrap_or_default(),
                 outcome,
                 ..whole.clone()
             }
@@ -723,6 +818,36 @@ pub async fn plan_ingest(
         .as_deref()
         .map(super::raw_routes::source_date)
         .transpose()?;
+    if date.is_some() && request.overrides.date.is_some() {
+        return Err(ApiError::bad_request(
+            "override_given_twice",
+            "date is given both in overrides and on its own; give it in overrides.",
+        ));
+    }
+    // Where each key goes is `OverrideKey::per_antenna`, so a key added
+    // later lands on the right side of the form and of this check.
+    let misplaced = |overrides: &crate::sidecar::Overrides, per_antenna: bool| {
+        overrides
+            .entries()
+            .into_iter()
+            .filter(|(_, value)| value.is_some())
+            .map(|(name, _)| name)
+            .find(|name| {
+                crate::sidecar::OVERRIDE_KEYS
+                    .iter()
+                    .any(|k| k.name == *name && k.per_antenna != per_antenna)
+            })
+    };
+    if let Some(name) = misplaced(&request.overrides, false) {
+        return Err(ApiError::bad_request(
+            "override_per_antenna",
+            format!("{name} describes an antenna: give it for each antenna, in antennas."),
+        ));
+    }
+    request
+        .overrides
+        .check()
+        .map_err(|e| ApiError::bad_request("invalid_override", e))?;
     for (antenna, given) in &request.antennas {
         super::raw_routes::antenna_override(
             given.mhz,
@@ -739,7 +864,26 @@ pub async fn plan_ingest(
             "invalid_sampling_mhz",
             &format!("sampling frequency (MHz) for '{antenna}'"),
         )?;
+        let merged = given.merged().map_err(|key| {
+            ApiError::bad_request(
+                "override_given_twice",
+                format!(
+                    "{key} is given for '{antenna}' both in overrides and on its own; give it \
+                     in overrides."
+                ),
+            )
+        })?;
+        if let Some(name) = misplaced(&merged, true) {
+            return Err(ApiError::bad_request(
+                "override_not_per_antenna",
+                format!("{name} is not given per antenna: give it in overrides, for the upload."),
+            ));
+        }
+        merged
+            .check()
+            .map_err(|e| ApiError::bad_request("invalid_override", format!("'{antenna}': {e}")))?;
     }
+    let date = request.upload_overrides().date;
 
     let taken = Taken {
         served: state
@@ -757,7 +901,7 @@ pub async fn plan_ingest(
     let data_dir = project.data_dir().to_path_buf();
     let cache = Arc::clone(&state.ingest_reads);
     let recordings = request.recordings.clone();
-    let antennas = request.antennas.clone();
+    let antennas = request.antenna_overrides();
     let plan_crs = crs.clone();
     let reads = tokio::task::spawn_blocking(move || {
         read_all(
@@ -799,7 +943,7 @@ pub fn read_all(
     recordings: &[RecordingFiles],
     crs: Option<&String>,
     dem: Option<&raw::SourceDem>,
-    antennas: &BTreeMap<String, AntennaOverride>,
+    antennas: &BTreeMap<String, crate::sidecar::Overrides>,
     date: Option<chrono::NaiveDate>,
     cache: &ReadCache,
 ) -> Result<Vec<Read>, String> {
@@ -852,7 +996,11 @@ pub fn read_all(
                     files: recording.files.iter().map(|f| f.name.clone()).collect(),
                     part: Part::default(),
                     line: None,
-                    takes_date: false,
+                    traits: crate::sidecar::Traits {
+                        kind: None,
+                        coords_csv: false,
+                    },
+                    sidecar: crate::sidecar::Overrides::default(),
                     sampling_given: false,
                     outcome: Err(Unread::Unreadable(reason)),
                 }]
@@ -881,7 +1029,7 @@ pub fn read_all(
                         .err()
                         .and_then(Unread::antenna)
                         .and_then(|antenna| antennas.get(antenna))
-                        .filter(|o| o.mhz.is_some() || o.sampling_mhz.is_some());
+                        .filter(|o| o.antenna_mhz.is_some() || o.sampling_mhz.is_some());
                     // Read again with what its antenna's override gives,
                     // and this part of it kept: the file's other parts
                     // may have antennas of their own.
@@ -890,7 +1038,7 @@ pub fn read_all(
                             index,
                             recording,
                             HeaderOverrides {
-                                antenna_mhz: o.mhz,
+                                antenna_mhz: o.antenna_mhz,
                                 // Only for files that do not record it:
                                 // others keep their own.
                                 sampling_mhz: o.sampling_mhz.filter(|_| {
@@ -920,17 +1068,24 @@ pub fn plan(
     crs: Option<String>,
     taken: &Taken,
 ) -> IngestPlan {
-    let antennas = planned_antennas(reads, &request.antennas);
-    // Checked when the request came in.
-    let date = request
-        .date
-        .as_deref()
-        .and_then(|text| chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d").ok());
+    let by_antenna = request.antenna_overrides();
+    let upload = request.upload_overrides();
+    let antennas = planned_antennas(reads, &by_antenna);
+    // Of what can be read, or could be once the request gives what its
+    // files do not say.
+    let not_applicable = crate::sidecar::not_applicable(
+        &reads
+            .iter()
+            .filter(|r| !matches!(r.outcome, Err(Unread::Unreadable(_))))
+            .map(|r| r.traits)
+            .collect::<Vec<_>>(),
+        false,
+    );
     // The overrides go in before anything is grouped or named, so a
     // recording is planned as what it will be processed as.
     let overridden: Vec<Read> = reads
         .iter()
-        .map(|read| with_overrides(read, &request.antennas))
+        .map(|read| with_overrides(read, &by_antenna))
         .collect();
     let reads = overridden.as_slice();
     let excluded: HashSet<&str> = request.excluded.iter().map(String::as_str).collect();
@@ -1196,10 +1351,26 @@ pub fn plan(
                 .iter()
                 .map(|r| read_ok(r).grouping.stop_seconds)
                 .fold(f64::NEG_INFINITY, f64::max);
-            let given: Vec<&AntennaOverride> = reads
+            let given: Vec<&crate::sidecar::Overrides> = reads
                 .iter()
-                .filter_map(|r| request.antennas.get(&read_ok(r).antenna))
+                .filter_map(|r| by_antenna.get(&read_ok(r).antenna))
                 .collect();
+            let antenna_mhz_override = given
+                .iter()
+                .any(|o| o.antenna_mhz.is_some())
+                .then_some(first.key.antenna_mhz);
+            let antenna_separation_override = given
+                .iter()
+                .any(|o| o.antenna_separation_m.is_some())
+                .then_some(first.key.antenna_separation);
+            let sampling_mhz_override = reads
+                .iter()
+                .filter(|r| r.sampling_given)
+                .find_map(|r| by_antenna.get(&read_ok(r).antenna))
+                .and_then(|o| o.sampling_mhz);
+            // Each key of the upload's, where it applies to one of the
+            // recordings; the source then gives it to those it applies to.
+            let from_upload = upload.only(|key| reads.iter().any(|r| key.applies.to(r.traits)));
             PlannedOutput {
                 key: keys[index].to_string(),
                 recordings: reads.iter().map(|r| r.key.clone()).collect(),
@@ -1210,22 +1381,16 @@ pub fn plan(
                 start_time: crate::tools::seconds_to_rfc3339(first.start_seconds),
                 stop_time: crate::tools::seconds_to_rfc3339(stop),
                 antenna_mhz: first.key.antenna_mhz,
-                antenna_mhz_override: given
-                    .iter()
-                    .any(|o| o.mhz.is_some())
-                    .then_some(first.key.antenna_mhz),
-                antenna_separation_override: given
-                    .iter()
-                    .any(|o| o.separation.is_some())
-                    .then_some(first.key.antenna_separation),
-                sampling_mhz_override: reads
-                    .iter()
-                    .filter(|r| r.sampling_given)
-                    .find_map(|r| request.antennas.get(&read_ok(r).antenna))
-                    .and_then(|o| o.sampling_mhz),
-                date: date
-                    .filter(|_| reads.iter().any(|r| r.takes_date))
-                    .map(|d| d.format("%Y-%m-%d").to_string()),
+                antenna_mhz_override,
+                antenna_separation_override,
+                sampling_mhz_override,
+                date: from_upload.date.map(|d| d.format("%Y-%m-%d").to_string()),
+                overrides: crate::sidecar::Overrides {
+                    antenna_mhz: antenna_mhz_override,
+                    antenna_separation_m: antenna_separation_override,
+                    sampling_mhz: sampling_mhz_override,
+                    ..from_upload
+                },
                 split: group.split.clone(),
             }
         })
@@ -1252,6 +1417,8 @@ pub fn plan(
                     excluded: is_excluded,
                     unreadable: None,
                     missing: None,
+                    missing_key: None,
+                    sidecar: read.sidecar,
                 },
                 Err(unread) => {
                     if !is_excluded {
@@ -1305,6 +1472,10 @@ pub fn plan(
                         excluded: is_excluded,
                         unreadable: Some(unread.reason().to_string()),
                         missing: unread.missing().map(str::to_string),
+                        missing_key: unread.refusal().and_then(|code| {
+                            crate::sidecar::key_refused_with(code).map(|k| k.name.to_string())
+                        }),
+                        sidecar: read.sidecar,
                     }
                 }
             };
@@ -1330,18 +1501,19 @@ pub fn plan(
         outputs,
         antennas,
         problems,
+        not_applicable,
     }
 }
 
 /// `read` as it will be processed: its antenna's overrides in its key.
-fn with_overrides(read: &Read, antennas: &BTreeMap<String, AntennaOverride>) -> Read {
+fn with_overrides(read: &Read, antennas: &BTreeMap<String, crate::sidecar::Overrides>) -> Read {
     let mut read = read.clone();
     if let Ok(ok) = &mut read.outcome {
         if let Some(given) = antennas.get(&ok.antenna) {
-            if let Some(mhz) = given.mhz {
+            if let Some(mhz) = given.antenna_mhz {
                 ok.grouping.key.antenna_mhz = mhz;
             }
-            if let Some(separation) = given.separation {
+            if let Some(separation) = given.antenna_separation_m {
                 ok.grouping.key.antenna_separation = separation;
             }
         }
@@ -1352,7 +1524,7 @@ fn with_overrides(read: &Read, antennas: &BTreeMap<String, AntennaOverride>) -> 
 /// Each antenna `reads` name, from what their files say, before overrides.
 fn planned_antennas(
     reads: &[Read],
-    antennas: &BTreeMap<String, AntennaOverride>,
+    antennas: &BTreeMap<String, crate::sidecar::Overrides>,
 ) -> Vec<PlannedAntenna> {
     let mut by_name: BTreeMap<&str, PlannedAntenna> = BTreeMap::new();
     for read in reads {
@@ -1375,11 +1547,13 @@ fn planned_antennas(
             antenna_mhz: None,
             separation_min: None,
             separation_max: None,
-            mhz_override: given.mhz,
-            separation_override: given.separation,
+            mhz_override: given.antenna_mhz,
+            separation_override: given.antenna_separation_m,
             sampling_needed: false,
             sampling_override: given.sampling_mhz,
             recordings: 0,
+            overrides: given,
+            not_applicable: BTreeMap::new(),
         });
         entry.recordings += 1;
         entry.sampling_needed |= sampling_needed;
@@ -1397,7 +1571,18 @@ fn planned_antennas(
             );
         }
     }
-    by_name.into_values().collect()
+    by_name
+        .into_values()
+        .map(|mut antenna| {
+            // Given only where reading needs it (`read_all`).
+            if !antenna.sampling_needed {
+                antenna
+                    .not_applicable
+                    .insert("sampling_mhz", "Its files record the sampling frequency.");
+            }
+            antenna
+        })
+        .collect()
 }
 
 /// A pattern's problem; `span` in bytes, as [`Pattern::parse`] gives it.
@@ -1436,7 +1621,11 @@ mod tests {
             files: vec![format!("DAT_{n:04}_A1.rad")],
             part: Part::default(),
             line: None,
-            takes_date: false,
+            traits: crate::sidecar::Traits {
+                kind: Some(crate::formats::FormatKind::Ramac),
+                coords_csv: false,
+            },
+            sidecar: crate::sidecar::Overrides::default(),
             sampling_given: false,
             outcome: Ok(ReadRecording {
                 grouping: GroupingRecording {
@@ -1859,10 +2048,10 @@ mod tests {
             Err(Unread::FrequencyUnknown { antenna, .. }) => assert_eq!(antenna, "RTA unshielded"),
             other => panic!("{other:?}"),
         }
-        let given: BTreeMap<String, AntennaOverride> = [(
+        let given: BTreeMap<String, crate::sidecar::Overrides> = [(
             "RTA unshielded".to_string(),
-            AntennaOverride {
-                mhz: Some(25.),
+            crate::sidecar::Overrides {
+                antenna_mhz: Some(25.),
                 ..Default::default()
             },
         )]
@@ -1973,17 +2162,13 @@ mod tests {
             ..Default::default()
         };
         let plan_with = |request: &PlanRequest| {
-            let date = request
-                .date
-                .as_deref()
-                .map(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap());
             let reads = read_all(
                 data_dir,
                 &recordings,
                 None,
                 None,
-                &request.antennas,
-                date,
+                &request.antenna_overrides(),
+                request.upload_overrides().date,
                 &cache,
             )
             .unwrap();
@@ -2022,6 +2207,20 @@ mod tests {
         assert_eq!(output.sampling_mhz_override, Some(200.));
         assert_eq!(output.antenna_mhz_override, Some(25.));
         assert_eq!(output.date.as_deref(), Some("2014-04-05"));
+        // And all of it as one `overrides`, which the page gives the source.
+        assert_eq!(
+            output.overrides,
+            crate::sidecar::Overrides {
+                antenna_mhz: Some(25.),
+                sampling_mhz: Some(200.),
+                date: chrono::NaiveDate::from_ymd_opt(2014, 4, 5),
+                ..Default::default()
+            }
+        );
+        // The same date in `overrides`, as the page sends it.
+        request.date = None;
+        request.overrides.date = chrono::NaiveDate::from_ymd_opt(2014, 4, 5);
+        assert_eq!(plan_with(&request).outputs[0].overrides, output.overrides);
         assert!(
             output.start_time.starts_with("2014-04-05T12:00"),
             "{}",

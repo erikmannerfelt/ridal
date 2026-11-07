@@ -40,6 +40,12 @@ pub fn environment() -> Environment<'static> {
         "step_catalog",
         minijinja::Value::from_serialize(step_catalog),
     );
+    // Every override key (#564), for the forms that take raw data to build
+    // their boxes from: a key added to `OVERRIDE_KEYS` appears in them.
+    env.add_global(
+        "override_keys_json",
+        serde_json::to_string(crate::sidecar::OVERRIDE_KEYS).expect("the override keys serialize"),
+    );
     env.add_template("base.html.jinja", include_str!("templates/base.html.jinja"))
         .expect("base template must parse");
     env.add_template(

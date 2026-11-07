@@ -78,45 +78,27 @@
         Never merge</label>
     </p>
     <p id="ingest-summary" class="hint" aria-live="polite"></p>
-    {#- One date for every recording read with one (#537): what a VIRL
-        file never gives, and an IceRadar file with its PC clock reset does
-        not. Saved with each radargram's raw data, as the antenna's are. -#}
-    <div class="ingest-date">
-      <label>Date of the recordings (UTC)
-        <input type="date" id="ingest-date" autocomplete="off">
-      </label>
-      <p class="hint">
-        For IceRadar, pulseEKKO and VIRL recordings, whose positions record
-        only the time of day: it replaces the date their files give. VIRL
-        files give none, so they need it.
-      </p>
-    </div>
-    {#- One row per antenna the headers name (#409): what its name is read
-        as, and a frequency or separation to take instead. Applied before
-        anything is merged or named, and saved with each radargram's raw
-        data, so processing it later uses them too. -#}
+    {#- What the recordings are (#409, #537, #564), from `#override-keys`,
+        so a key added there appears here with no change to this template.
+        Each key goes in one of two places, by its `per_antenna`: a row per
+        antenna the headers name, for what describes the antenna, since an
+        upload may mix antennas; or one value for the whole upload, given
+        to every recording it applies to. Applied before anything is merged
+        or named, and saved with each radargram's raw data. -#}
+    <div id="override-keys" data-keys="{{ override_keys_json }}" hidden></div>
     <div id="ingest-antennas" hidden>
       <div class="table-scroll">
         <table class="layers-table ingest-antennas">
-          <thead>
-            <tr>
-              <th scope="col">Antenna</th>
-              <th scope="col">Read as</th>
-              <th scope="col">Frequency override (MHz)</th>
-              <th scope="col">Separation override (m)</th>
-              <th scope="col">Sampling frequency (MHz)</th>
-              <th scope="col">Recordings</th>
-            </tr>
-          </thead>
+          <thead><tr id="ingest-antenna-head"></tr></thead>
           <tbody id="ingest-antenna-rows"></tbody>
         </table>
       </div>
       <p class="hint">
-        Only where the files do not say it, or say it wrongly. Empty reads it
-        from the files. The sampling frequency is asked for only where the
-        files do not record it, as VIRL files do not.
+        Only where the files do not say it, or say it wrongly. Empty uses
+        what the files say.
       </p>
     </div>
+    <div id="ingest-overrides" class="ingest-overrides"></div>
     <div class="ingest-timeline-wrap">
       <svg id="ingest-timeline" class="ingest-timeline" role="group"
            aria-label="The recordings by time, one row per radargram"></svg>

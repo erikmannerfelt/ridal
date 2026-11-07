@@ -43,13 +43,14 @@
   const demBox = document.getElementById('process-dem');
   const demSlot = document.getElementById('process-dem-slot');
   const antennaField = document.getElementById('process-antenna-field');
-  const mhzBox = document.getElementById('process-antenna-mhz');
-  const separationBox = document.getElementById('process-antenna-separation');
-  const samplingBox = document.getElementById('process-sampling-mhz');
-  const dateBox = document.getElementById('process-date');
-  const altitudeBox = document.getElementById('process-altitude-offset');
-  // Every box of what the recordings are, saved together (#409, #537, #558).
-  const overrideBoxes = [mhzBox, separationBox, samplingBox, dateBox, altitudeBox];
+  // What the recordings are (#409, #537, #558): every override key, saved
+  // together as the source's `overrides`. Built from the keys the server
+  // lists, so a key added there is here too (#564).
+  const overridesBox = RIDAL.overridesEditor(antennaField, {
+    intro:
+      'Only where the files do not say it, or say it wrongly. Empty uses what the files ' +
+      "say. A value here is for every recording, and takes precedence over each one's sidecar.",
+  });
   const antennaSlot = document.getElementById('process-antenna-slot');
   const upload = document.getElementById('process-upload');
   const cancelUpload = document.getElementById('process-cancel-upload');
@@ -128,91 +129,36 @@
     (raw ? rawStage : antennaSlot).appendChild(antennaField);
   }
 
-  /** An antenna override as the source takes it: null when empty, and
-   * refused here when it is not a positive number. */
-  function antennaValue(box, what) {
-    const text = box.value.trim();
-    if (text === '') return null;
-    const value = Number(text);
-    if (!(Number.isFinite(value) && value > 0)) {
-      throw new Error(`The ${what} must be a positive number, or empty to read it from the files.`);
-    }
-    return value;
-  }
-  /** The altitude offset (#558): any number, which may be negative, or
-   * null when empty. */
-  function offsetValue(box) {
-    const text = box.value.trim();
-    if (text === '') return null;
-    const value = Number(text);
-    if (!Number.isFinite(value)) {
-      throw new Error('The altitude offset must be a number of metres, or empty to use the recorded altitudes.');
-    }
-    return value;
-  }
-  /** What the source is to say of its recordings, from the boxes: the
-   * antenna overrides, the sampling frequency and date that VIRL files
-   * do not record (#537), and an altitude offset (#558). The date box
-   * gives `YYYY-MM-DD`, or nothing. */
-  const antennaOverrides = () => ({
-    antenna_mhz: antennaValue(mhzBox, 'antenna frequency'),
-    antenna_separation: antennaValue(separationBox, 'antenna separation'),
-    sampling_mhz: antennaValue(samplingBox, 'sampling frequency'),
-    date: dateBox.value || null,
-    altitude_offset_m: offsetValue(altitudeBox),
-  });
-  /** What the source has, as the boxes show it. */
-  let savedAntenna = {
-    antenna_mhz: null, antenna_separation: null, sampling_mhz: null, date: null, altitude_offset_m: null,
-  };
-  function showAntenna(source) {
-    savedAntenna = {
-      antenna_mhz: source?.antenna_mhz ?? null,
-      antenna_separation: source?.antenna_separation ?? null,
-      sampling_mhz: source?.sampling_mhz ?? null,
-      date: source?.date ?? null,
-      altitude_offset_m: source?.altitude_offset_m ?? null,
-    };
-    mhzBox.value = savedAntenna.antenna_mhz ?? '';
-    separationBox.value = savedAntenna.antenna_separation ?? '';
-    samplingBox.value = savedAntenna.sampling_mhz ?? '';
-    dateBox.value = savedAntenna.date ?? '';
-    altitudeBox.value = savedAntenna.altitude_offset_m ?? '';
-  }
-  /** What the files did not say is read once the source gives it: say
-   * where, and put the cursor there. Known by the refusal's code: a header
-   * whose antenna string is not a frequency (mala.rs), and a VIRL file,
-   * which records neither its frequencies nor a date. */
-  const MISSING = {
-    antenna_frequency_unknown: [mhzBox, 'The files do not say the antenna frequency.', 'the antenna frequency (MHz)'],
-    sampling_frequency_unknown: [samplingBox, 'The files do not record the sampling frequency.', 'the sampling frequency (MHz)'],
-    date_unknown: [dateBox, 'The positions record only the time of day, and the files give no date.', 'the date'],
-  };
-  function antennaHint(error) {
-    const [box, why, what] = MISSING[error.code] || [null, null, null];
-    if (!box) return error.message;
-    box.focus();
-    return `${why} Give ${what} above, and try again.`;
-  }
-
-  /** A VIRL file records neither frequency nor a date (#537): said before
-   * anything is uploaded, rather than one refusal at a time. Null when
-   * every box it needs is filled, or no file is VIRL. */
-  function virlProblem() {
-    if (!files.some((f) => /\.dsr$/i.test(f.name))) return null;
-    const empty = [
-      [mhzBox, 'the antenna frequency (MHz)'],
-      [samplingBox, 'the sampling frequency (MHz)'],
-      [dateBox, 'the date'],
-    ].filter(([box]) => box.value.trim() === '');
-    if (empty.length === 0) return null;
-    empty[0][0].focus();
-    const names = empty.map(([, what]) => what);
-    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
-    return (
-      'VIRL files record neither the antenna frequency, the sampling frequency nor the ' +
-      `date of the recording. Give ${list} above.`
+  /** What the source is to say of its recordings, from the boxes, by
+   * the keys of a sidecar's `[overrides]`. Throws on a box that is wrong. */
+  const antennaOverrides = () => overridesBox.values();
+  /** What the source has, as the boxes show it, to tell a change. */
+  let savedAntenna = {};
+  const sameOverrides = (a, b) =>
+    JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
+  /** Show what `view` (a source as the server answers it, or null before
+   * there is one) says: its overrides, what its recordings' sidecars set,
+   * and the keys that do not apply to its recordings. */
+  function showAntenna(view) {
+    const source = view?.source;
+    savedAntenna = Object.fromEntries(
+      Object.entries(source?.overrides || {}).filter(([, v]) => v !== null),
     );
+    overridesBox.set(savedAntenna);
+    const sets = (source?.bundles || []).map((b) => b.overrides);
+    overridesBox.inherit(
+      Object.fromEntries(overridesBox.keys.map((k) => [k.name, RIDAL.overridesEditor.inherited(k, sets)])),
+    );
+    overridesBox.disable(view?.not_applicable || {});
+  }
+  /** What the files did not say is read once the source gives it. Which
+   * key gives it is the refusal's code, as `OverrideKey::refusal` names
+   * it: that box goes up front with the reason, and the cursor in it. */
+  function antennaHint(error) {
+    const key = overridesBox.keys.find((k) => k.refusal && k.refusal === error.code);
+    if (!key) return error.message;
+    overridesBox.needs({ [key.name]: error.message });
+    return `${error.message} Give it above, and try again.`;
   }
 
   /** In the viewer, the button says what it will do: process, when the
@@ -314,7 +260,7 @@
       try {
         const source = await RIDAL.fetchJson(RIDAL.apiPath('sources', radargramId));
         linkedDem = source.source.dem?.id || '';
-        showAntenna(source.source);
+        showAntenna(source);
       } catch {
         // No source to read: no DEM, and no overrides.
       }
@@ -374,8 +320,8 @@
       fail(error.message);
       return;
     }
-    if (Object.keys(wanted).every((key) => wanted[key] === savedAntenna[key])) return;
-    for (const box of overrideBoxes) box.disabled = true;
+    if (sameOverrides(wanted, savedAntenna)) return;
+    overridesBox.busy(true);
     progress.textContent = 'Reading the recordings with these settings…';
     try {
       // The whole source goes back with only these changed: the route
@@ -391,25 +337,25 @@
           parts: source.bundles.map((b) => b.part ?? WHOLE),
           crs: source.crs,
           dem: source.dem?.id ?? null,
-          ...wanted,
+          overrides: wanted,
         }),
       });
-      showAntenna(answer.source);
+      showAntenna(answer);
       if (answer.recordings.length) describe(answer.recordings, answer.source.bundles);
       status.textContent =
         `The recording settings of ${radargramId} are saved.` +
         (served ? ' What is served was made otherwise, so it needs processing again.' : '');
       await showStanding();
     } catch (error) {
-      showAntenna(savedAntenna);
+      overridesBox.set(savedAntenna);
       fail(`Could not change the recording settings. ${antennaHint(error)}`);
     } finally {
-      for (const box of overrideBoxes) box.disabled = false;
+      overridesBox.busy(false);
       progress.textContent = '';
       updateRun();
     }
   }
-  for (const box of overrideBoxes) box.addEventListener('change', saveAntenna);
+  overridesBox.onChange(saveAntenna);
 
   const stemOf = (file) => RIDAL.recordingStem(file.name);
 
@@ -613,11 +559,6 @@
       fail(error.message);
       return;
     }
-    const virl = virlProblem();
-    if (virl) {
-      fail(virl);
-      return;
-    }
     const id = served ? radargramId : idBox.value.trim();
     upload.disabled = true;
     choose.disabled = true;
@@ -699,14 +640,14 @@
           parts,
           crs: crs === '' ? null : crs,
           dem: demBox.value === '' ? null : demBox.value,
-          ...overrides,
+          overrides,
           // A new radargram takes over an upload nobody processed, and
           // not the names that upload was to have (#382 phase 7).
           ...(served ? {} : { names: null }),
         }),
       });
       linkedDem = source.source.dem?.id || '';
-      showAntenna(source.source);
+      showAntenna(source);
       radargramId = id;
       hasSource = true;
       sourceKnown.set(id, true);
@@ -1096,6 +1037,8 @@
     reset();
     stage(raw);
     recordingList.replaceChildren();
+    // What another radargram's files needed is not this one's business.
+    overridesBox.clearNeeds();
     if (raw) {
       files = [];
       listFiles();
