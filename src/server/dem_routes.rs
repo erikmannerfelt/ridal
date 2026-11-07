@@ -494,11 +494,7 @@ pub async fn link_dem(
     let version = write_with_dem(&state, project, &radargram, &source, &expected)?;
     Ok((
         [(header::ETAG, version.to_string())],
-        Json(SourceView {
-            radargram_id: radargram.to_string(),
-            source,
-            recordings,
-        }),
+        Json(SourceView::new(radargram.to_string(), source, recordings)),
     )
         .into_response())
 }

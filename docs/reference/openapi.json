@@ -9675,7 +9675,7 @@
             }
           },
           "400": {
-            "description": "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz`, `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates), `invalid_altitude_offset` (not a number, or for recordings whose positions are a `.coords.csv`) or `override_given_twice` (a key in `overrides` and in its deprecated field).",
+            "description": "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, a file of several lines or channels without `parts`, or a part its file does not have), `antenna_frequency_unknown`, `sampling_frequency_unknown` or `date_unknown` (files that do not record it, such as VIRL's, without `antenna_mhz`, `sampling_mhz` or `date`), `invalid_antenna_mhz`, `invalid_antenna_separation`, `invalid_sampling_mhz`, `invalid_date` (not YYYY-MM-DD, or for recordings that give their own dates), `invalid_altitude_offset` (not a number, or for recordings whose positions are a `.coords.csv`), `invalid_override` or `override_not_applicable` (the same, for a key added since), or `override_given_twice` (a key in `overrides` and in its deprecated field).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11330,15 +11330,19 @@
       },
       "AntennaOverride": {
         "type": "object",
-        "description": "What to take one antenna to be, where its files do not say or are\nwrong. Either may be left to the files.",
+        "description": "What to take one antenna to be, where its files do not say or are\nwrong. Each may be left to the files.",
         "properties": {
+          "overrides": {
+            "$ref": "#/components/schemas/Overrides",
+            "description": "The keys of a sidecar's `[overrides]` that describe an antenna\n(#564): `antenna_mhz`, `antenna_separation_m`, and `sampling_mhz`,\nwhich is given only to recordings whose files do not record it\n(VIRL); others keep their own."
+          },
           "mhz": {
             "type": [
               "number",
               "null"
             ],
             "format": "float",
-            "description": "MHz."
+            "description": "Deprecated: `overrides.antenna_mhz`. Giving a key both ways is\nrefused."
           },
           "separation": {
             "type": [
@@ -11346,7 +11350,7 @@
               "null"
             ],
             "format": "float",
-            "description": "m."
+            "description": "Deprecated: `overrides.antenna_separation_m`."
           },
           "sampling_mhz": {
             "type": [
@@ -11354,7 +11358,7 @@
               "null"
             ],
             "format": "float",
-            "description": "The sampling frequency in MHz, for recordings whose files do not\nrecord it (VIRL); others keep their own."
+            "description": "Deprecated: `overrides.sampling_mhz`."
           }
         }
       },
@@ -14817,7 +14821,8 @@
           "recordings",
           "outputs",
           "antennas",
-          "problems"
+          "problems",
+          "not_applicable"
         ],
         "properties": {
           "merge_threshold_seconds": {
@@ -14859,6 +14864,16 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PlanProblem"
+            }
+          },
+          "not_applicable": {
+            "type": "object",
+            "description": "The keys of `overrides` that apply to none of the recordings, each\nwith why not (#564).",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
             }
           }
         }
@@ -16634,12 +16649,16 @@
               "type": "string"
             }
           },
+          "overrides": {
+            "$ref": "#/components/schemas/Overrides",
+            "description": "Values for the whole upload, by the keys of a sidecar's\n`[overrides]` (#564), each given to every recording it applies to\nand carried to the sources made: a `date` to those whose positions\nrecord a time of day, an `altitude_offset_m` to those whose\npositions are their own. The keys that describe an antenna\n(`antenna_mhz`, `antenna_separation_m`, `sampling_mhz`) go in\n`antennas` instead."
+          },
           "date": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The UTC date, `YYYY-MM-DD`, of every recording whose positions are\nread with one (IceRadar, pulseEKKO and VIRL; not one with a\n`.coords.csv`), in place of the date its files give, if any. One for\nthe whole plan, and carried to the sources made."
+            "description": "Deprecated: `overrides.date`, as `YYYY-MM-DD`."
           },
           "include_tracks": {
             "type": "boolean",
@@ -16659,7 +16678,9 @@
           "separation_override",
           "sampling_needed",
           "sampling_override",
-          "recordings"
+          "recordings",
+          "overrides",
+          "not_applicable"
         ],
         "properties": {
           "antenna": {
@@ -16719,6 +16740,20 @@
             "type": "integer",
             "description": "How many recordings have it.",
             "minimum": 0
+          },
+          "overrides": {
+            "$ref": "#/components/schemas/Overrides",
+            "description": "The request's overrides for it, by the keys of a sidecar (#564)."
+          },
+          "not_applicable": {
+            "type": "object",
+            "description": "The keys of `antennas` it does not take, each with why not:\n`sampling_mhz` where its files record the sampling frequency.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },
@@ -16738,6 +16773,7 @@
           "antenna_separation_override",
           "sampling_mhz_override",
           "date",
+          "overrides",
           "split"
         ],
         "properties": {
@@ -16813,6 +16849,10 @@
             ],
             "description": "What its source is to say of the date: the request's, when any of\nits recordings is read with one."
           },
+          "overrides": {
+            "$ref": "#/components/schemas/Overrides",
+            "description": "Everything its source is to be given, by the keys of a sidecar\n(#564): its antennas' overrides as the fields above say them, and\neach key of the request's `overrides` that applies to one of its\nrecordings. The per-key fields above are kept for clients that read\nthem."
+          },
           "split": {
             "oneOf": [
               {
@@ -16842,7 +16882,9 @@
           "output",
           "excluded",
           "unreadable",
-          "missing"
+          "missing",
+          "missing_key",
+          "sidecar"
         ],
         "properties": {
           "key": {
@@ -16933,6 +16975,17 @@
               "null"
             ],
             "description": "What it cannot be read without, which the request can give:\n`antenna_frequency` and `sampling_frequency` (in `antennas`, for its\n`antenna`) or `date`. `null` when it is read, or cannot be for\nanother reason."
+          },
+          "missing_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The same, as the key of `overrides` that gives it (#564)."
+          },
+          "sidecar": {
+            "$ref": "#/components/schemas/Overrides",
+            "description": "What its sidecar, uploaded with it, sets: the values the request\ntakes precedence over."
           }
         }
       },
@@ -19715,7 +19768,8 @@
         "required": [
           "radargram_id",
           "source",
-          "recordings"
+          "recordings",
+          "not_applicable"
         ],
         "properties": {
           "radargram_id": {
@@ -19730,6 +19784,16 @@
               "$ref": "#/components/schemas/InfoRecord"
             },
             "description": "What each recording's header and positions say, in merge order.\nOnly `PUT` reads the recordings; `GET` leaves this empty."
+          },
+          "not_applicable": {
+            "type": "object",
+            "description": "The keys of `overrides` that do not apply to every one of its\nrecordings, which a `PUT` giving them refuses, each with why not.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },

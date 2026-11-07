@@ -2237,6 +2237,254 @@ const RIDAL = Object.freeze({
     attach.lines = lines;
     return attach;
   })(),
+
+  /** Every override a recording can be given (#564), as one editor that
+   * both forms taking raw data use: the Process dialog and Add raw data in
+   * bulk.
+   *
+   * `RIDAL.overridesEditor(container, { only, intro })` fills `container`
+   * with a box for each key of `OVERRIDE_KEYS` (src/sidecar.rs, written
+   * into the page as `#override-keys`) that `only` keeps. Nothing here
+   * names a key: a key added there appears here, with its label, unit,
+   * description and the input its kind needs. Two places for a box:
+   *
+   * - up front, a key the recordings could not be read without, which
+   *   `needs` lifts there with the server's reason. Reading decides which,
+   *   not format knowledge here. Once lifted it stays, so a box being
+   *   filled in does not move away under the cursor.
+   * - every other key, under "More settings", folded.
+   *
+   * `inherit` says what the recordings' sidecars set for a key, so a
+   * value is not overridden unknowingly, and `disable` turns off a key
+   * that applies to none of them, saying why. `values()` is what the
+   * server takes, by key, and throws an Error naming the box that is
+   * wrong.
+   *
+   * `RIDAL.overridesEditor.keys()` is the list, `.parse(key, text)` reads
+   * one typed value, and `.inherited(key, sets)` says what a list of
+   * sidecar `[overrides]` set for `key`. */
+  overridesEditor: (function () {
+    let known = null;
+    function keys() {
+      if (known === null) {
+        const source = document.getElementById("override-keys");
+        try {
+          known = source ? JSON.parse(source.dataset.keys) : [];
+        } catch (_) {
+          known = [];
+        }
+      }
+      return known;
+    }
+
+    /** `text` as the server takes `key`: null when empty, else a number
+     * or a `YYYY-MM-DD`, held to the key's kind. */
+    function parse(key, text) {
+      const typed = String(text ?? "").trim();
+      if (typed === "") return null;
+      if (key.kind === "date") {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(typed)) throw new Error(`${key.label} must be a date, YYYY-MM-DD.`);
+        return typed;
+      }
+      const value = Number(typed);
+      const ok = {
+        positive: Number.isFinite(value) && value > 0,
+        non_negative: Number.isFinite(value) && value >= 0,
+        number: Number.isFinite(value),
+      }[key.kind];
+      if (!ok) {
+        const must = { positive: "a number above 0", non_negative: "a number of 0 or more" }[key.kind] || "a number";
+        throw new Error(`${key.label} must be ${must}, or empty to use what the files say.`);
+      }
+      return value;
+    }
+
+    /** `50 MHz`, `2014-04-05`. */
+    const show = (key, value) => (key.kind === "date" ? String(value) : `${value} ${key.unit}`);
+
+    /** What `sets`, the `[overrides]` of each recording's sidecar (null
+     * for one without), set for `key`, as a sentence; null for nothing. */
+    function inherited(key, sets) {
+      const values = sets.map((set) => set?.[key.name]).filter((v) => v !== null && v !== undefined);
+      if (values.length === 0) return null;
+      const distinct = [...new Set(values.map(String))];
+      const which = values.length === sets.length
+        ? (sets.length === 1 ? "Its sidecar sets" : "Every recording's sidecar sets")
+        : `The sidecars of ${values.length} of ${sets.length} recordings set`;
+      const listed = distinct.slice(0, 3).map((v) => show(key, v)).join(", ") + (distinct.length > 3 ? ", …" : "");
+      return `${which} ${listed}. A value here takes precedence.`;
+    }
+
+    function attach(container, options = {}) {
+      const own = keys().filter(options.only || (() => true));
+      const needed = document.createElement("div");
+      needed.className = "overrides-needed";
+      const more = document.createElement("details");
+      more.className = "overrides-more";
+      const summary = document.createElement("summary");
+      more.append(summary);
+      if (options.intro) {
+        const intro = document.createElement("p");
+        intro.className = "hint";
+        intro.textContent = options.intro;
+        more.append(intro);
+      }
+      container.replaceChildren(needed, more);
+
+      const fields = new Map();
+      for (const key of own) {
+        const field = document.createElement("div");
+        field.className = "override-field";
+        field.dataset.key = key.name;
+        const label = document.createElement("label");
+        // A date input shows its own format: the unit would repeat it.
+        label.append(key.kind === "date" ? key.label : `${key.label} (${key.unit})`);
+        const input = document.createElement("input");
+        input.autocomplete = "off";
+        if (key.kind === "date") {
+          input.type = "date";
+        } else {
+          input.type = "number";
+          input.step = "any";
+          if (key.kind !== "number") input.min = "0";
+          input.placeholder = "Not set";
+        }
+        label.append(" ", input);
+        const note = (className) => {
+          const p = document.createElement("p");
+          p.className = `hint ${className}`;
+          p.hidden = true;
+          return p;
+        };
+        const why = note("override-why");
+        const off = note("override-off");
+        const from = note("override-inherited");
+        const about = document.createElement("p");
+        about.className = "hint override-about";
+        about.textContent = key.description;
+        if (key.per_recording) {
+          about.textContent +=
+            " It usually differs between recordings: a sidecar uploaded with each " +
+            "(<name>.ridal.toml) gives each its own.";
+        }
+        field.append(label, why, off, from, about);
+        input.addEventListener("input", () => {
+          let problem = "";
+          try {
+            parse(key, input.value);
+          } catch (error) {
+            problem = error.message;
+          }
+          input.setCustomValidity(problem);
+          count();
+        });
+        fields.set(key.name, { key, field, input, why, off, from, lifted: false, reason: null });
+        more.append(field);
+      }
+
+      /** The summary says what is set in it, as it stays folded. */
+      function count() {
+        const set = [...fields.values()]
+          .filter((f) => !f.lifted && f.input.value.trim() !== "")
+          .map((f) => f.key.label);
+        summary.textContent = set.length ? `More settings (${set.join(", ")})` : "More settings";
+        more.hidden = [...fields.values()].every((f) => f.lifted);
+      }
+      count();
+
+      const editor = {
+        keys: own,
+        /** Each key with a value, as the server takes it. `lenient`
+         * leaves out a box that is wrong rather than throwing, for a page
+         * that asks again on every edit and marks the box itself. */
+        values({ lenient = false } = {}) {
+          const out = {};
+          for (const { key, input } of fields.values()) {
+            if (input.dataset.offReason) continue;
+            let value;
+            try {
+              value = parse(key, input.value);
+            } catch (error) {
+              if (lenient) continue;
+              throw error;
+            }
+            if (value !== null) out[key.name] = value;
+          }
+          return out;
+        },
+        /** Show `values`, by key; a key it does not give is emptied. */
+        set(values) {
+          for (const { key, input } of fields.values()) {
+            const value = values?.[key.name];
+            input.value = value === null || value === undefined ? "" : String(value);
+            input.setCustomValidity("");
+          }
+          count();
+        },
+        /** Lift each key of `reasons` up front with its reason, and focus
+         * the first. Keys lifted before stay, with no reason now. */
+        needs(reasons, { focus = true } = {}) {
+          let first = null;
+          for (const f of fields.values()) {
+            const reason = reasons[f.key.name];
+            if (reason && !f.lifted) {
+              f.lifted = true;
+              needed.append(f.field);
+            }
+            f.why.textContent = reason || "";
+            f.why.hidden = !reason;
+            if (reason && first === null) first = f.input;
+          }
+          count();
+          if (focus && first) first.focus();
+          return first !== null;
+        },
+        /** Put every key back under More settings. */
+        clearNeeds() {
+          for (const f of fields.values()) {
+            f.lifted = false;
+            f.why.hidden = true;
+            more.append(f.field);
+          }
+          count();
+        },
+        /** What the sidecars set, by key: a sentence, or null. */
+        inherit(sentences) {
+          for (const f of fields.values()) {
+            const text = sentences?.[f.key.name] || null;
+            f.from.textContent = text || "";
+            f.from.hidden = !text;
+          }
+        },
+        /** Turn off each key of `reasons`, saying why; the others on. */
+        disable(reasons) {
+          for (const f of fields.values()) {
+            const reason = reasons?.[f.key.name] || null;
+            f.input.dataset.offReason = reason || "";
+            if (!editor.busy.on) f.input.disabled = Boolean(reason);
+            f.off.textContent = reason ? `Does not apply here. ${reason}` : "";
+            f.off.hidden = !reason;
+          }
+        },
+        /** Every box off while a change is saved, then back as they were. */
+        busy(on) {
+          editor.busy.on = on;
+          for (const f of fields.values()) f.input.disabled = on || Boolean(f.input.dataset.offReason);
+        },
+        onChange(listener) {
+          for (const f of fields.values()) f.input.addEventListener("change", listener);
+        },
+      };
+      editor.busy.on = false;
+      return editor;
+    }
+
+    attach.keys = keys;
+    attach.parse = parse;
+    attach.show = show;
+    attach.inherited = inherited;
+    return attach;
+  })(),
 });
 
 /* Dismiss any menu on Escape or a click outside it.

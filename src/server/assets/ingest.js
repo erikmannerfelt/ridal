@@ -39,7 +39,17 @@
   const newProfile = $('ingest-new-profile');
   const demBox = $('ingest-dem');
   const crsBox = $('ingest-crs');
-  const dateBox = $('ingest-date');
+  // What the recordings are (#564): every override key, each where its
+  // `per_antenna` puts it. The keys come from the server, so one added
+  // there is in this page too: a column of the antenna table, or a box
+  // for the whole upload.
+  const antennaKeys = RIDAL.overridesEditor.keys().filter((k) => k.per_antenna);
+  const uploadBox = RIDAL.overridesEditor($('ingest-overrides'), {
+    only: (k) => !k.per_antenna,
+    intro:
+      'For every recording of the upload it applies to. Only where the files do not say ' +
+      "it, or say it wrongly; a value here takes precedence over each recording's sidecar.",
+  });
   const createButton = $('ingest-create-button');
   const blockers = $('ingest-blockers');
   const progressList = $('ingest-progress');
@@ -241,7 +251,7 @@
     splits: new Set(),
     ids: {},
     displayNames: {},
-    // By antenna as the headers name it: `{mhz, separation}`, the text
+    // By antenna as the headers name it, then by override key: the text
     // typed, so a box being typed in is not rewritten under the cursor.
     antennas: {},
   };
@@ -291,25 +301,30 @@
       crs: text(crsBox),
       dem: demBox.value || null,
       antennas: antennaOverrides(),
-      date: dateBox.value || null,
+      overrides: uploadBox.values({ lenient: true }),
       include_tracks: wantTracks,
     };
   }
 
-  /** A typed override as the plan takes it: a positive number, else none. */
-  const overrideValue = (text) => {
-    const value = Number(text);
-    return text.trim() !== '' && Number.isFinite(value) && value > 0 ? value : null;
+  /** A typed override as the plan takes it, or none while it is wrong:
+   * the box says so itself. */
+  const overrideValue = (key, text) => {
+    try {
+      return RIDAL.overridesEditor.parse(key, text);
+    } catch {
+      return null;
+    }
   };
+  /** By antenna, `{overrides: {key: value}}` for each key typed. */
   function antennaOverrides() {
     const out = {};
     for (const [antenna, typed] of Object.entries(edits.antennas)) {
-      const mhz = overrideValue(typed.mhz || '');
-      const separation = overrideValue(typed.separation || '');
-      const sampling = overrideValue(typed.sampling_mhz || '');
-      if (mhz !== null || separation !== null || sampling !== null) {
-        out[antenna] = { mhz, separation, sampling_mhz: sampling };
+      const overrides = {};
+      for (const key of antennaKeys) {
+        const value = overrideValue(key, typed[key.name] || '');
+        if (value !== null) overrides[key.name] = value;
       }
+      if (Object.keys(overrides).length) out[antenna] = { overrides };
     }
     return out;
   }
@@ -386,6 +401,7 @@
       summary.append(` Your ${yours} ${made === 1 ? 'applies' : 'apply'} whatever the threshold. `, undo);
     }
     renderAntennas();
+    renderUploadOverrides();
     renderTimeline();
     renderSelected();
     renderLeftOut();
@@ -396,12 +412,49 @@
     updateCreate();
   }
 
+  // --- What the recordings are -----------------------------------------------
+
+  /** The upload's overrides: up front, a key some recordings cannot be
+   * read without; off, one that applies to none of them; and what their
+   * sidecars set. */
+  function renderUploadOverrides() {
+    const missing = {};
+    for (const r of plan.recordings) {
+      if (r.missing_key && !r.excluded) (missing[r.missing_key] ||= []).push(r.name);
+    }
+    uploadBox.needs(
+      Object.fromEntries(
+        Object.entries(missing).map(([name, names]) => [
+          name,
+          `${plural(names.length, 'recording cannot', 'recordings cannot')} be read without it, ` +
+            `such as ${names[0]}.`,
+        ]),
+      ),
+      { focus: false },
+    );
+    const sets = plan.recordings.filter((r) => !r.unreadable || r.missing_key).map((r) => r.sidecar);
+    uploadBox.inherit(
+      Object.fromEntries(uploadBox.keys.map((k) => [k.name, RIDAL.overridesEditor.inherited(k, sets)])),
+    );
+    uploadBox.disable(plan.not_applicable || {});
+  }
+
   // --- The antennas -------------------------------------------------------
 
   /** What the files say of each antenna, and the boxes to say otherwise.
    * Rebuilt from the plan, keeping a box being typed in, as the names are. */
   function renderAntennas() {
     $('ingest-antennas').hidden = plan.antennas.length === 0;
+    const head = $('ingest-antenna-head');
+    if (!head.childElementCount) {
+      const th = (text) => el('th', { scope: 'col', textContent: text });
+      head.append(
+        th('Antenna'),
+        th('Read as'),
+        ...antennaKeys.map((k) => th(k.kind === 'date' ? k.label : `${k.label} (${k.unit})`)),
+        th('Recordings'),
+      );
+    }
     const active = document.activeElement;
     const focus = antennaRows.contains(active)
       ? { antenna: active.dataset.antenna, field: active.dataset.field, value: active.value }
@@ -418,26 +471,33 @@
         const readAs = a.antenna_mhz === null
           ? el('td', { className: 'ingest-problem', textContent: `no frequency${separation}` })
           : el('td', { textContent: `${a.antenna_mhz} MHz${separation}` });
-        const box = (field, label) => {
-          const typed = edits.antennas[a.antenna]?.[field];
-          const given = { mhz: a.mhz_override, separation: a.separation_override, sampling_mhz: a.sampling_override }[field];
+        const box = (key) => {
+          // Turned off where it does not apply, saying why: the sampling
+          // frequency where the files record it.
+          const off = a.not_applicable?.[key.name];
+          if (off) return el('td', { className: 'hint', textContent: off });
+          const typed = edits.antennas[a.antenna]?.[key.name];
+          const given = a.overrides?.[key.name] ?? null;
           const input = el('input', {
-            type: 'number',
-            min: '0',
+            type: key.kind === 'date' ? 'date' : 'number',
             step: 'any',
             value: typed ?? (given === null ? '' : String(given)),
             placeholder: 'From the files',
           });
+          if (key.kind === 'positive' || key.kind === 'non_negative') input.min = '0';
           input.dataset.antenna = a.antenna;
-          input.dataset.field = field;
-          input.setAttribute('aria-label', `${label} for ${a.antenna}`);
+          input.dataset.field = key.name;
+          input.title = key.description;
+          input.setAttribute('aria-label', `${key.label} for ${a.antenna}`);
           input.addEventListener('input', () => {
-            edits.antennas[a.antenna] = { ...edits.antennas[a.antenna], [field]: input.value };
-            input.setCustomValidity(
-              input.value.trim() === '' || overrideValue(input.value) !== null
-                ? ''
-                : 'A positive number, or empty to read it from the files.',
-            );
+            edits.antennas[a.antenna] = { ...edits.antennas[a.antenna], [key.name]: input.value };
+            let problem = '';
+            try {
+              RIDAL.overridesEditor.parse(key, input.value);
+            } catch (error) {
+              problem = error.message;
+            }
+            input.setCustomValidity(problem);
             wantTracks = true;
             schedulePlan();
           });
@@ -448,13 +508,7 @@
           {},
           el('td', {}, el('code', { textContent: a.antenna || '(none)' })),
           readAs,
-          box('mhz', 'Frequency override (MHz)'),
-          box('separation', 'Separation override (m)'),
-          // Only where the files do not record it (VIRL): any other
-          // recording keeps its own.
-          a.sampling_needed
-            ? box('sampling_mhz', 'Sampling frequency (MHz)')
-            : el('td', { className: 'hint', textContent: 'From the files' }),
+          ...antennaKeys.map(box),
           el('td', { textContent: String(a.recordings) }),
         );
       }),
@@ -714,14 +768,13 @@
         const action = el('button', { type: 'button', textContent: r.excluded ? 'Use it' : "Don't use" });
         action.addEventListener('click', () => exclude(r.key, !r.excluded));
         // What the files do not say is read once it is given above: by
-        // antenna in the table, or the date of the recordings.
-        const needs = {
-          antenna_frequency: `needs a frequency for its antenna, '${r.antenna}', above`,
-          sampling_frequency: `needs a sampling frequency for its antenna, '${r.antenna}', above`,
-          date: 'needs the date of the recordings, above',
-        };
-        const why = r.missing
-          ? needs[r.missing]
+        // antenna in the table, or for the upload.
+        const key = RIDAL.overridesEditor.keys().find((k) => k.name === r.missing_key);
+        const what = key && `${key.label.charAt(0).toLowerCase()}${key.label.slice(1)}`;
+        const why = key
+          ? key.per_antenna
+            ? `needs the ${what} of its antenna, '${r.antenna}', above`
+            : `needs the ${what} of the recordings, above`
           : r.unreadable ? `cannot be read: ${r.unreadable}` : 'not used';
         return el('li', { className: r.unreadable && !r.excluded ? 'ingest-problem' : '' },
           el('code', { textContent: r.name }), ` ${why}${r.unreadable && r.excluded ? ' (not used)' : ''}. `, action);
@@ -887,7 +940,7 @@
     schedulePlan();
   });
   // A date reads the recordings' positions again.
-  dateBox.addEventListener('change', () => {
+  uploadBox.onChange(() => {
     wantTracks = true;
     schedulePlan();
   });
@@ -1051,10 +1104,8 @@
               parts: output.recordings.map((key) => partOf.get(key)),
               crs,
               dem,
-              antenna_mhz: output.antenna_mhz_override,
-              antenna_separation: output.antenna_separation_override,
-              sampling_mhz: output.sampling_mhz_override,
-              date: output.date,
+              // Every key, as the plan gives it for this output (#564).
+              overrides: output.overrides,
               names: {
                 display_name: output.display_name,
                 group_name: into?.name ?? null,

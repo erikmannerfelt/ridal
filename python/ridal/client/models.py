@@ -1451,6 +1451,10 @@ class SourceView:
     linking a DEM, reads them; otherwise empty."""
     etag: str | None = None
     """The source's version, for a conditional change."""
+    not_applicable: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    """The override keys that do not apply to every one of its recordings,
+    which setting the source refuses, each with why not. Empty from a
+    server older than this."""
 
     @classmethod
     def from_json(cls, data: Any, etag: str | None = None) -> "SourceView":
@@ -1462,6 +1466,7 @@ class SourceView:
                 source=Source.from_json(d["source"]),
                 recordings=tuple(Recording.from_json(r) for r in d["recordings"]),
                 etag=etag,
+                not_applicable=dict(d.get("not_applicable", {})),
             ),
         )
 
@@ -1948,6 +1953,10 @@ class PlannedRecording:
     """What it cannot be read without, which the plan can be given:
     ``"antenna_frequency"`` or ``"sampling_frequency"`` (in ``antennas``, for
     its ``antenna``) or ``"date"``."""
+    missing_key: str | None = None
+    """The same, as the override key that gives it."""
+    sidecar: SidecarOverrides = SidecarOverrides()
+    """What its sidecar, uploaded with it, sets."""
 
     @classmethod
     def from_json(cls, data: Any) -> "PlannedRecording":
@@ -1955,8 +1964,10 @@ class PlannedRecording:
             plain = {
                 k: d[k]
                 for k in _fields(cls)
-                if k not in ("files", "track", "part") and k in d
+                if k not in ("files", "track", "part", "sidecar") and k in d
             }
+            if "sidecar" in d:
+                plain["sidecar"] = SidecarOverrides.from_json(d["sidecar"])
             track = d["track"]
             return cls(
                 **plain,
@@ -1998,6 +2009,9 @@ class PlannedOutput:
     :meth:`~ridal.client.Client.set_source` takes it."""
     date: str | None = None
     """What its source is to say of the date, likewise."""
+    overrides: SidecarOverrides = SidecarOverrides()
+    """Everything its source is to be given, by the keys of a sidecar: what
+    :meth:`~ridal.client.Client.set_source` takes as ``overrides``."""
 
     @classmethod
     def from_json(cls, data: Any) -> "PlannedOutput":
@@ -2005,8 +2019,10 @@ class PlannedOutput:
             plain = {
                 k: d[k]
                 for k in _fields(cls)
-                if k not in ("recordings", "split") and k in d
+                if k not in ("recordings", "split", "overrides") and k in d
             }
+            if "overrides" in d:
+                plain["overrides"] = SidecarOverrides.from_json(d["overrides"])
             return cls(
                 **plain,
                 recordings=tuple(d["recordings"]),
@@ -2078,14 +2094,26 @@ class PlannedAntenna:
     """Whether its recordings' files do not record the sampling frequency
     (VIRL), which ``sampling_mhz`` in ``antennas`` then gives."""
     sampling_override: float | None = None
+    overrides: SidecarOverrides = SidecarOverrides()
+    """The plan's overrides for it, by the keys of a sidecar."""
+    not_applicable: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    """The keys it does not take, each with why not."""
 
     @classmethod
     def from_json(cls, data: Any) -> "PlannedAntenna":
-        return _parse(
-            "planned antenna",
-            data,
-            lambda d: cls(**{k: d[k] for k in _fields(cls) if k in d}),
-        )
+        def build(d: Mapping[str, Any]) -> "PlannedAntenna":
+            plain = {
+                k: d[k]
+                for k in _fields(cls)
+                if k not in ("overrides", "not_applicable") and k in d
+            }
+            return cls(
+                **plain,
+                overrides=SidecarOverrides.from_json(d.get("overrides", {})),
+                not_applicable=dict(d.get("not_applicable", {})),
+            )
+
+        return _parse("planned antenna", data, build)
 
 
 @dataclass(frozen=True)
@@ -2100,6 +2128,9 @@ class IngestPlan:
     outputs: tuple[PlannedOutput, ...]
     antennas: tuple[PlannedAntenna, ...]
     problems: tuple[PlanProblem, ...]
+    not_applicable: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    """The override keys that apply to none of the recordings, each with
+    why not."""
 
     @property
     def ok(self) -> bool:
@@ -2120,6 +2151,7 @@ class IngestPlan:
                 outputs=tuple(PlannedOutput.from_json(o) for o in d["outputs"]),
                 antennas=tuple(PlannedAntenna.from_json(a) for a in d["antennas"]),
                 problems=tuple(PlanProblem.from_json(p) for p in d["problems"]),
+                not_applicable=dict(d.get("not_applicable", {})),
             ),
         )
 

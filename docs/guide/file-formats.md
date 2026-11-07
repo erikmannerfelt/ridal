@@ -270,7 +270,7 @@ What must be given
   ```
 
   In the GUI, **New radargram from raw data…** asks for the antenna
-  frequency, the sampling frequency and the date before it uploads a
+  frequency, the sampling frequency and the date once it has read a
   `.DSR` file, and **Add raw data in bulk…** takes the frequencies by
   antenna and one date for every recording (see {doc}`gui`).
 

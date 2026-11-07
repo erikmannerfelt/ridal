@@ -1136,7 +1136,7 @@ depth.
   `sampling_mhz` and `date` beside the antenna overrides, with the same
   precedence over a recording's sidecar. They are not run options:
   `Source::bundles_to_read` writes them into each bundle's sidecar values
-  (the date only where `raw::bundle_takes_date`), which is what
+  (each where its `OverrideKey::applies` says, #564), which is what
   `materialize_bundles` lays out for a draft, a check and the raw-data zip,
   so they reach the reader as a sidecar's would, and the recipe records
   them in the bundle as it would. `expected_bundles` starts from the same,
@@ -1273,6 +1273,35 @@ writer once there are writers (#99). The user-facing description is
   its per-key fields into `overrides`. In a request, a key given both ways
   is refused (`override_given_twice`). The antenna keys still go to a job
   as arguments and the rest into each bundle's sidecar values, as before.
+- **`OVERRIDE_KEYS` is the one description of a key (#564).** Beside its
+  name, unit and description, an `OverrideKey` says what the GUI and the
+  server need: a `label`, its `kind` (`ValueKind`: positive, non-negative,
+  any number, a date), where it `applies` (`Applies`: every recording, those
+  with dated positions, those with their own positions), the `refusal`
+  code reading gives without it, and whether bulk ingest takes it
+  `per_antenna` and whether it is usually `per_recording`. Every field is
+  required in the literal, so a new key cannot be listed without deciding
+  each. From the list: `Overrides::check` holds each number to its kind;
+  `Source::bundles_to_read` gives each key but the run arguments
+  (`raw::RUN_ARGUMENT_KEYS`) to the bundles it applies to, and `PUT
+  /sources` refuses a key for a recording it does not apply to
+  (`override_not_applicable`, or the older codes for `date` and
+  `altitude_offset_m`); `sidecar::not_applicable` is what `SourceView` and
+  the ingest plan report as not applying. The pages get the list as
+  `#override-keys` (the `override_keys_json` template global), and
+  `RIDAL.overridesEditor` (app.js) builds both raw-data forms from it: a
+  key a refusal names (by `refusal`) up front with the server's reason, the
+  rest under "More settings", what the recordings' sidecars set beside
+  each, and a key that does not apply turned off with why. The ingest page
+  makes the antenna table's columns of the `per_antenna` keys and the
+  upload's editor of the rest; the plan takes the upload's as `overrides`
+  and an antenna's as `antennas.<name>.overrides`, and gives each output
+  the `overrides` its source is to have. A new key therefore needs: the
+  `Overrides` field (and its lines in `under`, `without`, `entries`, which
+  `every_override_key_is_listed` checks), its `OVERRIDE_KEYS` entry, the
+  Python `SidecarOverrides` field, and where the reader uses it. The
+  forms and the server's sources follow without change; the recipe still
+  needs a field if it can be a run argument (below).
 - **One argument for every key (#559).** A run's values are an
   `Overrides` too (`ProcessingOptions::overrides`, `InfoParams::overrides`),
   from `--override KEY=VALUE`, `overrides=` in Python, and the per-key

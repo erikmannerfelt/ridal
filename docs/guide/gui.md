@@ -196,13 +196,21 @@ bulk…** on the Processing page). It is for many recordings; **Add data →
 New radargram from raw data…** in the catalog is for one radargram, looked
 at before it is added. There, a file of several lines or channels is read
 as one of them: once the files are uploaded, the dialog lists what each
-holds and you choose which one the radargram is made from. Beside the
-antenna frequency and separation, it takes the sampling frequency and the
-date, where the files do not say them or say them wrongly, and an altitude
-offset to add to every recorded altitude (see {ref}`altitude-offset`); a VIRL file
-needs the antenna frequency, the sampling frequency and the date before
-it is uploaded. Changing any of them later is saved with the raw data at
-once, and what is served then needs processing again.
+holds and you choose which one the radargram is made from.
+
+Both forms take every value a sidecar can set (see
+{doc}`../reference/sidecar`), such as the antenna frequency, the sampling
+frequency, the date or an altitude offset (see {ref}`altitude-offset`), where
+the files do not say them or say them wrongly. They are under **More
+settings**, folded, except one the recordings cannot be read without: a VIRL
+file, for example, records neither its antenna frequency, its sampling
+frequency nor its date, and each is shown up front, with the reason, once
+reading the files has asked for it. Under each, the dialog says what the
+recordings' own sidecars set, which a value given here takes precedence
+over, and a value that does not apply to the recordings (a date for RAMAC
+files, whose positions have their own) is shown but cannot be given. In
+**New radargram from raw data…**, changing any of them later is saved with
+the raw data at once, and what is served then needs processing again.
 
 1. **Drop the files**, every file of each recording (`.rad`, `.rd3` and
    `.cor` for RAMAC, for example). They are grouped into recordings by
@@ -227,18 +235,19 @@ once, and what is served then needs processing again.
    merge**, and its gap is drawn solid rather than dashed; click it to undo
    it. The map shows the tracks in the same colors. Above the timeline,
    each antenna the recordings name is listed with what its name is read
-   as. Give a frequency or separation there where the files do not say it,
-   or say it wrongly: it applies to every recording with that antenna,
-   before they are merged and named, and is kept with each radargram's raw
-   data, so processing it later uses it too. A recording whose antenna
-   gives no frequency is left out until one is given, and likewise one
-   whose files do not record the sampling frequency (VIRL), which is asked
-   for in its antenna's row. **Date of the recordings** gives the UTC date
-   of every IceRadar, pulseEKKO and VIRL recording, whose positions record
-   only the time of day, in place of the date their files give; a VIRL
-   recording, whose files give none, is left out until it is given. It is
-   one date for the whole upload, so add the recordings of each day
-   separately.
+   as, and a column for each value that describes an antenna (frequency,
+   separation, sampling frequency). Give one there where the files do not
+   say it, or say it wrongly: it applies to every recording with that
+   antenna, before they are merged and named, and is kept with each
+   radargram's raw data, so processing it later uses it too. A recording
+   whose antenna gives no frequency is left out until one is given, and
+   likewise one whose files do not record the sampling frequency (VIRL).
+   Below the table, every other value is given for the whole upload, to
+   each recording it applies to, as in the dialog above. The date of
+   IceRadar, pulseEKKO and VIRL recordings, whose positions record only
+   the time of day, is shown up front when a recording cannot be read
+   without one. It is one date for the whole upload, so add the recordings
+   of each day separately, or upload a sidecar with each recording.
 3. **Name them** with an id pattern and a display name pattern, as
    `ridal batch-process --id-pattern` takes them (see
    {doc}`cli`), and type over any single one. An id that already exists in

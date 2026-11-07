@@ -199,19 +199,17 @@ impl Source {
     /// What [`materialize_bundles`] is given, so that every read of the
     /// source (a draft, a batch, its raw data's zip) is of the same thing.
     pub fn bundles_to_read(&self) -> Vec<Bundle> {
+        // Every key but those a run is given as arguments, for each
+        // recording it applies to: by its `applies` in `OVERRIDE_KEYS`, so
+        // a key added there is carried without a change here (#564).
         self.bundles
             .iter()
             .map(|bundle| {
-                let mut overrides = bundle.overrides.unwrap_or_default();
-                let given = &self.overrides;
-                overrides.sampling_mhz = given.sampling_mhz.or(overrides.sampling_mhz);
-                if bundle_takes_date(bundle) {
-                    overrides.date = given.date.or(overrides.date);
-                }
-                if !bundle_has_coords_csv(bundle) {
-                    overrides.altitude_offset_m =
-                        given.altitude_offset_m.or(overrides.altitude_offset_m);
-                }
+                let traits = bundle_traits(bundle);
+                let given = self
+                    .overrides
+                    .only(|key| !RUN_ARGUMENT_KEYS.contains(&key.name) && key.applies.to(traits));
+                let overrides = bundle.overrides.unwrap_or_default().under(given);
                 Bundle {
                     overrides: Some(overrides).filter(|o| !o.is_empty()),
                     ..bundle.clone()
@@ -225,33 +223,43 @@ impl Source {
     /// the source's own antenna settings take precedence over, as
     /// `sidecar::applied` leaves them out when the source is processed.
     pub fn expected_bundles(&self) -> Vec<Bundle> {
+        let arguments = self
+            .overrides
+            .only(|key| RUN_ARGUMENT_KEYS.contains(&key.name));
         self.bundles_to_read()
             .iter()
-            .map(|bundle| {
-                let applied = bundle.overrides.map(|o| crate::sidecar::Overrides {
-                    antenna_mhz: o
-                        .antenna_mhz
-                        .filter(|_| self.overrides.antenna_mhz.is_none()),
-                    antenna_separation_m: o
-                        .antenna_separation_m
-                        .filter(|_| self.overrides.antenna_separation_m.is_none()),
-                    ..o
-                });
-                Bundle {
-                    overrides: applied.filter(|o| !o.is_empty()),
-                    ..bundle.clone()
-                }
+            .map(|bundle| Bundle {
+                overrides: bundle
+                    .overrides
+                    .map(|o| o.without(arguments))
+                    .filter(|o| !o.is_empty()),
+                ..bundle.clone()
             })
             .collect()
     }
+
+    /// The keys that do not apply to every one of its recordings, which a
+    /// source therefore refuses, with why not: what the Process dialog
+    /// shows disabled (#564).
+    pub fn not_applicable(&self) -> BTreeMap<&'static str, &'static str> {
+        let traits = self.bundles.iter().map(bundle_traits).collect::<Vec<_>>();
+        crate::sidecar::not_applicable(&traits, true)
+    }
 }
 
-/// Whether a recording's positions are read with a date, as
-/// `input::load_positions` decides: by its format, unless a `.coords.csv`
-/// gives its positions, with dates of their own.
-pub fn bundle_takes_date(bundle: &Bundle) -> bool {
-    !bundle_has_coords_csv(bundle)
-        && crate::formats::kind_named(&bundle.format).is_some_and(crate::formats::takes_date)
+/// The keys of [`Source::overrides`] a run is given as its arguments
+/// (`ProcessingOptions::overrides`), which the recipe records as such,
+/// rather than written into each recording's sidecar. Every other key goes
+/// in the sidecars ([`Source::bundles_to_read`]).
+pub const RUN_ARGUMENT_KEYS: &[&str] = &["antenna_mhz", "antenna_separation_m"];
+
+/// What decides which override keys apply to a recording. A format this
+/// Ridal does not know is taken as one without dated positions.
+pub fn bundle_traits(bundle: &Bundle) -> crate::sidecar::Traits {
+    crate::sidecar::Traits {
+        kind: crate::formats::kind_named(&bundle.format),
+        coords_csv: bundle_has_coords_csv(bundle),
+    }
 }
 
 /// Whether a recording's positions are a `.coords.csv` rather than its
