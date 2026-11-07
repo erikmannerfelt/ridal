@@ -58,11 +58,7 @@
     );
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
-  const linesOf = (text) =>
-    text
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line !== '' && !line.startsWith('#'));
+  const linesOf = (text) => RIDAL.stepsEditor.lines(text);
 
   /** `etag` makes the write conditional on what was read; `'new'` on
    * there being nothing there yet, so creating a profile cannot replace

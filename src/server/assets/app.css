@@ -3453,6 +3453,21 @@ textarea.steps-input:focus {
   color: var(--color-text-muted);
 }
 
+/* A comment in a steps box (#569). */
+.tok-comment {
+  color: var(--color-text-muted);
+}
+
+/* In a box being edited, the coloured text lies under the textarea's own,
+   which is regular and transparent and places the caret. A bold token there
+   can be wider than the textarea's glyphs where the bold is synthesised
+   (WebKit and Gecko add width), which leaves the caret short of the text it
+   follows (#569), so weight is kept for highlights that are only shown. */
+#derived-highlight span,
+pre.steps-highlight span {
+  font-weight: inherit;
+}
+
 /* A step that does not exist, or may not run where it is written (#423).
    Underlined as well as coloured, so it does not rest on colour alone. */
 .tok-error {
