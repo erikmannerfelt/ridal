@@ -8,8 +8,9 @@
 //! - [`gssi`]: GSSI (`.DZT` / `.DZG`).
 //! - [`iceradar`]: Blue System Integration IceRadar (`.h5` / `.hdf5`), with
 //!   the header, the data and the positions in one file.
-//! - [`virl`]: VIRL radar (`.DSR`), with the header, the data and the
-//!   positions in one file, and neither the sampling frequency nor the date.
+//! - [`virl`]: VIRL radar, the VIRL-7's `.DSR` (the header, the data and
+//!   the positions in one file) and the VIRL-6's `.hdr` and `.bin`, with
+//!   neither the sampling frequency nor the date.
 //! - [`skyhub`]: SPH Engineering SkyHub (`.sgy`), a UAV's Radsys zGPR as
 //!   little-endian SEG-Y, with its positions in a `-position.csv`, the
 //!   `.txt` of a recording cut into parts, or its own trace headers.
@@ -54,9 +55,12 @@ pub use skyhub::{
     skyhub_positions_beside, skyhub_positions_file_name, skyhub_positions_source,
     skyhub_recording_of_positions, skyhub_settings,
 };
+pub use virl::{
+    is_virl6_header, load_virl_data, load_virl_meta, load_virl_positions, virl6_bin_beside,
+    virl_fix_count,
+};
 #[cfg(test)]
-pub(crate) use virl::test_dsr;
-pub use virl::{load_virl_data, load_virl_meta, load_virl_positions, virl_fix_count};
+pub(crate) use virl::{test_dsr, test_hdr};
 // This is a facade: the submodules are private, and `io` itself is private to
 // the crate, so a name no caller happens to use -- `RidalNetcdfMetadata` is
 // only reached through `RidalNetcdfKind` -- reads as an unused import even

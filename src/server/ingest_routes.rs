@@ -2228,6 +2228,56 @@ mod tests {
         );
     }
 
+    /// A VIRL-6 recording is two files, and either may come first; it is
+    /// planned as a VIRL-7 file is, once given what it does not record.
+    #[test]
+    fn a_virl6_recording_is_its_hdr_and_its_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let scratch = tempfile::tempdir().unwrap();
+        let hdr = crate::io::test_hdr::simple(scratch.path());
+        let recordings = vec![RecordingFiles {
+            files: vec![
+                upload(data_dir, hdr.with_extension("bin").to_str().unwrap()),
+                upload(data_dir, hdr.to_str().unwrap()),
+            ],
+        }];
+        let mut request = PlanRequest {
+            recordings: recordings.clone(),
+            antennas: [(
+                "VIRL".to_string(),
+                AntennaOverride {
+                    mhz: Some(20.),
+                    sampling_mhz: Some(250.),
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Default::default()
+        };
+        request.overrides.date = chrono::NaiveDate::from_ymd_opt(2008, 5, 3);
+        let reads = read_all(
+            data_dir,
+            &recordings,
+            None,
+            None,
+            &request.antenna_overrides(),
+            request.upload_overrides().date,
+            &ReadCache::default(),
+        )
+        .unwrap();
+        let plan = super::plan(&reads, &request, None, &Taken::default());
+        assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+        assert_eq!(plan.recordings[0].antenna.as_deref(), Some("VIRL"));
+        assert!(
+            plan.outputs[0]
+                .start_time
+                .starts_with("2008-05-03T11:06:28"),
+            "{}",
+            plan.outputs[0].start_time
+        );
+    }
+
     #[test]
     fn a_coords_csv_gives_a_recording_its_positions() {
         // #13: what Add data sends when a `.coords.csv` replaces the `.cor`,

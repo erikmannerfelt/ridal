@@ -1253,6 +1253,32 @@ mod tests {
     }
 
     #[test]
+    fn a_virl6_recording_is_a_header_and_its_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let scratch = tempfile::tempdir().unwrap();
+        let hdr = crate::io::test_hdr::simple(scratch.path());
+        let files = [hdr.with_extension("bin"), hdr]
+            .iter()
+            .map(|path| upload(data_dir, path.to_str().unwrap()))
+            .collect::<Vec<_>>();
+        let laid = tempfile::tempdir().unwrap();
+        let bundles = bundles_of(data_dir, &[files], &[], laid.path(), &[]).unwrap();
+        assert_eq!(bundles[0].format, "virl");
+        assert_eq!(
+            bundles[0]
+                .files
+                .iter()
+                .map(|f| (f.file.name.as_str(), f.role))
+                .collect::<Vec<_>>(),
+            [
+                ("414_0000.hdr", FileRole::Header),
+                ("414_0000.bin", FileRole::Data)
+            ]
+        );
+    }
+
+    #[test]
     fn a_file_not_uploaded_is_named() {
         let dir = tempfile::tempdir().unwrap();
         let missing = NamedFile {

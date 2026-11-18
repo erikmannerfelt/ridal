@@ -132,15 +132,16 @@ pub fn all_formats() -> Vec<FormatInfo> {
         },
         FormatInfo {
             name: "virl",
-            description: "VIRL radar DSR format (VIRL-7)",
+            description: "VIRL radar: the VIRL-7's .DSR, or the VIRL-6's .hdr and .bin",
             capabilities: FormatCapabilities {
                 read: true,
                 write: false,
             },
+            // The VIRL-7's one file, or the VIRL-6's two.
             files: FormatFiles {
-                header: ".DSR",
-                data: ".DSR",
-                coordinates: ".DSR",
+                header: ".DSR/.hdr",
+                data: ".DSR/.bin",
+                coordinates: ".DSR/.hdr",
             },
         },
         FormatInfo {
@@ -400,7 +401,14 @@ pub fn with_coordinates(resolved: &mut [ResolvedInput], cor: Option<&Path>) -> R
     }
     for recording in resolved.iter_mut() {
         let stem = header_stem(recording)?;
-        let native = format_info(recording.kind).files.coordinates;
+        let native = match recording.kind {
+            // Its positions are in its header, of whichever version.
+            FormatKind::Virl => match recording.header.extension().and_then(|e| e.to_str()) {
+                Some(ext) if ext.eq_ignore_ascii_case("hdr") => ".hdr",
+                _ => ".DSR",
+            },
+            _ => format_info(recording.kind).files.coordinates,
+        };
         let own = || match recording.kind {
             // Named by the layout, not by appending to the stem.
             FormatKind::SkyHub => recording
@@ -776,6 +784,24 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             part: Part::default(),
             sidecar: None,
         }),
+        // A VIRL-6 recording: its table of positions, and its traces. Other
+        // software writes `.hdr` and `.bin` files too, so the table is
+        // recognised by its columns.
+        Some("hdr") | Some("bin") => {
+            let header = resolve_sidecar(input, "hdr");
+            if !header.is_file() {
+                return Err(format!(
+                    "{input:?} has no {:?} beside it. Ridal reads a .hdr and a .bin as a VIRL-6 recording, which is both files.",
+                    header
+                ));
+            }
+            if !crate::io::is_virl6_header(&header) {
+                return Err(format!(
+                    "{header:?} is not a VIRL-6 .hdr: its first line does not name the columns trn summ odom. A .hdr and a .bin are read only as a VIRL-6 recording."
+                ));
+            }
+            Ok(virl6(input, header))
+        }
         // The traces, with positions beside them or in their own headers.
         Some("sgy") => Ok(ResolvedInput {
             input: input.to_path_buf(),
@@ -804,66 +830,90 @@ fn resolve_files(input: &Path) -> Result<ResolvedInput, String> {
             input.with_extension("")
         )),
         Some(other) => Err(format!(
-            "Unsupported input extension '.{other}' for {:?}. Supported formats are RAMAC (.rad/.rd3/.cor), pulseEKKO (.hd/.dt1/.gp2), GSSI (.dzt/.dzg/.dzx), IceRadar (.h5/.hdf5), VIRL (.dsr) and SkyHub (.sgy), and a recording's <stem>{COORDS_CSV_SUFFIX}.",
+            "Unsupported input extension '.{other}' for {:?}. Supported formats are RAMAC (.rad/.rd3/.cor), pulseEKKO (.hd/.dt1/.gp2), GSSI (.dzt/.dzg/.dzx), IceRadar (.h5/.hdf5), VIRL (.dsr, or .hdr and .bin) and SkyHub (.sgy), and a recording's <stem>{COORDS_CSV_SUFFIX}.",
             input
         )),
         None => {
-            let ramac = find_neighbor_case_insensitive(input, "rad");
-            let pulseekko = find_neighbor_case_insensitive(input, "hd");
-            let gssi = find_neighbor_case_insensitive(input, "dzt");
-            match (ramac, pulseekko, gssi) {
-                (Some(ramac), None, None) => Ok(ResolvedInput {
+            // Each format's header that may sit beside a path without an
+            // extension, as a coordinate CSV's or a sidecar's stem is.
+            let candidates = [
+                find_neighbor_case_insensitive(input, "rad").map(|rad| ResolvedInput {
                     input: input.to_path_buf(),
                     kind: FormatKind::Ramac,
-                    header: ramac.clone(),
-                    data: resolve_sidecar(&ramac, "rd3"),
-                    coordinates: resolve_sidecar(&ramac, "cor"),
+                    data: resolve_sidecar(&rad, "rd3"),
+                    coordinates: resolve_sidecar(&rad, "cor"),
+                    header: rad,
                     part: Part::default(),
-            sidecar: None,
+                    sidecar: None,
                 }),
-                (None, Some(pulseekko), None) => Ok(ResolvedInput {
+                find_neighbor_case_insensitive(input, "hd").map(|hd| ResolvedInput {
                     input: input.to_path_buf(),
                     kind: FormatKind::PulseEkko,
-                    header: pulseekko.clone(),
-                    data: resolve_sidecar(&pulseekko, "dt1"),
-                    coordinates: resolve_sidecar(&pulseekko, "gp2"),
+                    data: resolve_sidecar(&hd, "dt1"),
+                    coordinates: resolve_sidecar(&hd, "gp2"),
+                    header: hd,
                     part: Part::default(),
-            sidecar: None,
+                    sidecar: None,
                 }),
-                (None, None, Some(gssi)) => Ok(ResolvedInput {
+                find_neighbor_case_insensitive(input, "dzt").map(|dzt| ResolvedInput {
                     input: input.to_path_buf(),
                     kind: FormatKind::Gssi,
-                    header: gssi.clone(),
-                    data: gssi.clone(),
-                    coordinates: resolve_sidecar(&gssi, "dzg"),
+                    data: dzt.clone(),
+                    coordinates: resolve_sidecar(&dzt, "dzg"),
+                    header: dzt,
                     part: Part::default(),
-            sidecar: None,
+                    sidecar: None,
                 }),
-                (Some(ramac), Some(pulseekko), None) => Err(format!(
-                    "Ambiguous extension-less input {:?}: both {:?} and {:?} exist.",
-                    input, ramac, pulseekko
-                )),
-                (Some(ramac), None, Some(gssi)) => Err(format!(
-                    "Ambiguous extension-less input {:?}: both {:?} and {:?} exist.",
-                    input, ramac, gssi
-                )),
-                (None, Some(pulseekko), Some(gssi)) => Err(format!(
-                    "Ambiguous extension-less input {:?}: both {:?} and {:?} exist.",
-                    input, pulseekko, gssi
-                )),
-                (Some(ramac), Some(pulseekko), Some(gssi)) => Err(format!(
-                    "Ambiguous extension-less input {:?}: {:?}, {:?}, and {:?} exist.",
-                    input, ramac, pulseekko, gssi
-                )),
-                (None, None, None) => Err(format!(
-                    "Could not infer format for extension-less input {:?}. Tried {:?}, {:?}, and {:?}.",
+                find_neighbor_case_insensitive(input, "dsr").map(|dsr| ResolvedInput {
+                    input: input.to_path_buf(),
+                    kind: FormatKind::Virl,
+                    header: dsr.clone(),
+                    data: dsr.clone(),
+                    coordinates: dsr,
+                    part: Part::default(),
+                    sidecar: None,
+                }),
+                find_neighbor_case_insensitive(input, "hdr")
+                    .filter(|hdr| crate::io::is_virl6_header(hdr))
+                    .map(|hdr| virl6(input, hdr)),
+            ];
+            let mut found = candidates.into_iter().flatten().collect::<Vec<_>>();
+            match found.len() {
+                1 => Ok(found.remove(0)),
+                0 => Err(format!(
+                    "Could not infer format for extension-less input {:?}. Tried {:?}, {:?}, {:?}, {:?} and {:?}.",
                     input,
                     input.with_extension("rad"),
                     input.with_extension("hd"),
-                    input.with_extension("dzt")
+                    input.with_extension("dzt"),
+                    input.with_extension("DSR"),
+                    input.with_extension("hdr"),
+                )),
+                _ => Err(format!(
+                    "Ambiguous extension-less input {:?}: {} exist.",
+                    input,
+                    found
+                        .iter()
+                        .map(|r| format!("{:?}", r.header))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )),
             }
         }
+    }
+}
+
+/// A VIRL-6 recording of `header`, a `.hdr` that holds the positions, and
+/// the `.bin` beside it.
+fn virl6(input: &Path, header: PathBuf) -> ResolvedInput {
+    ResolvedInput {
+        input: input.to_path_buf(),
+        kind: FormatKind::Virl,
+        data: crate::io::virl6_bin_beside(&header),
+        coordinates: header.clone(),
+        header,
+        part: Part::default(),
+        sidecar: None,
     }
 }
 
@@ -922,6 +972,30 @@ mod tests {
         }
         assert!(takes_date(FormatKind::Virl));
         assert!(!records_antenna_separation(FormatKind::Virl));
+    }
+
+    /// A VIRL-6 recording is resolved from its `.hdr`, its `.bin`, or the
+    /// stem of a coordinate CSV or sidecar, but a `.hdr` of other software
+    /// is not taken for one.
+    #[test]
+    fn a_virl6_recording_is_resolved_from_either_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let hdr = crate::io::test_hdr::simple(dir.path());
+        let bin = hdr.with_extension("bin");
+        for input in [&hdr, &bin, &dir.path().join("414_0000.ridal.toml")] {
+            let resolved = resolve_input(input).unwrap();
+            assert_eq!(resolved.kind, FormatKind::Virl);
+            assert_eq!(resolved.header, hdr);
+            assert_eq!(resolved.data, bin);
+            assert_eq!(resolved.coordinates, hdr);
+            assert_eq!(own_positions(&resolved), hdr);
+        }
+        let envi = dir.path().join("image.hdr");
+        std::fs::write(&envi, "ENVI\n").unwrap();
+        let error = resolve_input(&envi).unwrap_err();
+        assert!(error.contains("trn summ odom"), "{error}");
+        let error = resolve_input(&dir.path().join("lonely.bin")).unwrap_err();
+        assert!(error.contains("lonely.hdr"), "{error}");
     }
 
     /// A SkyHub recording's positions are a file named by its layout, or
