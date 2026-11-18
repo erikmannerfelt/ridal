@@ -6,8 +6,8 @@ Ridal reads six families of impulse GPR data. A recording of the first
 three consists of several files that share a name but have different
 extensions, and any one of them can be given as the input, since Ridal finds
 the others beside it regardless of the case of their extensions. An IceRadar
-or VIRL recording is a single file (see [IceRadar](#iceradar) and
-[VIRL](#virl) below), and a SkyHub recording's positions are found by the
+or VIRL-7 recording is a single file and a VIRL-6 recording a `.hdr` and a
+`.bin` (see [IceRadar](#iceradar) and [VIRL](#virl) below), and a SkyHub recording's positions are found by the
 names SkyHub and the software that cuts its recordings give them (see
 [SkyHub](#skyhub)).
 
@@ -18,6 +18,7 @@ names SkyHub and the software that cuts its recordings give them (see
 | GSSI (`gssi`) | `.DZT` | `.DZT` | `.DZG` |
 | Blue System Integration IceRadar (`iceradar`) | `.h5`/`.hdf5` | the same file | the same file |
 | VIRL, as the VIRL-7 (`virl`) | `.DSR` | the same file | the same file |
+| VIRL, as the VIRL-6 (`virl`) | `.hdr` | `.bin` | the `.hdr` |
 | SPH Engineering SkyHub, with a Radsys zGPR (`skyhub`) | `.sgy` | the same file | `-position.csv`, a `.txt`, or the same file |
 
 `ridal formats` prints the same table, and `ridal.all_format_descriptions`
@@ -28,7 +29,8 @@ Positions are required, because a radargram without positions cannot be
 placed on a map, and Ridal refuses to read a recording without them. GSSI and
 pulseEKKO positions are read from the NMEA sentences (`$GPGGA`) in their
 sidecar files, IceRadar positions from the GPS fields stored with each
-trace, VIRL positions from the `$GPGGA` sentence in each trace's header, and
+trace, VIRL-7 positions from the `$GPGGA` sentence in each trace's header, VIRL-6
+positions from the table in the `.hdr`, and
 SkyHub positions from the files described [below](#skyhub). Positions from anywhere else, for any format, can be given as
 a coordinate CSV, either beside the recording as `<stem>.coords.csv` or with
 `--cor` (see {ref}`coordinate-csv`).
@@ -246,11 +248,14 @@ Autosaves
 
 The VIRL radars were built by Evgeny Vasilenko and used by the Universidad
 Politécnica de Madrid on glaciers in Svalbard, the Antarctic and elsewhere.
-Ridal reads the `.DSR` files of the VIRL-7. A file is one recording, a
-sequence of records of one size, one per trace: a 112-byte text header,
-then the trace as 16-bit samples. There is no public description of the
-format, so what follows is what Ridal assumes, from the files of one
-campaign (2014).
+Ridal reads the `.DSR` files of the VIRL-7 and the `.hdr` and `.bin`
+files of the VIRL-6, both as the format `virl`. A VIRL-7 file is one
+recording, a sequence of records of one size, one per trace: a 112-byte
+text header, then the trace as 16-bit samples. A VIRL-6 recording is a
+text table of positions with a row per trace (`<stem>.hdr`) and the traces
+(`<stem>.bin`); either file can be given. There is no public description
+of either format, so what follows is what Ridal assumes, from the files of
+one campaign each (VIRL-7 2014, VIRL-6 2008).
 
 What must be given
 : The files record neither the sampling frequency, nor the date, nor the
@@ -271,14 +276,15 @@ What must be given
 
   In the GUI, **New radargram from raw data…** asks for the antenna
   frequency, the sampling frequency and the date once it has read a
-  `.DSR` file, and **Add raw data in bulk…** takes the frequencies by
+  VIRL file, and **Add raw data in bulk…** takes the frequencies by
   antenna and one date for every recording (see {doc}`gui`).
 
   The sampling frequency scales every time and depth, so take it from the
-  survey's notes, not from a guess. For the 2014 campaign it is 200 MHz
-  (5 ns), which reproduces the published ice thicknesses.
+  survey's notes, not from a guess. For the 2014 VIRL-7 campaign it is
+  200 MHz (5 ns), which reproduces the published ice thicknesses. For the
+  VIRL-6 it is not yet known.
 
-Positions
+VIRL-7 positions
 : Each trace's header holds the GPS's last `$GPGGA` sentence, so several
   traces share one fix. A position is kept at the first trace of each fix
   and the traces between are interpolated. A sentence whose checksum is
@@ -287,8 +293,22 @@ Positions
   warning. A recording that runs past midnight UTC continues into the next
   day.
 
+VIRL-6 positions
+: The `.hdr` starts with a line of column names, `trn summ odom elev zon
+  lat lon time`. `lat` and `lon` are read as WGS84 degrees, `elev` as the
+  altitude in metres, and `time` as the time of day (`hhmmss`) of the last
+  fix, which several rows share; a position is kept at the first row of
+  each fix and the traces between are interpolated, as above. A trace is
+  its row: `trn` is not read, since a file's first row can carry the count
+  of the file before. A `zon` other than 0 is refused, as the positions
+  might then be projected. A recording made without a GPS has only the
+  columns `trn summ odom`, and its positions must be given as a coordinate
+  CSV (see {ref}`coordinate-csv`).
+
 Traces
-: Samples are a 14-bit converter's, stored as offset binary, and are read
+: VIRL-6 samples are stored as 32-bit floats, read as they are, and the
+  number of samples is the `.bin`'s size over the table's rows. VIRL-7
+  samples are a 14-bit converter's, stored as offset binary, and are read
   as their difference from its middle value (8192). The time window starts
   at the start of the record, so time zero is found by `zero_corr` as for
   the other formats. The window is long (20 µs in 2014), so most of it can

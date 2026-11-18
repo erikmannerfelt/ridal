@@ -22,7 +22,7 @@ def test_known_format_names_exist():
     assert "pulseekko" in ridal.all_format_descriptions
     assert "iceradar" in ridal.all_formats
     assert ridal.all_format_descriptions["iceradar"]["files"]["header"] == ".h5"
-    assert ridal.all_format_descriptions["virl"]["files"]["header"] == ".DSR"
+    assert ridal.all_format_descriptions["virl"]["files"]["header"] == ".DSR/.hdr"
     assert ridal.all_format_descriptions["skyhub"]["files"]["header"] == ".sgy"
 
 
