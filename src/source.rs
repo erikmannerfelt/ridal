@@ -17,6 +17,8 @@ use std::path::Path;
 
 use ndarray::Array2;
 
+mod raw_chunks;
+
 /// What the renderer needs from a source of amplitudes.
 ///
 /// Two implementations, because rendering has two callers with different
@@ -149,6 +151,10 @@ impl AmplitudeSource for ArraySource<'_> {
 pub struct SourceReader {
     file: netcdf::File,
     shape: (usize, usize),
+    /// `data`'s chunks read without the NetCDF lock (#577), when the file
+    /// is laid out as Ridal writes it; otherwise every read goes through
+    /// `file`.
+    raw: Option<raw_chunks::RawChunks>,
 }
 
 /// netcdf-c's chunk cache per variable, for every file opened after
@@ -213,7 +219,8 @@ impl SourceReader {
             ));
         }
         let shape = (dims[0].len(), dims[1].len());
-        Ok(Self { file, shape })
+        let raw = raw_chunks::RawChunks::open(path);
+        Ok(Self { file, shape, raw })
     }
 }
 
@@ -251,6 +258,11 @@ impl AmplitudeSource for SourceReader {
         let col1 = col1.min(self.shape.1);
         if row0 >= row1 || col0 >= col1 {
             return Ok(Array2::from_elem((0, 0), 0.0));
+        }
+        if let Some(raw) = &self.raw {
+            if let Some(window) = raw.read_window(row0, row1, col0, col1)? {
+                return Ok(window);
+            }
         }
 
         let var = self
