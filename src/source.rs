@@ -3,11 +3,10 @@
 //! Never loads the complete array: every read is a hyperslab bounded to
 //! the requested window, clamped to the array's actual extent. This is the
 //! correctness property the plan calls "never load a full radargram" --
-//! important given radargrams up to ~1 GB. The *performance* optimization
-//! on top of it (an LRU of decompressed, HDF5-chunk-aligned blocks, so one
-//! read serves every render chunk inside it) is deferred to M5, where the
-//! caching infrastructure belongs anyway; this module's correctness does
-//! not depend on it.
+//! important given radargrams up to ~1 GB. A file in Ridal's own layout is
+//! read chunk by chunk without the NetCDF lock, through a small cache of
+//! decoded chunks ([`raw_chunks`], #577); this module's correctness does
+//! not depend on that path.
 
 // SourceReader::open is only called by tests until the render service
 // (M5) and HTTP routes (M6) construct one from a catalog entry's path.
