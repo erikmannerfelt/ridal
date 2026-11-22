@@ -77,7 +77,11 @@ impl RawChunks {
     /// The chunk index of `path`'s `data` variable, or `None` when its
     /// layout is not one this path reads.
     pub(super) fn open(path: &Path) -> Option<Self> {
-        let (shape, chunk, index) = {
+        let Layout {
+            shape,
+            chunk,
+            index,
+        } = {
             let _guard = netcdf_sys::libnetcdf_lock.lock();
             // SAFETY: every id is checked before use and closed by `Id`;
             // every out-pointer points at a local of the right size.
@@ -207,13 +211,20 @@ fn read_at(file: &std::fs::File, mut buf: &mut [u8], mut offset: u64) -> std::io
     Ok(())
 }
 
+/// What [`read_index`] learns about `data` from HDF5.
+struct Layout {
+    shape: (usize, usize),
+    chunk: (usize, usize),
+    index: Vec<Option<Stored>>,
+}
+
 /// Shape, chunk shape and chunk index of `path`'s `data`, when its layout is
 /// the one this module reads.
 ///
 /// # Safety
 ///
 /// Must be called with `libnetcdf_lock` held.
-unsafe fn read_index(path: &Path) -> Option<((usize, usize), (usize, usize), Vec<Option<Stored>>)> {
+unsafe fn read_index(path: &Path) -> Option<Layout> {
     use hdf5_sys::{h5d, h5f, h5p, h5s, h5t, h5z};
 
     let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes()).ok()?;
@@ -322,7 +333,11 @@ unsafe fn read_index(path: &Path) -> Option<((usize, usize), (usize, usize), Vec
             );
         }
     }
-    Some((shape, chunk, index))
+    Some(Layout {
+        shape,
+        chunk,
+        index,
+    })
 }
 
 #[cfg(test)]
