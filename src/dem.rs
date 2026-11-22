@@ -70,13 +70,22 @@ pub fn gdal_version() -> Result<(u32, u32, u32), String> {
     .wait_with_output()
     .map_err(|e| format!("Call process error: {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let version = parse_gdal_version(&stdout).ok_or_else(|| {
-        format!(
-            "Could not read GDAL's version from `gdallocationinfo --version`: {:?}",
-            stdout.trim()
-        )
-    })?;
+    let version = parse_gdal_version(&stdout).ok_or_else(|| version_error(&output))?;
     Ok(*VERSION.get_or_init(|| version))
+}
+
+/// Why `gdallocationinfo --version` gave no version, with its exit status
+/// and stderr: a GDAL that cannot load one of its libraries prints nothing
+/// on stdout and says why only there (#579).
+fn version_error(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    format!(
+        "Could not read GDAL's version from `gdallocationinfo --version` ({}): stdout {:?}, stderr {:?}",
+        output.status,
+        stdout.trim(),
+        stderr.trim()
+    )
 }
 
 /// How this machine's GDAL samples a DEM.
@@ -477,6 +486,19 @@ mod tests {
         assert_eq!(parse(""), None);
         // 3.10 is above 3.9, which a comparison of strings gets wrong.
         assert!((3, 10) > (3, 9));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_version_names_the_exit_status_and_stderr() {
+        // A failing program: what a GDAL that cannot load a library is.
+        let output = std::process::Command::new("sh")
+            .args(["-c", "echo 'dyld: Library not loaded' >&2; exit 3"])
+            .output()
+            .unwrap();
+        let message = super::version_error(&output);
+        assert!(message.contains("exit status: 3"), "{message}");
+        assert!(message.contains("dyld: Library not loaded"), "{message}");
     }
 
     #[test]
