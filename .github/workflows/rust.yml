@@ -75,6 +75,17 @@ jobs:
       run: |
         brew install gdal proj hdf5 netcdf zlib
 
+    - name: Check GDAL runs (macOS)
+      if: runner.os == 'macOS'
+      continue-on-error: true
+      run: |
+        sw_vers
+        brew config
+        gdallocationinfo --version; echo "exit $?"
+        gdalinfo --version; echo "exit $?"
+        otool -L "$(which gdallocationinfo)"
+        DYLD_PRINT_LIBRARIES=1 gdallocationinfo --version 2>&1 | tail -20
+
     - name: Configure native deps (macOS)
       if: runner.os == 'macOS'
       run: |
