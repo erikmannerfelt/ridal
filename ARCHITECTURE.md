@@ -1784,7 +1784,9 @@ and changed by operators through `/api/v1/render-profiles`.
     lowers the default to 16 MiB (4 MiB made a cold pass 40% slower: the
     limits sample re-reads a chunk column per run of traces), and
     `get_or_render_overview` closes the file straight after a build, which
-    left nothing useful in the cache.
+    left nothing useful in the cache. Since #577 a file in Ridal's layout
+    reads `data` around this cache, through `source::raw_chunks`, which
+    keeps its own cache of decoded chunks at the same 16 MiB.
   - *glibc's per-thread arenas.* Renders run on tokio's blocking pool, and
     glibc gives each of its threads an arena it rarely returns memory from;
     a burst of builds ratcheted the process up by ~1 GB of freed memory.
@@ -1797,10 +1799,12 @@ and changed by operators through `/api/v1/render-profiles`.
     from there to 0.8 GB; neither is enough without the cap.
 - Each radargram's `RenderService` sits behind a `Mutex` held for the
   whole read-and-render, so two chunks of the *same* radargram never
-  render concurrently — deliberately not split further, since the
-  `netcdf` crate serialises its C calls behind its own global lock
-  regardless, so splitting would only buy concurrency *across*
-  radargrams, not within one. That same `Mutex` plus the cache re-check
+  render concurrently. It was not split while every read went through
+  the NetCDF lock anyway. Reads no longer do (#577), but splitting it was
+  estimated there as still not worth it for speed: a cold radargram
+  waits on its amplitude sample, which every chunk needs, and a chunk
+  renders in about 3 ms. What a split would change is #473's case, a
+  long render holding up that radargram's viewer. That same `Mutex` plus the cache re-check
   on entry is also what makes concurrent requests for one chunk
   generate it only once — a queued request finds the result already
   cached rather than re-rendering, which is pinned by a test rather
@@ -1827,8 +1831,21 @@ and changed by operators through `/api/v1/render-profiles`.
   submitted or finishes. After a kill, the child's pipes are waited for for
   two seconds only, so a grandchild still holding them cannot keep a slot.
 - **netcdf-c/HDF5 is not thread-safe.** A global lock serialises every
-  netcdf call, which is a hard ceiling on read parallelism no amount of
-  tokio tuning lifts. Tests that open NetCDF files are
+  netcdf call. It used to be the ceiling on how fast the server read:
+  busy 93-98 % of the time on a cold catalog or with several users
+  (#577). `source::raw_chunks` takes it out of reading `data` for files
+  in Ridal's layout (2-D chunked little-endian `f32`, shuffle then
+  deflate): at open, under the lock, HDF5 gives the address of every
+  chunk (`H5Dget_chunk_info_by_coord`), and a read after that is a
+  `pread`, an inflate and an unshuffle with no lock, so renders of
+  different radargrams decode in parallel. Opening a file, the 1-D axes,
+  any other layout and any window over a chunk never written still go
+  through netcdf and the lock. With reads lock-free, the amplitude
+  sample reads its runs in parallel (`SourceReader::sample_trace_runs`),
+  which is most of a cold radargram's first image. The overview build
+  permits stay at a quarter of `--n-workers`: at all of them the cold
+  catalog was 2x faster again, but at two to three times the peak memory
+  (#301). Tests that open NetCDF files are
   `#[serial_test::serial(netcdf)]`. A `Netcdf(-101)` is not a known flake:
   the one that was, a child process inheriting HDF5's `flock` on an open
   file, is fixed by starting every tool through `tools::spawn_tool` (#324),

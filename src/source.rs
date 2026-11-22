@@ -3,11 +3,10 @@
 //! Never loads the complete array: every read is a hyperslab bounded to
 //! the requested window, clamped to the array's actual extent. This is the
 //! correctness property the plan calls "never load a full radargram" --
-//! important given radargrams up to ~1 GB. The *performance* optimization
-//! on top of it (an LRU of decompressed, HDF5-chunk-aligned blocks, so one
-//! read serves every render chunk inside it) is deferred to M5, where the
-//! caching infrastructure belongs anyway; this module's correctness does
-//! not depend on it.
+//! important given radargrams up to ~1 GB. A file in Ridal's own layout is
+//! read chunk by chunk without the NetCDF lock, through a small cache of
+//! decoded chunks ([`raw_chunks`], #577); this module's correctness does
+//! not depend on that path.
 
 // SourceReader::open is only called by tests until the render service
 // (M5) and HTTP routes (M6) construct one from a catalog entry's path.
@@ -16,6 +15,8 @@
 use std::path::Path;
 
 use ndarray::Array2;
+
+mod raw_chunks;
 
 /// What the renderer needs from a source of amplitudes.
 ///
@@ -69,19 +70,10 @@ pub trait AmplitudeSource {
         offset: usize,
         skip_rows: usize,
     ) -> Result<Vec<f32>, String> {
-        let (rows, n_traces) = self.shape();
-        if n_traces == 0 || n_runs == 0 || traces_per_run == 0 {
-            return Ok(Vec::new());
-        }
+        let rows = self.shape().0;
         let row_start = skip_rows.min(rows);
-        let step = (n_traces / n_runs).max(1);
         let mut samples = Vec::new();
-        for i in 0..n_runs {
-            let start = (i * step + offset) % n_traces;
-            let end = (start + traces_per_run).min(n_traces);
-            if start >= end {
-                continue;
-            }
+        for (start, end) in trace_runs(self.shape().1, n_runs, traces_per_run, offset) {
             let block = self.read_window(row_start, rows, start, end)?;
             samples.extend(block.iter().copied());
         }
@@ -102,6 +94,27 @@ pub trait AmplitudeSource {
     fn vertical_read_overhead(&self, _col0: usize, _col1: usize) -> usize {
         0
     }
+}
+
+/// The `[start, end)` trace ranges of [`AmplitudeSource::sample_trace_runs`],
+/// in the order their samples are concatenated.
+fn trace_runs(
+    n_traces: usize,
+    n_runs: usize,
+    traces_per_run: usize,
+    offset: usize,
+) -> Vec<(usize, usize)> {
+    if n_traces == 0 || n_runs == 0 || traces_per_run == 0 {
+        return Vec::new();
+    }
+    let step = (n_traces / n_runs).max(1);
+    (0..n_runs)
+        .map(|i| {
+            let start = (i * step + offset) % n_traces;
+            (start, (start + traces_per_run).min(n_traces))
+        })
+        .filter(|(start, end)| start < end)
+        .collect()
 }
 
 /// An in-memory array as a render source.
@@ -149,6 +162,10 @@ impl AmplitudeSource for ArraySource<'_> {
 pub struct SourceReader {
     file: netcdf::File,
     shape: (usize, usize),
+    /// `data`'s chunks read without the NetCDF lock (#577), when the file
+    /// is laid out as Ridal writes it; otherwise every read goes through
+    /// `file`.
+    raw: Option<raw_chunks::RawChunks>,
 }
 
 /// netcdf-c's chunk cache per variable, for every file opened after
@@ -213,7 +230,8 @@ impl SourceReader {
             ));
         }
         let shape = (dims[0].len(), dims[1].len());
-        Ok(Self { file, shape })
+        let raw = raw_chunks::RawChunks::open(path);
+        Ok(Self { file, shape, raw })
     }
 }
 
@@ -240,6 +258,42 @@ impl AmplitudeSource for SourceReader {
         self.shape
     }
 
+    /// The provided sampling, with the runs read in parallel when the file
+    /// can be read without the NetCDF lock (#577).
+    ///
+    /// The sample is what a cold viewer waits for before its first image:
+    /// 128 runs, each a column of whole chunks, which read one after
+    /// another took most of the 1.3 s that image took. Same runs, same
+    /// order, so the same limits.
+    fn sample_trace_runs(
+        &self,
+        n_runs: usize,
+        traces_per_run: usize,
+        offset: usize,
+        skip_rows: usize,
+    ) -> Result<Vec<f32>, String> {
+        use rayon::prelude::*;
+
+        let (rows, n_traces) = self.shape;
+        let row_start = skip_rows.min(rows);
+        let runs = trace_runs(n_traces, n_runs, traces_per_run, offset);
+        if let Some(raw) = self.raw.as_ref().filter(|_| row_start < rows) {
+            let blocks = runs
+                .par_iter()
+                .map(|&(start, end)| raw.read_window(row_start, rows, start, end))
+                .collect::<Result<Option<Vec<_>>, _>>()?;
+            if let Some(blocks) = blocks {
+                return Ok(blocks.iter().flat_map(|b| b.iter().copied()).collect());
+            }
+        }
+        let mut samples = Vec::new();
+        for (start, end) in runs {
+            let block = self.read_window(row_start, rows, start, end)?;
+            samples.extend(block.iter().copied());
+        }
+        Ok(samples)
+    }
+
     fn read_window(
         &self,
         row0: usize,
@@ -251,6 +305,11 @@ impl AmplitudeSource for SourceReader {
         let col1 = col1.min(self.shape.1);
         if row0 >= row1 || col0 >= col1 {
             return Ok(Array2::from_elem((0, 0), 0.0));
+        }
+        if let Some(raw) = &self.raw {
+            if let Some(window) = raw.read_window(row0, row1, col0, col1)? {
+                return Ok(window);
+            }
         }
 
         let var = self
@@ -306,6 +365,39 @@ mod tests {
         // profile needs for the direct-wave band.
         let skipped = source.sample_trace_runs(4, 2, 0, 2).unwrap();
         assert_eq!(skipped.len(), 4 * 2 * 4);
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_lock_free_file_samples_the_same_runs_as_an_array() {
+        // The parallel sampling must give the same values in the same
+        // order, or a radargram's limits would depend on its file layout.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chunked.nc");
+        let data = Array2::from_shape_fn((150, 700), |(r, c)| ((r * 31 + c * 17) % 97) as f32);
+        {
+            let mut file = netcdf::create(&path).unwrap();
+            file.add_dimension("y", 150).unwrap();
+            file.add_dimension("x", 700).unwrap();
+            let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+            var.set_compression(5, true).unwrap();
+            var.set_chunking(&[64, 64]).unwrap();
+            var.put(data.view(), ..).unwrap();
+        }
+        let reader = SourceReader::open(&path).unwrap();
+        assert!(reader.raw.is_some());
+        let array = ArraySource::new(data.view());
+        for (n_runs, per_run, offset, skip) in [(128, 16, 3, 0), (7, 40, 690, 20), (3, 5, 0, 150)] {
+            assert_eq!(
+                reader
+                    .sample_trace_runs(n_runs, per_run, offset, skip)
+                    .unwrap(),
+                array
+                    .sample_trace_runs(n_runs, per_run, offset, skip)
+                    .unwrap(),
+                "{n_runs} runs of {per_run} from {offset}, skipping {skip} rows"
+            );
+        }
     }
 
     fn write_test_nc(path: &std::path::Path, height: usize, width: usize) {
