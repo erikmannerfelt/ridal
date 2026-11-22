@@ -177,7 +177,7 @@ pub struct SourceReader {
 /// 40% slower than the default (the amplitude-limit sample reads a whole
 /// chunk column per run of traces, and nearby runs share one), while 16 MiB
 /// was within 7% of it.
-pub(crate) const CHUNK_CACHE_BYTES: usize = 16 * 1024 * 1024;
+const CHUNK_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Lower netcdf-c's default chunk cache, once per process, before the first
 /// [`SourceReader`] opens a file (#306).

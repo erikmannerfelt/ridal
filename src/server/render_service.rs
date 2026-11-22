@@ -384,7 +384,7 @@ impl RenderServiceConfig {
     pub fn with_n_workers(self, n_workers: usize) -> Self {
         Self {
             n_workers,
-            overview_builds: Arc::new(tokio::sync::Semaphore::new(overview_build_budget_mib(
+            overview_builds: Arc::new(tokio::sync::Semaphore::new(overview_build_permits(
                 n_workers,
             ))),
             open_readers: ReaderPool::new(max_open_readers(n_workers)),
@@ -406,41 +406,6 @@ impl RenderServiceConfig {
 /// build permit at all.
 pub fn overview_build_permits(n_workers: usize) -> usize {
     (n_workers / 4).max(1)
-}
-
-/// The most one overview build holds while it runs, in MiB: the band it
-/// reads, at most [`crate::render::renderer::OVERVIEW_READ_BUDGET_BYTES`],
-/// and the decoded chunks its reader keeps, at most
-/// [`crate::source::CHUNK_CACHE_BYTES`].
-const OVERVIEW_BUILD_MAX_MIB: usize =
-    (crate::render::renderer::OVERVIEW_READ_BUDGET_BYTES + crate::source::CHUNK_CACHE_BYTES) / MIB;
-
-const MIB: usize = 1024 * 1024;
-
-/// The memory, in MiB, that overview builds may hold at once for
-/// `n_workers`: [`overview_build_permits`] builds of the largest size.
-///
-/// [`RenderServiceConfig::overview_builds`] holds this many permits, and a
-/// build takes [`overview_build_cost_mib`] of them, so the peak is the one
-/// #301 settled on while radargrams smaller than a full band build several
-/// at a time. That was not worth doing while every build read under the
-/// NetCDF lock; since #577, builds of most files no longer wait on each
-/// other, and the cold catalog of the data publication's 125 radargrams
-/// (median 36 MiB of samples) builds TODO faster for it.
-pub fn overview_build_budget_mib(n_workers: usize) -> usize {
-    overview_build_permits(n_workers) * OVERVIEW_BUILD_MAX_MIB
-}
-
-/// The share of [`overview_build_budget_mib`] one build of a `(rows, cols)`
-/// radargram takes: the band it reads, which is the whole radargram when it
-/// is smaller than one, and its reader's decoded chunks.
-pub fn overview_build_cost_mib(shape: (usize, usize)) -> u32 {
-    let band = (shape.0 * shape.1 * std::mem::size_of::<f32>())
-        .min(crate::render::renderer::OVERVIEW_READ_BUDGET_BYTES);
-    let chunks = crate::source::CHUNK_CACHE_BYTES.min(band);
-    ((band + chunks)
-        .div_ceil(MIB)
-        .clamp(1, OVERVIEW_BUILD_MAX_MIB)) as u32
 }
 
 /// Concurrent figure exports for `n_workers`: half of them, at least one
@@ -471,7 +436,7 @@ impl Default for RenderServiceConfig {
             cache: RenderCache::from_mb(DEFAULT_CACHE_MEMORY_MB),
             source_cache_mb: 256,
             n_workers,
-            overview_builds: Arc::new(tokio::sync::Semaphore::new(overview_build_budget_mib(1))),
+            overview_builds: Arc::new(tokio::sync::Semaphore::new(1)),
             open_readers: ReaderPool::new(1),
             permit_waiters: Arc::default(),
             figure_permits: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -1721,17 +1686,6 @@ mod tests {
         assert_eq!(overview_build_permits(1), 1);
         assert_eq!(overview_build_permits(7), 1);
         assert_eq!(overview_build_permits(16), 4);
-        // A full-size build takes a whole permit's worth of the budget, so
-        // the peak is what it was with one permit per build (#577)...
-        assert_eq!(overview_build_budget_mib(16), 4 * OVERVIEW_BUILD_MAX_MIB);
-        assert_eq!(
-            overview_build_cost_mib((10_000, 30_000)) as usize,
-            OVERVIEW_BUILD_MAX_MIB
-        );
-        // ...while a small one takes its own size: here 4 MiB of samples
-        // and as much again in decoded chunks.
-        assert_eq!(overview_build_cost_mib((1024, 1024)), 8);
-        assert_eq!(overview_build_cost_mib((0, 0)), 1);
         assert_eq!(max_open_readers(1), 16);
         assert_eq!(max_open_readers(32), 64);
         // Figures leave at least one worker for everything else, where
@@ -1740,10 +1694,7 @@ mod tests {
         assert_eq!(figure_permits(2), 1);
         assert_eq!(figure_permits(5), 2);
         let config = RenderServiceConfig::default().with_n_workers(16);
-        assert_eq!(
-            config.overview_builds.available_permits(),
-            overview_build_budget_mib(16)
-        );
+        assert_eq!(config.overview_builds.available_permits(), 4);
         assert_eq!(config.figure_permits.available_permits(), 8);
     }
 

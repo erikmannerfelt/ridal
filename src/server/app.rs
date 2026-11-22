@@ -2257,12 +2257,10 @@ mod tests {
             let uncached = "/api/v1/datasets/builds/views/standard/overview?profile=seismic";
             assert_eq!(get(&app, cached).await.0, StatusCode::OK);
 
-            let budget = crate::server::render_service::overview_build_budget_mib(4) as u32;
             let held = state
                 .render_config()
                 .overview_builds
-                .clone()
-                .acquire_many_owned(budget)
+                .acquire_owned()
                 .await
                 .unwrap();
             let hit = tokio::time::timeout(std::time::Duration::from_secs(10), get(&app, cached))
@@ -2275,45 +2273,6 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             assert!(!build.is_finished(), "a build ran without a build permit");
             drop(held);
-            assert_eq!(build.await.unwrap().0, StatusCode::OK);
-        });
-    }
-
-    #[test]
-    #[serial_test::serial(netcdf)]
-    fn a_small_overview_builds_beside_a_large_one() {
-        // #577: a build takes the memory it needs from the build budget, so
-        // with a full-size build holding all but a little of it, a small
-        // radargram's still builds, and with the whole budget held it waits.
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let dir = tempfile::tempdir().unwrap();
-            write_test_nc(&dir.path().join("a.nc"), "small");
-            let (app, state) = test_app_with_state(dir.path(), 4);
-            let budget = crate::server::render_service::overview_build_budget_mib(4) as u32;
-            let shape = state.catalog().radargram("small").unwrap().shape;
-            let cost = crate::server::render_service::overview_build_cost_mib(shape);
-            assert!(cost < budget);
-            let builds = state.render_config().overview_builds;
-
-            let large = builds
-                .clone()
-                .acquire_many_owned(budget - cost)
-                .await
-                .unwrap();
-            let first = "/api/v1/datasets/small/views/standard/overview";
-            let built = tokio::time::timeout(std::time::Duration::from_secs(10), get(&app, first))
-                .await
-                .expect("a small build waited behind a large one it fits beside");
-            assert_eq!(built.0, StatusCode::OK);
-
-            let rest = builds.clone().acquire_many_owned(cost).await.unwrap();
-            let app2 = app.clone();
-            let second = "/api/v1/datasets/small/views/standard/overview?profile=seismic";
-            let build = tokio::spawn(async move { get(&app2, second).await });
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            assert!(!build.is_finished(), "a build ran with no budget left");
-            drop((large, rest));
             assert_eq!(build.await.unwrap().0, StatusCode::OK);
         });
     }
