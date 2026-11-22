@@ -40,7 +40,7 @@ const PAD_COLOR: [u8; 3] = [PAD_VALUE, PAD_VALUE, PAD_VALUE];
 /// entire array as `f32` -- ~180 MB for the largest file in the test
 /// corpus, multiplied by every concurrent request. 64 MB keeps reads
 /// large enough to stay HDF5-chunk-efficient while bounding the peak.
-const OVERVIEW_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const OVERVIEW_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct Renderer<'a, S: AmplitudeSource> {
     reader: &'a S,

@@ -1118,9 +1118,13 @@ pub(super) async fn get_or_build_overview(
         return Ok(bytes);
     }
 
+    let cost = crate::server::render_service::overview_build_cost_mib(radargram.shape);
     let build = tokio::time::timeout(
         OVERVIEW_BUILD_TIMEOUT,
-        state.render_config().overview_builds.acquire_owned(),
+        state
+            .render_config()
+            .overview_builds
+            .acquire_many_owned(cost),
     )
     .await
     .map_err(|_| {
